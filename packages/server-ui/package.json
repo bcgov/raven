@@ -1,0 +1,23 @@
+{
+  "name": "@nrs/server-ui",
+  "version": "0.1.0",
+  "description": "Web dashboard for BC Gov server monitoring (read-only)",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --build",
+    "start": "node dist/index.js",
+    "dev": "node --watch dist/index.js"
+  },
+  "dependencies": {
+    "@nrs/auth": "*",
+    "@nrs/server-mcp": "*",
+    "express": "^5.1.0",
+    "nodemailer": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/nodemailer": "^7.0.11"
+  }
+}

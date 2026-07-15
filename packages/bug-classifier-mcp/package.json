@@ -1,0 +1,21 @@
+{
+  "name": "@nrs/bug-classifier-mcp",
+  "version": "0.1.0",
+  "description": "Bug pattern classifier MCP server — groups Jira bugs by shared root cause",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "raven-bug-classifier-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@nrs/auth": "*",
+    "stemmer": "^2.0.1",
+    "zod": "^3.24.0"
+  }
+}

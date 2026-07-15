@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../auth" },
+    { "path": "../jira-mcp" },
+    { "path": "../bitbucket-mcp" },
+    { "path": "../server-mcp" }
+  ]
+}

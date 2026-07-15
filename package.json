@@ -1,0 +1,48 @@
+{
+  "name": "raven",
+  "version": "0.1.0",
+  "description": "RAVEN - Resource Analytics, Visibility & Enterprise Navigator: Local-first Atlassian analysis suite",
+  "private": true,
+  "workspaces": [
+    "packages/auth",
+    "packages/confluence-mcp",
+    "packages/jira-mcp",
+    "packages/bitbucket-mcp",
+    "packages/overview-mcp",
+    "packages/health-mcp",
+    "packages/server-mcp",
+    "packages/server-ui",
+    "packages/raven-cli",
+    "packages/assets-mcp",
+    "packages/imis-mcp",
+    "packages/bug-classifier-mcp",
+    "packages/pipeline",
+    "packages/ado-mcp",
+    "packages/jarvis-mcp",
+    "packages/sonar-mcp",
+    "packages/jenkins-mcp",
+    "packages/rfcbuddy-mcp",
+    "packages/artifactory-mcp"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "tsc --build --clean",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "gen-inventory": "npm run build && node scripts/gen-inventory.mjs",
+    "gen-inventory:check": "npm run build && node scripts/gen-inventory.mjs --check"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@types/node": "^25.2.3",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.8"
+  },
+  "dependencies": {
+    "oracledb": "^6.10.0",
+    "vscode-jsonrpc": "^8.2.1"
+  }
+}

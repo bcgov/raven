@@ -1,0 +1,24 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/auth" },
+    { "path": "packages/confluence-mcp" },
+    { "path": "packages/jira-mcp" },
+    { "path": "packages/bitbucket-mcp" },
+    { "path": "packages/overview-mcp" },
+    { "path": "packages/health-mcp" },
+    { "path": "packages/server-mcp" },
+    { "path": "packages/server-ui" },
+    { "path": "packages/raven-cli" },
+    { "path": "packages/assets-mcp" },
+    { "path": "packages/imis-mcp" },
+    { "path": "packages/bug-classifier-mcp" },
+    { "path": "packages/pipeline" },
+    { "path": "packages/ado-mcp" },
+    { "path": "packages/jarvis-mcp" },
+    { "path": "packages/sonar-mcp" },
+    { "path": "packages/jenkins-mcp" },
+    { "path": "packages/rfcbuddy-mcp" },
+    { "path": "packages/artifactory-mcp" }
+  ]
+}

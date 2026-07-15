@@ -1,0 +1,50 @@
+# servers.conf — Server Monitor configuration
+# Copy to ~/bin/servers.conf (or set SERVER_TOOLS_BIN in ~/.raven/.env to use a different location)
+#
+# The server-mcp (Server Monitor) reads this file at startup.
+# It will refuse to start if this file is missing or contains no entries.
+#
+# Format (pipe-delimited):
+#   name|hostname|ssh_user|sudo_user|role|description|apps_base|logs_base
+#
+#   name        Short label used in MCP tool calls — must be unique (e.g. "int01")
+#   hostname    Server FQDN or IP address
+#   ssh_user    Your personal _A account (e.g. jsmith_a) — must have sudo rights
+#   sudo_user   App service account to sudo into (e.g. appuser, jboss).
+#               Leave EMPTY for NR Apache httpd servers where the _A account
+#               has direct read access to log files without needing sudo.
+#   role        Environment label shown in dashboards (e.g. INT, TEST, PROD)
+#   description Human-readable label (e.g. "Integration", "Test", "Production")
+#   apps_base   Base path for deployed applications  [optional, default: /apps_ux]
+#   logs_base   Base path for application log files  [optional, default: /apps_ux/logs]
+#
+# Blank lines and lines starting with # are ignored.
+# The last two fields (apps_base, logs_base) can be omitted if your servers use the defaults.
+
+# ── BC Gov NR Sector example layout ──────────────────────────────────────────
+
+int01|int01.example.gov.bc.ca|jsmith_a|appuser|INT|Integration
+test01|test01.example.gov.bc.ca|jsmith_a|appuser|TEST|Test
+prod01|prod01.example.gov.bc.ca|jsmith_a|appuser|PROD|Production
+
+# ── With explicit paths (if your servers differ from the defaults) ─────────────
+
+# test02|test02.example.gov.bc.ca|jsmith_a|appuser|TEST|Test 2|/opt/apps|/opt/apps/logs
+# int02|int02.example.gov.bc.ca|jsmith_a|appuser|INT|Integration 2|/opt/apps|/opt/apps/logs
+# prod02|prod02.example.gov.bc.ca|jsmith_a|appuser|PROD|Production 2|/opt/apps|/opt/apps/logs
+
+# ── NR Apache httpd reverse proxy servers ─────────────────────────────────────
+#
+# These servers store httpd logs under /sw_ux/httpd01/logs/hot (and cold).
+# The _A account has direct read access — no sudo is required (sudo_user is empty).
+# Use the search_httpd_logs MCP tool to search these logs.
+#
+# DMZ servers (load-balanced pairs, .dmz domain):
+# starburst|starburst01.dmz|jsmith_a||TEST|DMZ Test reverse proxy|/sw_ux/httpd01|/sw_ux/httpd01/logs
+# rockets|rockets01.dmz|jsmith_a||TEST|DMZ Test reverse proxy 2|/sw_ux/httpd01|/sw_ux/httpd01/logs
+# butterfinger|butterfinger01.dmz|jsmith_a||PROD|DMZ Prod reverse proxy|/sw_ux/httpd01|/sw_ux/httpd01/logs
+# lollipop|lollipop01.dmz|jsmith_a||PROD|DMZ Prod reverse proxy 2|/sw_ux/httpd01|/sw_ux/httpd01/logs
+#
+# Internal reverse proxy servers (.example.internal domain):
+# innuendo|innuendo.example.internal|jsmith_a||PROD|Internal reverse proxy|/sw_ux/httpd01|/sw_ux/httpd01/logs
+# insinuation|insinuation.example.internal|jsmith_a||PROD|Internal reverse proxy 2|/sw_ux/httpd01|/sw_ux/httpd01/logs

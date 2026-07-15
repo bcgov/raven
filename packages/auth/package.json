@@ -1,0 +1,19 @@
+{
+  "name": "@nrs/auth",
+  "version": "0.1.0",
+  "description": "Shared SiteMinder authentication for BC Gov Atlassian services",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "raven-auth": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc --build && node -e \"require('node:fs').chmodSync('dist/cli.js', 0o755)\""
+  },
+  "dependencies": {
+    "dotenv": "^17.3.1",
+    "playwright": "^1.49.0",
+    "zod": "^3.24.0"
+  }
+}

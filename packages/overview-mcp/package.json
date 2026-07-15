@@ -1,0 +1,23 @@
+{
+  "name": "@nrs/overview-mcp",
+  "version": "0.1.0",
+  "description": "Cross-tool project overview MCP server for RAVEN suite",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "raven-overview-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@nrs/auth": "*",
+    "@nrs/jira-mcp": "*",
+    "@nrs/confluence-mcp": "*",
+    "@nrs/bitbucket-mcp": "*",
+    "zod": "^3.24.0"
+  }
+}

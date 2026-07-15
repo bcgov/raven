@@ -1,0 +1,64 @@
+{
+  "mcpServers": {
+    "jira": {
+      "command": "node",
+      "args": ["./packages/jira-mcp/dist/index.js"]
+    },
+    "confluence": {
+      "command": "node",
+      "args": ["./packages/confluence-mcp/dist/index.js"]
+    },
+    "bitbucket": {
+      "command": "node",
+      "args": ["./packages/bitbucket-mcp/dist/index.js"]
+    },
+    "overview": {
+      "command": "node",
+      "args": ["./packages/overview-mcp/dist/index.js"]
+    },
+    "health": {
+      "command": "node",
+      "args": ["./packages/health-mcp/dist/index.js"]
+    },
+    "server-monitor": {
+      "command": "node",
+      "args": ["./packages/server-mcp/dist/index.js"]
+    },
+    "assets": {
+      "command": "node",
+      "args": ["./packages/assets-mcp/dist/index.js"]
+    },
+    "imis": {
+      "command": "node",
+      "args": ["./packages/imis-mcp/dist/index.js"]
+    },
+    "bug-classifier": {
+      "command": "node",
+      "args": ["./packages/bug-classifier-mcp/dist/index.js"]
+    },
+    "ado": {
+      "command": "node",
+      "args": ["./packages/ado-mcp/dist/index.js"]
+    },
+    "jarvis": {
+      "command": "node",
+      "args": ["./packages/jarvis-mcp/dist/index.js"]
+    },
+    "sonar": {
+      "command": "node",
+      "args": ["./packages/sonar-mcp/dist/index.js"]
+    },
+    "jenkins": {
+      "command": "node",
+      "args": ["./packages/jenkins-mcp/dist/index.js"]
+    },
+    "rfcbuddy": {
+      "command": "node",
+      "args": ["./packages/rfcbuddy-mcp/dist/index.js"]
+    },
+    "artifactory": {
+      "command": "node",
+      "args": ["./packages/artifactory-mcp/dist/index.js"]
+    }
+  }
+}

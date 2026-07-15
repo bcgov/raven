@@ -1,0 +1,22 @@
+{
+  "name": "@nrs/pipeline",
+  "version": "0.1.0",
+  "description": "Autonomous DevOps pipeline orchestrator for RAVEN suite",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "raven-pipeline": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@github/copilot-sdk": "^0.3.0",
+    "@nrs/auth": "*",
+    "@nrs/bitbucket-mcp": "*",
+    "@nrs/jira-mcp": "*",
+    "@nrs/server-mcp": "*"
+  }
+}

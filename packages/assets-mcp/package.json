@@ -1,0 +1,24 @@
+{
+  "name": "@nrs/assets-mcp",
+  "version": "0.1.0",
+  "description": "Jira Assets / Insight MCP server for RAVEN suite",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./client": "./dist/exports.js"
+  },
+  "bin": {
+    "raven-assets-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@nrs/auth": "*",
+    "zod": "^3.24.0"
+  }
+}

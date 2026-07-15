@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+*.pid
+
+# Local runtime data — may contain fetched Jira/IMIS content (PII). NEVER commit.
+.cache/
+inventory/
+
+# Secrets / local config
+.env
+.env.local
+!.env.example
+
+# SonarQube
+.scannerwork/
+
+# OS / editor
+.DS_Store
+.idea/
+.vs/
+.vscode/
+*.iml
+
+# Spike / scratch scripts
+scripts/_*.mjs

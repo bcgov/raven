@@ -1,0 +1,50 @@
+name: CI
+
+# Build + test gate for RAVEN. Without this, a non-compiling package could
+# reach "all checks passed". Runs the real tsc build and the vitest suite,
+# then verifies the tool inventory doc is current.
+# (Enable CodeQL separately in the repository's Security settings.)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: this workflow only reads the repo to build + test —
+# it never writes contents, comments, or other resources.
+permissions:
+  contents: read
+
+# Cancel an in-progress run when new commits land on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build & test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (tsc --build)
+        run: npm run build
+
+      - name: Test (vitest run)
+        run: npm test
+
+      - name: Check tool inventory is current
+        # dist/ is already built by the Build step above, so call the generator
+        # directly — `npm run gen-inventory:check` would rebuild redundantly.
+        run: node scripts/gen-inventory.mjs --check
