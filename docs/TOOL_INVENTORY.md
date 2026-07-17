@@ -16,11 +16,11 @@
 | | Count |
 |---|---|
 | MCP servers | **15** |
-| Tools registered locally (in-process) | **181** |
-| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 181 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
-| **Tools advertised to the AI when everything is connected** | **~187** |
+| Tools registered locally (in-process) | **182** |
+| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 182 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
+| **Tools advertised to the AI when everything is connected** | **~188** |
 | Mutating / write tools | **~61** (60 local + ~1 via Jarvis) |
-| Read-only tools | **~126** |
+| Read-only tools | **~127** |
 | Non-server packages | `auth`, `pipeline`, `server-ui`, `raven-cli` |
 
 Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share one SiteMinder/Basic-Auth session; Server Monitor, IMIS, Azure DevOps, Sonar, Jenkins, Artifactory, RFC Buddy, and Jarvis authenticate separately via `~/.raven/.env`.
@@ -29,7 +29,7 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 
 | Server | `.mcp.json` key | Read | Write | Total |
 |--------|-----------------|-----:|------:|------:|
-| Jira | `jira` | 13 | 18 | 31 |
+| Jira | `jira` | 14 | 18 | 32 |
 | Confluence | `confluence` | 10 | 8 | 18 |
 | Bitbucket | `bitbucket` | 18 | 7 | 25 |
 | Assets (CMDB) | `assets` | 14 | 0 | 14 |
@@ -43,16 +43,16 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 | Jenkins | `jenkins` | 19 | 14 | 33 |
 | RFC Buddy | `rfcbuddy` | 0 | 1 | 1 |
 | Artifactory | `artifactory` | 12 | 7 | 19 |
-| **Subtotal (local)** | | **121** | **60** | **181** |
+| **Subtotal (local)** | | **122** | **60** | **182** |
 | Jarvis (remote proxy) | `jarvis` | ~5 | ~1 | ~6 |
-| **Advertised total** | | **~126** | **~61** | **~187** |
+| **Advertised total** | | **~127** | **~61** | **~188** |
 
 ## Servers and tools
 
 ### Atlassian (shared auth session)
 
-#### jira-mcp — 31 tools (13 read / 18 write)
-- **Read:** `search_issues`, `read_issue`, `list_comments`, `get_sprint`, `get_board`, `list_boards`, `list_worklogs`, `list_attachments`, `search_users`, `search_assignable_users`, `list_versions`, `get_version`, `list_watchers`
+#### jira-mcp — 32 tools (14 read / 18 write)
+- **Read:** `search_issues`, `read_issue`, `list_comments`, `get_sprint`, `get_board`, `list_boards`, `get_field_meta`, `list_worklogs`, `list_attachments`, `search_users`, `search_assignable_users`, `list_versions`, `get_version`, `list_watchers`
 - **Write:** `create_issue`, `update_issue`, `add_comment`, `transition_issue`, `link_issues`, `add_worklog`, `download_attachment`, `create_version`, `update_version`, `delete_version`, `add_watcher`, `remove_watcher`, `create_sprint`, `update_sprint`, `delete_sprint`, `move_issues_to_sprint`, `update_comment`, `delete_comment`
 
 #### confluence-mcp — 18 tools (10 read / 8 write)

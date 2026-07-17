@@ -4,6 +4,7 @@ import { SessionManager, createAuthenticatedFetch, createBasicAuthFetch, PiScrub
 import { JiraClient } from "./jira-client.js";
 import { saveAttachment } from "./attachment-fs.js";
 import { buildAttachmentContent, disambiguateFilename } from "./attachment-content.js";
+import { resolveCustomFields, formatFieldMeta } from "./field-meta.js";
 import type { JiraIssue, JiraComment } from "./types.js";
 
 const pi = new PiScrubber();
@@ -222,7 +223,7 @@ export function createJiraServer(): McpServer {
       version: "0.1.0",
     },
     {
-      instructions: `You have access to tools for searching and managing Jira issues, sprints, versions, watchers, worklogs, attachments, and users. Read tools (search_issues, read_issue, list_comments, get_sprint, get_board, list_boards, list_worklogs, list_attachments, search_users, search_assignable_users, list_versions, get_version, list_watchers) let you search, view, list, and look up. Write tools (create_issue, update_issue, add_comment, update_comment, delete_comment, transition_issue, link_issues, add_worklog, create_version, update_version, delete_version, add_watcher, remove_watcher, create_sprint, update_sprint, delete_sprint, move_issues_to_sprint) let you act on Jira content. delete_comment, delete_version, delete_sprint, create_sprint, update_sprint state transitions, create_version, and update_version are visible to the team — always confirm with the user before invoking. IMPORTANT: You MUST use the write tools when the user asks you to create, update, comment on, or transition Jira issues. Never refuse by claiming these tools are read-only — they are not. However, always confirm with the user before calling write tools, since these actions modify live Jira content. Keep API calls to a minimum to avoid overloading the server. When you call a tool and receive results, STOP calling tools and summarize the results for the user. Never call the same tool twice with the same arguments. Never guess or fabricate Jira issue keys or project keys — if you don't know them, ask the user. Always check for duplicate issues before creating new ones. If a tool returns an error, explain the error clearly to the user and suggest next steps. If you encounter authentication errors (401 Unauthorized or "No valid SMSESSION found"), inform the user they need to set ATLASSIAN_BASE_URL, ATLASSIAN_EMAIL, and ATLASSIAN_PASSWORD environment variables for Basic Auth, or re-authenticate via SMSESSION by running: node ${authCliPath}${WORKAROUND_NOTE}`,
+      instructions: `You have access to tools for searching and managing Jira issues, sprints, versions, watchers, worklogs, attachments, and users. Read tools (search_issues, read_issue, list_comments, get_sprint, get_board, list_boards, list_worklogs, list_attachments, search_users, search_assignable_users, list_versions, get_version, list_watchers, get_field_meta) let you search, view, list, and look up. Write tools (create_issue, update_issue, add_comment, update_comment, delete_comment, transition_issue, link_issues, add_worklog, create_version, update_version, delete_version, add_watcher, remove_watcher, create_sprint, update_sprint, delete_sprint, move_issues_to_sprint) let you act on Jira content. delete_comment, delete_version, delete_sprint, create_sprint, update_sprint state transitions, create_version, and update_version are visible to the team — always confirm with the user before invoking. IMPORTANT: You MUST use the write tools when the user asks you to create, update, comment on, or transition Jira issues. Never refuse by claiming these tools are read-only — they are not. However, always confirm with the user before calling write tools, since these actions modify live Jira content. Keep API calls to a minimum to avoid overloading the server. When you call a tool and receive results, STOP calling tools and summarize the results for the user. Never call the same tool twice with the same arguments. Never guess or fabricate Jira issue keys or project keys — if you don't know them, ask the user. Always check for duplicate issues before creating new ones. If a tool returns an error, explain the error clearly to the user and suggest next steps. If you encounter authentication errors (401 Unauthorized or "No valid SMSESSION found"), inform the user they need to set ATLASSIAN_BASE_URL, ATLASSIAN_EMAIL, and ATLASSIAN_PASSWORD environment variables for Basic Auth, or re-authenticate via SMSESSION by running: node ${authCliPath}${WORKAROUND_NOTE}`,
     }
   );
 
@@ -629,9 +630,37 @@ export function createJiraServer(): McpServer {
           "Required by NRM Jira when issueType='Epic'; rejected for other issue types. " +
           "Maps to JIRA_EPIC_NAME_FIELD (customfield_10005 by default)."
         ),
+      fixVersions: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Fix Version names (e.g. ['1.2.19']). Versions must already exist " +
+          "in the project — use list_versions to check and create_version to add."
+        ),
+      assignee: z
+        .string()
+        .optional()
+        .describe("Assignee username (use search_assignable_users to find it)"),
+      parentKey: z
+        .string()
+        .optional()
+        .describe(
+          "Parent issue key when creating a sub-task type " +
+          "(e.g. an RFD-subtask under an RFD). Only valid for sub-task issue types."
+        ),
+      customFields: z
+        .record(z.unknown())
+        .optional()
+        .describe(
+          "Custom fields by display name or field ID, e.g. " +
+          "{\"Target environment\": \"PROD\", \"Change Coordinator\": \"jdoe\"}. " +
+          "Values are validated and shaped using the project's create screen metadata " +
+          "(select options by value, users by username). " +
+          "Use get_field_meta first to discover field names, required fields, and allowed values."
+        ),
     },
     { readOnlyHint: false },
-    async ({ projectKey, summary, description, issueType, priority, labels, components, epicKey, epicName }) => {
+    async ({ projectKey, summary, description, issueType, priority, labels, components, epicKey, epicName, fixVersions, assignee, parentKey, customFields }) => {
       try {
         // Fail-fast: catch the two ways callers misuse epicName + issueType.
         // Without these, Jira returns a generic 400 that doesn't make the
@@ -661,6 +690,29 @@ export function createJiraServer(): McpServer {
         if (components) fields.components = components.map((name) => ({ name }));
         if (epicKey) fields[JIRA_EPIC_LINK_FIELD] = epicKey;
         if (epicName) fields[JIRA_EPIC_NAME_FIELD] = epicName;
+        if (fixVersions) fields.fixVersions = fixVersions.map((name) => ({ name }));
+        if (assignee) fields.assignee = { name: assignee };
+        if (parentKey) fields.parent = { key: parentKey };
+
+        if (customFields && Object.keys(customFields).length > 0) {
+          const meta = await jira.getCreateMeta(projectKey, issueType);
+          const resolved = resolveCustomFields(customFields, meta);
+          if (resolved.errors.length > 0) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: pi.scrubText(
+                    `Custom field errors — issue NOT created:\n- ${resolved.errors.join("\n- ")}\n\n` +
+                    `Use get_field_meta with projectKey='${projectKey}' and issueType='${issueType}' to see valid fields and values.`
+                  ),
+                },
+              ],
+              isError: true,
+            };
+          }
+          Object.assign(fields, resolved.fields);
+        }
 
         const result = await jira.createIssue(fields);
         const issueUrl = `${JIRA_BASE_URL}/browse/${result.key}`;
@@ -720,9 +772,29 @@ export function createJiraServer(): McpServer {
           "the target type is not Epic. " +
           "Maps to JIRA_EPIC_NAME_FIELD (customfield_10005 by default)."
         ),
+      fixVersions: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Replace Fix Versions with these version names (overwrites existing). " +
+          "Versions must already exist in the project."
+        ),
+      assignee: z
+        .string()
+        .optional()
+        .describe("New assignee username (use search_assignable_users to find it)"),
+      customFields: z
+        .record(z.unknown())
+        .optional()
+        .describe(
+          "Custom fields by display name or field ID, e.g. " +
+          "{\"Target environment\": \"PROD\"}. Values are validated and shaped " +
+          "using the issue's edit screen metadata. " +
+          "Use get_field_meta with the issueKey to discover editable fields and allowed values."
+        ),
     },
     { readOnlyHint: false },
-    async ({ issueKey, summary, description, priority, labels, issueType, epicKey, epicName }) => {
+    async ({ issueKey, summary, description, priority, labels, issueType, epicKey, epicName, fixVersions, assignee, customFields }) => {
       try {
         // Fail-fast: catch the two ways callers misuse epicName + issueType
         // on the conversion path. Mirrors create_issue's guards.
@@ -748,6 +820,28 @@ export function createJiraServer(): McpServer {
         if (issueType) fields.issuetype = { name: issueType };
         if (epicKey) fields[JIRA_EPIC_LINK_FIELD] = epicKey;
         if (epicName) fields[JIRA_EPIC_NAME_FIELD] = epicName;
+        if (fixVersions) fields.fixVersions = fixVersions.map((name) => ({ name }));
+        if (assignee) fields.assignee = { name: assignee };
+
+        if (customFields && Object.keys(customFields).length > 0) {
+          const meta = await jira.getEditMeta(issueKey);
+          const resolved = resolveCustomFields(customFields, meta);
+          if (resolved.errors.length > 0) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: pi.scrubText(
+                    `Custom field errors — issue NOT updated:\n- ${resolved.errors.join("\n- ")}\n\n` +
+                    `Use get_field_meta with issueKey='${issueKey}' to see editable fields and values.`
+                  ),
+                },
+              ],
+              isError: true,
+            };
+          }
+          Object.assign(fields, resolved.fields);
+        }
 
         if (Object.keys(fields).length === 0) {
           return {
@@ -775,6 +869,64 @@ export function createJiraServer(): McpServer {
               text: `Error updating issue ${issueKey}: ${safeErr(err)}`,
             },
           ],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "get_field_meta",
+    "Discover the fields available on an issue type's create screen (pass projectKey + issueType) " +
+      "or an existing issue's edit screen (pass issueKey). Returns field names, IDs, types, " +
+      "required flags, and allowed values.\n\n" +
+      "Use this before create_issue/update_issue with customFields — e.g. to find the required " +
+      "fields and valid option values for RFC/RFD/RFD-subtask tickets.",
+    {
+      projectKey: z
+        .string()
+        .optional()
+        .describe("Project key (e.g., RRS) — required together with issueType for create metadata"),
+      issueType: z
+        .string()
+        .optional()
+        .describe("Issue type name (e.g., RFC, RFD, RFD-subtask, Bug) for create metadata"),
+      issueKey: z
+        .string()
+        .optional()
+        .describe("Existing issue key (e.g., RRS-123) for edit metadata — overrides projectKey/issueType"),
+    },
+    { readOnlyHint: true },
+    async ({ projectKey, issueType, issueKey }) => {
+      try {
+        if (!issueKey && !(projectKey && issueType)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "Error: pass either issueKey (edit metadata) or both projectKey and issueType (create metadata).",
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const jira = await getClient();
+        const meta = issueKey
+          ? await jira.getEditMeta(issueKey)
+          : await jira.getCreateMeta(projectKey!, issueType!);
+        const heading = issueKey
+          ? `**Editable fields on ${issueKey}** (${meta.length}):`
+          : `**Fields for creating '${issueType}' in ${projectKey}** (${meta.length}):`;
+
+        return {
+          content: [
+            { type: "text", text: pi.scrubText(`${heading}\n\n${formatFieldMeta(meta)}`) },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Error getting field metadata: ${safeErr(err)}` }],
           isError: true,
         };
       }
