@@ -151,6 +151,7 @@ describe("Jenkins MCP server", () => {
       "list_jobs",
       "list_plugins",
       "list_promotions",
+      "set_keep_build_forever",
       "stop_build",
       "trigger_build",
       "trigger_promotion",
@@ -158,9 +159,10 @@ describe("Jenkins MCP server", () => {
       "update_job_config",
     ]);
     expect(tools.filter((tool) => tool.annotations?.readOnlyHint)).toHaveLength(19);
-    expect(tools.filter((tool) => !tool.annotations?.readOnlyHint)).toHaveLength(14);
+    expect(tools.filter((tool) => !tool.annotations?.readOnlyHint)).toHaveLength(15);
     expect(tools.find((tool) => tool.name === "trigger_build")?.annotations?.readOnlyHint).toBe(false);
     expect(tools.find((tool) => tool.name === "stop_build")?.annotations?.readOnlyHint).toBe(false);
+    expect(tools.find((tool) => tool.name === "set_keep_build_forever")?.annotations?.readOnlyHint).toBe(false);
   });
 
   it("accepts zero depth for direct jobs only", async () => {

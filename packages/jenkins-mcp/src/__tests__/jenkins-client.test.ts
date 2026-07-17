@@ -353,3 +353,70 @@ describe("JenkinsClient write operations", () => {
     await expect(client.triggerBuild("Job")).rejects.toThrow("redirected to authentication");
   });
 });
+
+describe("JenkinsClient setKeepBuildForever", () => {
+  it("toggles keepLog on when the build is not yet kept, and reports the new state", async () => {
+    const fetch = vi
+      .fn<AuthenticatedFetch>()
+      .mockResolvedValueOnce(jsonResponse({ number: 71, keepLog: false }))
+      .mockResolvedValueOnce(jsonResponse({ crumbRequestField: "Jenkins-Crumb", crumb: "crumb-value" }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(jsonResponse({ number: 71, keepLog: true }));
+    const client = new JenkinsClient(fetch, "https://jenkins.example.gov.bc.ca");
+
+    await expect(client.setKeepBuildForever("ARTS/arts-client-war", 71, true)).resolves.toEqual({
+      changed: true,
+      keepLog: true,
+    });
+
+    // The POST hits toggleLogKeep on the specific build, with the crumb.
+    const postUrl = fetch.mock.calls[2][0];
+    const postInit = fetch.mock.calls[2][1] as RequestInit;
+    expect(postUrl).toBe(
+      "https://jenkins.example.gov.bc.ca/job/ARTS/job/arts-client-war/71/toggleLogKeep"
+    );
+    expect(postInit.method).toBe("POST");
+    expect(new Headers(postInit.headers).get("Jenkins-Crumb")).toBe("crumb-value");
+  });
+
+  it("is idempotent: does not POST when the build is already kept", async () => {
+    const fetch = vi
+      .fn<AuthenticatedFetch>()
+      .mockResolvedValueOnce(jsonResponse({ number: 71, keepLog: true }));
+    const client = new JenkinsClient(fetch, "https://jenkins.example.gov.bc.ca");
+
+    await expect(client.setKeepBuildForever("ARTS/arts-client-war", 71, true)).resolves.toEqual({
+      changed: false,
+      keepLog: true,
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("toggles keepLog off when clearing keep-forever", async () => {
+    const fetch = vi
+      .fn<AuthenticatedFetch>()
+      .mockResolvedValueOnce(jsonResponse({ number: 71, keepLog: true }))
+      .mockResolvedValueOnce(jsonResponse({ crumbRequestField: "Jenkins-Crumb", crumb: "c" }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(jsonResponse({ number: 71, keepLog: false }));
+    const client = new JenkinsClient(fetch, "https://jenkins.example.gov.bc.ca");
+
+    await expect(client.setKeepBuildForever("ARTS/arts-client-war", 71, false)).resolves.toEqual({
+      changed: true,
+      keepLog: false,
+    });
+  });
+
+  it("treats a missing keepLog field as not-kept and no-ops when clearing", async () => {
+    const fetch = vi
+      .fn<AuthenticatedFetch>()
+      .mockResolvedValueOnce(jsonResponse({ number: 71 }));
+    const client = new JenkinsClient(fetch, "https://jenkins.example.gov.bc.ca");
+
+    await expect(client.setKeepBuildForever("ARTS/arts-client-war", 71, false)).resolves.toEqual({
+      changed: false,
+      keepLog: false,
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
