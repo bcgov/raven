@@ -100,6 +100,10 @@ function shapeValue(
   value: unknown,
   field: JiraFieldMeta
 ): { value?: unknown; error?: string } {
+  if (field.schema.type === "option-with-child") {
+    return shapeCascading(value, field);
+  }
+
   // Caller already provided a REST-shaped object (e.g. {id}, {value}) — trust it.
   if (typeof value === "object" && value !== null && !Array.isArray(value)) {
     return { value };
@@ -142,6 +146,57 @@ function shapeScalar(
       // string, number, date, datetime, any: Jira accepts the raw value.
       return { value };
   }
+}
+
+/**
+ * Shape a cascading select (Jira schema type "option-with-child").
+ * Accepts a plain parent string, or {parent, child} — both canonicalized
+ * against allowedValues (children against the matched parent's children).
+ * Pre-shaped REST objects ({value}/{id}) pass through untouched.
+ */
+function shapeCascading(
+  value: unknown,
+  field: JiraFieldMeta
+): { value?: unknown; error?: string } {
+  let parentRaw: unknown = value;
+  let childRaw: unknown;
+
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const obj = value as Record<string, unknown>;
+    if (!("parent" in obj)) return { value };
+    parentRaw = obj["parent"];
+    childRaw = obj["child"];
+  }
+
+  const raw = String(parentRaw);
+  const allowed = field.allowedValues ?? [];
+  const entry = allowed.find(
+    (e) => typeof e["value"] === "string" && (e["value"] as string).toLowerCase() === raw.toLowerCase()
+  );
+  if (allowed.length > 0 && !entry) {
+    const labels = allowed.map((e) => e["value"]).filter((l) => typeof l === "string").join(", ");
+    return {
+      error: `Invalid value "${raw}" for field "${field.name}". Allowed values: ${labels}`,
+    };
+  }
+  const parentLabel = entry ? (entry["value"] as string) : raw;
+  if (childRaw === undefined || childRaw === null) {
+    return { value: { value: parentLabel } };
+  }
+
+  const childStr = String(childRaw);
+  const children = (entry?.["children"] as Array<Record<string, unknown>> | undefined) ?? [];
+  const childEntry = children.find(
+    (c) => typeof c["value"] === "string" && (c["value"] as string).toLowerCase() === childStr.toLowerCase()
+  );
+  if (children.length > 0 && !childEntry) {
+    const labels = children.map((c) => c["value"]).filter((l) => typeof l === "string").join(", ");
+    return {
+      error: `Invalid child "${childStr}" for field "${field.name}" under "${parentLabel}". Allowed children: ${labels}`,
+    };
+  }
+  const childLabel = childEntry ? (childEntry["value"] as string) : childStr;
+  return { value: { value: parentLabel, child: { value: childLabel } } };
 }
 
 /**
