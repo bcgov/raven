@@ -403,6 +403,30 @@ export class JenkinsClient {
     await this.post(`${jobPathToUrlPath(jobPath)}/${buildNumber}/stop`);
   }
 
+  /**
+   * Set (or clear) "Keep this build forever" on a build, which exempts it from
+   * the job's log-rotation / discard policy.
+   *
+   * Jenkins only exposes a *toggle* (POST toggleLogKeep), so this reads the
+   * current keepLog first and posts only when a change is needed, making the
+   * operation idempotent. Returns the authoritative state read back afterward.
+   * Requires the Jenkins account to have Run/Delete on the job.
+   */
+  async setKeepBuildForever(
+    jobPath: string,
+    buildNumber: number,
+    keep: boolean
+  ): Promise<{ changed: boolean; keepLog: boolean }> {
+    const before = await this.getBuild(jobPath, buildNumber);
+    const current = before.keepLog ?? false;
+    if (current === keep) {
+      return { changed: false, keepLog: current };
+    }
+    await this.post(`${jobPathToUrlPath(jobPath)}/${buildNumber}/toggleLogKeep`);
+    const after = await this.getBuild(jobPath, buildNumber);
+    return { changed: true, keepLog: after.keepLog ?? keep };
+  }
+
   private async getResponse(path: string): Promise<Response> {
     const response = await this.fetch(this.url(path));
     if (!response.ok) {

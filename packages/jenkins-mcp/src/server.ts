@@ -414,6 +414,34 @@ export function createJenkinsServer(clientOverride?: JenkinsClient): McpServer {
     }
   );
 
+  server.tool(
+    "set_keep_build_forever",
+    "Set or clear 'Keep this build forever' on a Jenkins build. When kept, the build (its record and archived artifacts) is exempt from the job's discard/log-rotation policy — use this to preserve a build before a migration so it stays available for rollback. " +
+      "Idempotent: reads the current state and only changes it when needed. Requires the Jenkins account to have Run/Delete on the job. " +
+      "Confirm with the user before invoking because it changes retention of a live build.",
+    {
+      jobPath: z.string().describe("Slash-separated Jenkins job path (e.g. 'ARTS/arts-client-war')"),
+      buildNumber: z.number().int().min(1).describe("Build number to keep or release"),
+      keep: z
+        .boolean()
+        .default(true)
+        .describe("true = keep this build forever (default); false = clear keep-forever and allow discarding"),
+    },
+    { readOnlyHint: false },
+    async ({ jobPath, buildNumber, keep }) => {
+      try {
+        const result = await (await getClient()).setKeepBuildForever(jobPath, buildNumber, keep);
+        const state = result.keepLog ? "kept forever" : "not kept (eligible for discard)";
+        const action = result.changed
+          ? `${jobPath} #${buildNumber} is now ${state}.`
+          : `${jobPath} #${buildNumber} was already ${state}; no change made.`;
+        return { content: [{ type: "text", text: action }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: `Error setting keep-forever on Jenkins build: ${safeErr(err)}` }], isError: true };
+      }
+    }
+  );
+
   registerExtendedJenkinsTools(server, getClient);
 
   return server;

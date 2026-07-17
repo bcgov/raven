@@ -16,10 +16,10 @@
 | | Count |
 |---|---|
 | MCP servers | **15** |
-| Tools registered locally (in-process) | **184** |
-| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 184 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
-| **Tools advertised to the AI when everything is connected** | **~190** |
-| Mutating / write tools | **~61** (60 local + ~1 via Jarvis) |
+| Tools registered locally (in-process) | **185** |
+| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 185 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
+| **Tools advertised to the AI when everything is connected** | **~191** |
+| Mutating / write tools | **~62** (61 local + ~1 via Jarvis) |
 | Read-only tools | **~129** |
 | Non-server packages | `auth`, `pipeline`, `server-ui`, `raven-cli` |
 
@@ -40,12 +40,12 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 | IMIS | `imis` | 6 | 0 | 6 |
 | Azure DevOps | `ado` | 10 | 4 | 14 |
 | Sonar | `sonar` | 5 | 1 | 6 |
-| Jenkins | `jenkins` | 19 | 14 | 33 |
+| Jenkins | `jenkins` | 19 | 15 | 34 |
 | RFC Buddy | `rfcbuddy` | 0 | 1 | 1 |
 | Artifactory | `artifactory` | 12 | 7 | 19 |
-| **Subtotal (local)** | | **124** | **60** | **184** |
+| **Subtotal (local)** | | **124** | **61** | **185** |
 | Jarvis (remote proxy) | `jarvis` | ~5 | ~1 | ~6 |
-| **Advertised total** | | **~129** | **~61** | **~190** |
+| **Advertised total** | | **~129** | **~62** | **~191** |
 
 ## Servers and tools
 
@@ -99,9 +99,9 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 
 ### CI/CD
 
-#### jenkins-mcp — 33 tools (19 read / 14 write)
+#### jenkins-mcp — 34 tools (19 read / 15 write)
 - **Read:** `list_jobs`, `get_job`, `list_builds`, `get_build`, `get_build_console`, `get_queue`, `list_agents`, `list_plugins`, `get_controller_info`, `get_job_parameters`, `get_queue_item`, `get_progressive_console`, `list_build_artifacts`, `get_build_test_report`, `get_build_changes`, `list_promotions`, `get_promotion`, `list_credentials`, `get_credential_metadata`
-- **Write:** `trigger_build`, `stop_build`, `get_job_config`, `create_job`, `copy_job`, `update_job_config`, `enable_job`, `disable_job`, `cancel_queue_item`, `download_build_artifact`, `trigger_promotion`, `create_credential`, `update_credential`, `delete_credential`
+- **Write:** `trigger_build`, `stop_build`, `set_keep_build_forever`, `get_job_config`, `create_job`, `copy_job`, `update_job_config`, `enable_job`, `disable_job`, `cancel_queue_item`, `download_build_artifact`, `trigger_promotion`, `create_credential`, `update_credential`, `delete_credential`
 
 ### RFC tracking & schedules
 
