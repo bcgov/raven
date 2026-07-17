@@ -1,9 +1,9 @@
 ---
 name: rfd
-description: Use when creating or planning release paperwork in NRM Jira — RFCs, RFDs, RFD-subtasks, deployment scheduling/approvals, or any deployment that needs Technical Change and Release Management (TCRM). Also for questions about required RFC/RFD fields or the deployment process.
+description: Use when creating or planning release paperwork in BC Gov Jira — RFCs, RFDs, RFD-subtasks, deployment scheduling/approvals, or any deployment that needs Technical Change and Release Management (TCRM). Also for questions about required RFC/RFD fields or the deployment process.
 ---
 
-# Creating RFCs and RFDs (NRM Release Paperwork)
+# Creating RFCs and RFDs (Release Paperwork)
 
 ## Overview
 
