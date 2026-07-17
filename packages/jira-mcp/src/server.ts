@@ -702,9 +702,10 @@ export function createJiraServer(): McpServer {
               content: [
                 {
                   type: "text",
-                  text:
+                  text: pi.scrubText(
                     `Custom field errors — issue NOT created:\n- ${resolved.errors.join("\n- ")}\n\n` +
-                    `Use get_field_meta with projectKey='${projectKey}' and issueType='${issueType}' to see valid fields and values.`,
+                    `Use get_field_meta with projectKey='${projectKey}' and issueType='${issueType}' to see valid fields and values.`
+                  ),
                 },
               ],
               isError: true,
@@ -830,9 +831,10 @@ export function createJiraServer(): McpServer {
               content: [
                 {
                   type: "text",
-                  text:
+                  text: pi.scrubText(
                     `Custom field errors — issue NOT updated:\n- ${resolved.errors.join("\n- ")}\n\n` +
-                    `Use get_field_meta with issueKey='${issueKey}' to see editable fields and values.`,
+                    `Use get_field_meta with issueKey='${issueKey}' to see editable fields and values.`
+                  ),
                 },
               ],
               isError: true,
@@ -918,7 +920,9 @@ export function createJiraServer(): McpServer {
           : `**Fields for creating '${issueType}' in ${projectKey}** (${meta.length}):`;
 
         return {
-          content: [{ type: "text", text: `${heading}\n\n${formatFieldMeta(meta)}` }],
+          content: [
+            { type: "text", text: pi.scrubText(`${heading}\n\n${formatFieldMeta(meta)}`) },
+          ],
         };
       } catch (err) {
         return {
