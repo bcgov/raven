@@ -281,7 +281,7 @@ export class JiraClient {
    *                      linkTypeName="Blocks", outwardIssueKey="A", inwardIssueKey="B"
    *                      means "A blocks B".
    *
-   * NOTE on the swap below — NRM-specific: BC Gov NRM Jira's
+   * NOTE on the swap below — instance-specific: this BC Gov Jira's
    * `POST /rest/api/2/issueLink` treats the JSON `outwardIssue` field as the
    * *target* of the link (the issue that ends up showing the inward description,
    * e.g. "is blocked by") and the JSON `inwardIssue` field as the *source* (the
@@ -291,8 +291,8 @@ export class JiraClient {
    * direction before this fix landed. We deliberately swap the assignments so
    * callers can keep thinking in the natural direction documented above.
    *
-   * RAVEN is BC Gov NRM-only by design (see README); if this client is ever
-   * pointed at a non-NRM Jira instance with the standard `outwardIssue`/
+   * RAVEN targets a single BC Gov Jira instance by design (see README); if
+   * this client is ever pointed at a different Jira with the standard `outwardIssue`/
    * `inwardIssue` semantics, this swap will need to be removed (or gated
    * behind config).
    */
