@@ -291,8 +291,9 @@ export class JiraClient {
    * direction before this fix landed. We deliberately swap the assignments so
    * callers can keep thinking in the natural direction documented above.
    *
-   * RAVEN targets a single BC Gov Jira instance by design (see README); if
-   * this client is ever pointed at a different Jira with the standard `outwardIssue`/
+   * RAVEN targets a single BC Gov Jira instance by design (the one configured
+   * via ATLASSIAN_BASE_URL); if this client is ever pointed at a different Jira
+   * with the standard `outwardIssue`/
    * `inwardIssue` semantics, this swap will need to be removed (or gated
    * behind config).
    */
