@@ -15,6 +15,7 @@ import type {
   JiraVersion,
   JiraWatchersResponse,
 } from "./types.js";
+import type { JiraFieldMeta } from "./field-meta.js";
 
 const DEFAULT_BASE_URL =
   process.env["ATLASSIAN_BASE_URL"]
@@ -813,4 +814,92 @@ export class JiraClient {
       );
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Field metadata (createmeta / editmeta)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Get normalized field metadata for creating an issue of the given type.
+   * Uses the paged createmeta endpoints (Jira 8.4+; the classic
+   * /issue/createmeta endpoint was removed in Jira 9).
+   */
+  async getCreateMeta(
+    projectKey: string,
+    issueTypeName: string
+  ): Promise<JiraFieldMeta[]> {
+    const typesResp = await this.fetch(
+      `${this.baseUrl}/rest/api/2/issue/createmeta/${encodeURIComponent(projectKey)}/issuetypes?maxResults=100`
+    );
+    if (!typesResp.ok) {
+      throw new Error(
+        `Failed to get create metadata (${typesResp.status}): ${await typesResp.text()}`
+      );
+    }
+    const typesPage = (await typesResp.json()) as {
+      values: Array<{ id: string; name: string }>;
+    };
+
+    const lower = issueTypeName.toLowerCase();
+    const issueType = typesPage.values.find((t) => t.name.toLowerCase() === lower);
+    if (!issueType) {
+      const available = typesPage.values.map((t) => t.name).join(", ");
+      throw new Error(
+        `Issue type "${issueTypeName}" not found in project ${projectKey}. Available types: ${available}`
+      );
+    }
+
+    const fieldsResp = await this.fetch(
+      `${this.baseUrl}/rest/api/2/issue/createmeta/${encodeURIComponent(projectKey)}/issuetypes/${issueType.id}?maxResults=200`
+    );
+    if (!fieldsResp.ok) {
+      throw new Error(
+        `Failed to get create metadata (${fieldsResp.status}): ${await fieldsResp.text()}`
+      );
+    }
+    const fieldsPage = (await fieldsResp.json()) as {
+      values: Array<RawFieldMeta & { fieldId: string }>;
+    };
+    return fieldsPage.values.map((f) => normalizeFieldMeta(f.fieldId, f));
+  }
+
+  /**
+   * Get normalized field metadata for editing an existing issue.
+   */
+  async getEditMeta(issueKey: string): Promise<JiraFieldMeta[]> {
+    const resp = await this.fetch(
+      `${this.baseUrl}/rest/api/2/issue/${encodeURIComponent(issueKey)}/editmeta`
+    );
+    if (!resp.ok) {
+      throw new Error(
+        `Failed to get edit metadata (${resp.status}): ${await resp.text()}`
+      );
+    }
+    const body = (await resp.json()) as { fields: Record<string, RawFieldMeta> };
+    return Object.entries(body.fields).map(([fieldId, f]) =>
+      normalizeFieldMeta(fieldId, f)
+    );
+  }
+}
+
+/** Raw field metadata entry as returned by createmeta/editmeta. */
+interface RawFieldMeta {
+  name: string;
+  required: boolean;
+  schema?: { type: string; items?: string; custom?: string };
+  allowedValues?: Array<Record<string, unknown>>;
+}
+
+function normalizeFieldMeta(fieldId: string, f: RawFieldMeta): JiraFieldMeta {
+  return {
+    fieldId,
+    name: f.name,
+    required: f.required,
+    schema: {
+      type: f.schema?.type ?? "string",
+      items: f.schema?.items,
+      custom: f.schema?.custom,
+    },
+    allowedValues: f.allowedValues,
+  };
 }
