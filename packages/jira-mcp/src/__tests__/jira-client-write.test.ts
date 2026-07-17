@@ -247,7 +247,7 @@ describe("JiraClient write methods", () => {
 
   describe("linkIssues", () => {
     // NOTE: The assertions below intentionally look "swapped" relative to the
-    // function arguments. NRM Jira's POST /rest/api/2/issueLink treats the JSON
+    // function arguments. The BC Gov Jira instance's POST /rest/api/2/issueLink treats the JSON
     // `outwardIssue` field as the *target* of the link (the side that ends up
     // displaying the inward description, e.g. "is blocked by") and JSON
     // `inwardIssue` as the *source*. linkIssues compensates by reversing the
@@ -258,7 +258,7 @@ describe("JiraClient write methods", () => {
     //   - body.outwardIssue.key === "B" (the target — the side showing "is blocked by")
     //   - body.inwardIssue.key  === "A" (the source — the side showing "blocks")
 
-    it("sends POST to /issueLink, swapping outward/inward to compensate for NRM Jira semantics", async () => {
+    it("sends POST to /issueLink, swapping outward/inward to compensate for the instance's issueLink semantics", async () => {
       const mockFetch = createMockFetch({ ok: true, status: 201 });
       const client = new JiraClient(mockFetch, BASE_URL);
 

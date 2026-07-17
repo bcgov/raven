@@ -182,7 +182,7 @@ Discovery tools search a local CSV export of the IMIS database (no network neede
 
 ### Assets / CMDB (14 tools — READ-ONLY)
 
-Query the Jira Assets (Insight) CMDB for NRM applications, environments, technologies, and people. Uses AQL (Asset Query Language) for `search_assets`.
+Query the Jira Assets (Insight) CMDB for ministry applications, environments, technologies, and people. Uses AQL (Asset Query Language) for `search_assets`.
 
 **Application-centric helpers:**
 - `search_assets` — Search Jira Assets via AQL. Example: `objectType = "Applications" AND Name LIKE "RRS"`.
@@ -380,10 +380,10 @@ On-prem Azure DevOps Server — work items (WIQL), repos, and pipelines. Require
 ### Jarvis (6 tools)
 
 - `get_application` — Get complete details for a single application by its acronym (e.g. `acronym="ACAT"`). Returns ownership, technology, hosting, status, URLs, and environments.
-- `list_ministries` — List all distinct ministries managing NRM applications, including their total application counts.
+- `list_ministries` — List all distinct ministries managing applications in the inventory, including their total application counts.
 - `update_application` — Create or merge-update an application's fields (such as status, technology tags, contacts) using a payload and source name.
 - `search_applications` — Search the application inventory. Filters and parameters include: `query` (text search across acronym, name, aliases), `ministry` (exact match), `status` (active, dormant, retired, unknown, maintenance), `technology` (partial match tag), `isCritical`, and `limit` (max results count).
-- `list_technologies` — List all distinct technology tags (databases, frameworks, runtimes, servers, etc.) with usage counts across the full NRM inventory. Accepts optional prefix filter `query`.
+- `list_technologies` — List all distinct technology tags (databases, frameworks, runtimes, servers, etc.) with usage counts across the full inventory. Accepts optional prefix filter `query`.
 - `get_application_provenance` — Retrieve the field-level audit trail / provenance history showing when fields were modified, what data sources modified them, and their previous vs. new values.
 
 ### SonarQube (6 tools)

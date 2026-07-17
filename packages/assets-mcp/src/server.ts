@@ -70,7 +70,7 @@ export function createAssetsServer(): McpServer {
       version: "0.1.0",
     },
     {
-      instructions: `You have access to tools for querying Jira Assets (Insight) — the CMDB for NRM applications. Use AQL (Asset Query Language) syntax for search_assets queries. All access is READ-ONLY. Common object types: Applications, Application Environments, Technologies, People, ORG (Ministry/Division/Branch/Section), Contracts. If you encounter authentication errors, inform the user they need to set ATLASSIAN_BASE_URL, ATLASSIAN_EMAIL, and ATLASSIAN_PASSWORD environment variables for Basic Auth, or re-authenticate via SMSESSION.${WORKAROUND_NOTE}`,
+      instructions: `You have access to tools for querying Jira Assets (Insight) — the CMDB for BC Gov ministry applications. Use AQL (Asset Query Language) syntax for search_assets queries. All access is READ-ONLY. Common object types: Applications, Application Environments, Technologies, People, ORG (Ministry/Division/Branch/Section), Contracts. If you encounter authentication errors, inform the user they need to set ATLASSIAN_BASE_URL, ATLASSIAN_EMAIL, and ATLASSIAN_PASSWORD environment variables for Basic Auth, or re-authenticate via SMSESSION.${WORKAROUND_NOTE}`,
     }
   );
 
@@ -943,7 +943,7 @@ If you just want to look up an application by name, use get_application instead.
 
   server.tool(
     "list_schemas",
-    `List all asset object schemas in the CMDB. Each schema groups a set of object types (e.g., the NRM Applications schema, the Server inventory schema). Use the schema ID with search_assets or list_object_types to scope queries.`,
+    `List all asset object schemas in the CMDB. Each schema groups a set of object types (e.g., the Applications schema, the Server inventory schema). Use the schema ID with search_assets or list_object_types to scope queries.`,
     {},
     { readOnlyHint: true },
     async () => {
@@ -979,7 +979,7 @@ If you just want to look up an application by name, use get_application instead.
 
   server.tool(
     "list_object_types",
-    `List object types within a schema — e.g., for the NRM Applications schema, this returns "Applications", "Application Environments", "Technologies", "People", etc. Use list_schemas first to find the schema ID.`,
+    `List object types within a schema — e.g., for the Applications schema, this returns "Applications", "Application Environments", "Technologies", "People", etc. Use list_schemas first to find the schema ID.`,
     {
       schemaId: z.number().describe("Schema ID (from list_schemas)"),
     },

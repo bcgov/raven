@@ -5,7 +5,7 @@ import {
   type JiraFieldMeta,
 } from "../field-meta.js";
 
-/** Field metadata fixtures mirroring NRM Jira RFC/RFD field shapes. */
+/** Field metadata fixtures mirroring BC Gov Jira RFC/RFD field shapes. */
 const META: JiraFieldMeta[] = [
   {
     fieldId: "customfield_11702",

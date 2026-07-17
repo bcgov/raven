@@ -628,7 +628,7 @@ export function createJiraServer(): McpServer {
         .optional()
         .describe(
           "Epic Name — the short label shown on board cards. " +
-          "Required by NRM Jira when issueType='Epic'; rejected for other issue types. " +
+          "Required by this Jira instance when issueType='Epic'; rejected for other issue types. " +
           "Maps to JIRA_EPIC_NAME_FIELD (customfield_10005 by default)."
         ),
       fixVersions: z
@@ -668,7 +668,7 @@ export function createJiraServer(): McpServer {
         // mistake obvious to the LLM.
         if (issueType === "Epic" && !epicName) {
           return {
-            content: [{ type: "text", text: "Error: issueType='Epic' requires epicName (Epic Name is mandatory in NRM Jira)." }],
+            content: [{ type: "text", text: "Error: issueType='Epic' requires epicName (Epic Name is mandatory in this Jira instance)." }],
             isError: true,
           };
         }
@@ -755,7 +755,7 @@ export function createJiraServer(): McpServer {
         .describe(
           "Change the issue type by name (e.g., 'Epic', 'Story', 'Task', 'Bug'). " +
           "The target type must be configured in the project's issue type scheme. " +
-          "When converting Task→Epic in NRM Jira, also pass `epicName` (Epic Name is required by the project)."
+          "When converting Task→Epic in this Jira instance, also pass `epicName` (Epic Name is required by the project)."
         ),
       epicKey: z
         .string()
@@ -769,7 +769,7 @@ export function createJiraServer(): McpServer {
         .optional()
         .describe(
           "Epic Name — short label shown on board cards. " +
-          "Required by NRM Jira when converting an issue to Epic; rejected when " +
+          "Required by this Jira instance when converting an issue to Epic; rejected when " +
           "the target type is not Epic. " +
           "Maps to JIRA_EPIC_NAME_FIELD (customfield_10005 by default)."
         ),
@@ -801,7 +801,7 @@ export function createJiraServer(): McpServer {
         // on the conversion path. Mirrors create_issue's guards.
         if (issueType === "Epic" && !epicName) {
           return {
-            content: [{ type: "text", text: "Error: converting to issueType='Epic' requires epicName (Epic Name is mandatory in NRM Jira)." }],
+            content: [{ type: "text", text: "Error: converting to issueType='Epic' requires epicName (Epic Name is mandatory in this Jira instance)." }],
             isError: true,
           };
         }
