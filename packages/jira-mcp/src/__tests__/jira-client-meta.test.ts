@@ -54,10 +54,10 @@ describe("getCreateMeta", () => {
     const meta = await client.getCreateMeta("ARTS", "rfd");
 
     expect(mockFetch.mock.calls[0][0]).toBe(
-      `${BASE_URL}/rest/api/2/issue/createmeta/ARTS/issuetypes?maxResults=100`
+      `${BASE_URL}/rest/api/2/issue/createmeta/ARTS/issuetypes?maxResults=100&startAt=0`
     );
     expect(mockFetch.mock.calls[1][0]).toBe(
-      `${BASE_URL}/rest/api/2/issue/createmeta/ARTS/issuetypes/10201?maxResults=200`
+      `${BASE_URL}/rest/api/2/issue/createmeta/ARTS/issuetypes/10201?maxResults=200&startAt=0`
     );
     expect(meta).toEqual([
       {
@@ -75,6 +75,60 @@ describe("getCreateMeta", () => {
         allowedValues: [{ id: "1", value: "PROD" }],
       },
     ]);
+  });
+
+  it("follows isLast pagination across issue-type pages", async () => {
+    const mockFetch = createSequenceFetch([
+      {
+        ok: true,
+        status: 200,
+        body: { values: [{ id: "10200", name: "RFC" }], isLast: false },
+      },
+      {
+        ok: true,
+        status: 200,
+        body: { values: [{ id: "10201", name: "RFD" }], isLast: true },
+      },
+      { ok: true, status: 200, body: { values: fieldsPage.values, isLast: true } },
+    ]);
+    const client = new JiraClient(mockFetch, BASE_URL);
+
+    const meta = await client.getCreateMeta("ARTS", "RFD");
+
+    expect(mockFetch.mock.calls[0][0]).toBe(
+      `${BASE_URL}/rest/api/2/issue/createmeta/ARTS/issuetypes?maxResults=100&startAt=0`
+    );
+    expect(mockFetch.mock.calls[1][0]).toBe(
+      `${BASE_URL}/rest/api/2/issue/createmeta/ARTS/issuetypes?maxResults=100&startAt=1`
+    );
+    expect(mockFetch.mock.calls[2][0]).toBe(
+      `${BASE_URL}/rest/api/2/issue/createmeta/ARTS/issuetypes/10201?maxResults=200&startAt=0`
+    );
+    expect(meta).toHaveLength(2);
+  });
+
+  it("follows isLast pagination across field pages and merges them", async () => {
+    const mockFetch = createSequenceFetch([
+      { ok: true, status: 200, body: { values: issueTypesPage.values, isLast: true } },
+      {
+        ok: true,
+        status: 200,
+        body: { values: [fieldsPage.values[0]], isLast: false },
+      },
+      {
+        ok: true,
+        status: 200,
+        body: { values: [fieldsPage.values[1]], isLast: true },
+      },
+    ]);
+    const client = new JiraClient(mockFetch, BASE_URL);
+
+    const meta = await client.getCreateMeta("ARTS", "RFD");
+
+    expect(mockFetch.mock.calls[2][0]).toBe(
+      `${BASE_URL}/rest/api/2/issue/createmeta/ARTS/issuetypes/10201?maxResults=200&startAt=1`
+    );
+    expect(meta.map((f) => f.fieldId)).toEqual(["summary", "customfield_11702"]);
   });
 
   it("throws with available type names when the issue type is missing", async () => {

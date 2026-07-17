@@ -142,6 +142,54 @@ describe("resolveCustomFields", () => {
     expect(result.fields).toEqual({ fixVersions: [{ name: "1.2.19" }] });
   });
 
+  it("shapes name-keyed types as {name} when allowedValues is absent", () => {
+    const meta: JiraFieldMeta[] = [
+      {
+        fieldId: "fixVersions",
+        name: "Fix Version/s",
+        required: false,
+        schema: { type: "array", items: "version" },
+        // Jira can omit allowedValues (e.g. large lists, some edit screens).
+      },
+      {
+        fieldId: "priority",
+        name: "Priority",
+        required: false,
+        schema: { type: "priority" },
+      },
+      {
+        fieldId: "components",
+        name: "Component/s",
+        required: false,
+        schema: { type: "array", items: "component" },
+      },
+    ];
+    const result = resolveCustomFields(
+      { "Fix Version/s": "1.2.19", Priority: "High", "Component/s": "Oracle" },
+      meta
+    );
+    expect(result.errors).toEqual([]);
+    expect(result.fields).toEqual({
+      fixVersions: [{ name: "1.2.19" }],
+      priority: { name: "High" },
+      components: [{ name: "Oracle" }],
+    });
+  });
+
+  it("shapes option types as {value} when allowedValues is absent", () => {
+    const meta: JiraFieldMeta[] = [
+      {
+        fieldId: "customfield_500",
+        name: "Some Select",
+        required: false,
+        schema: { type: "option" },
+      },
+    ];
+    const result = resolveCustomFields({ "Some Select": "Yes" }, meta);
+    expect(result.errors).toEqual([]);
+    expect(result.fields).toEqual({ customfield_500: { value: "Yes" } });
+  });
+
   it("passes already-shaped object values through untouched", () => {
     const result = resolveCustomFields(
       { "Target environment": { id: "3" } },

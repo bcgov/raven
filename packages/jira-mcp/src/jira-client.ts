@@ -828,39 +828,51 @@ export class JiraClient {
     projectKey: string,
     issueTypeName: string
   ): Promise<JiraFieldMeta[]> {
-    const typesResp = await this.fetch(
-      `${this.baseUrl}/rest/api/2/issue/createmeta/${encodeURIComponent(projectKey)}/issuetypes?maxResults=100`
+    const issueTypes = await this.fetchAllCreateMetaPages<{ id: string; name: string }>(
+      `${this.baseUrl}/rest/api/2/issue/createmeta/${encodeURIComponent(projectKey)}/issuetypes`,
+      100
     );
-    if (!typesResp.ok) {
-      throw new Error(
-        `Failed to get create metadata (${typesResp.status}): ${await typesResp.text()}`
-      );
-    }
-    const typesPage = (await typesResp.json()) as {
-      values: Array<{ id: string; name: string }>;
-    };
 
     const lower = issueTypeName.toLowerCase();
-    const issueType = typesPage.values.find((t) => t.name.toLowerCase() === lower);
+    const issueType = issueTypes.find((t) => t.name.toLowerCase() === lower);
     if (!issueType) {
-      const available = typesPage.values.map((t) => t.name).join(", ");
+      const available = issueTypes.map((t) => t.name).join(", ");
       throw new Error(
         `Issue type "${issueTypeName}" not found in project ${projectKey}. Available types: ${available}`
       );
     }
 
-    const fieldsResp = await this.fetch(
-      `${this.baseUrl}/rest/api/2/issue/createmeta/${encodeURIComponent(projectKey)}/issuetypes/${issueType.id}?maxResults=200`
+    const rawFields = await this.fetchAllCreateMetaPages<RawFieldMeta & { fieldId: string }>(
+      `${this.baseUrl}/rest/api/2/issue/createmeta/${encodeURIComponent(projectKey)}/issuetypes/${issueType.id}`,
+      200
     );
-    if (!fieldsResp.ok) {
-      throw new Error(
-        `Failed to get create metadata (${fieldsResp.status}): ${await fieldsResp.text()}`
-      );
+    return rawFields.map((f) => normalizeFieldMeta(f.fieldId, f));
+  }
+
+  /**
+   * Collect every page of a paged createmeta endpoint. Follows isLast so
+   * projects with many issue types / fields aren't silently truncated.
+   */
+  private async fetchAllCreateMetaPages<T>(
+    url: string,
+    maxResults: number
+  ): Promise<T[]> {
+    const all: T[] = [];
+    let startAt = 0;
+    for (;;) {
+      const resp = await this.fetch(`${url}?maxResults=${maxResults}&startAt=${startAt}`);
+      if (!resp.ok) {
+        throw new Error(
+          `Failed to get create metadata (${resp.status}): ${await resp.text()}`
+        );
+      }
+      const page = (await resp.json()) as { values: T[]; isLast?: boolean };
+      all.push(...page.values);
+      // Trust isLast; treat a missing flag or an empty page as final so a
+      // misbehaving server can't loop us forever.
+      if (page.isLast !== false || page.values.length === 0) return all;
+      startAt += page.values.length;
     }
-    const fieldsPage = (await fieldsResp.json()) as {
-      values: Array<RawFieldMeta & { fieldId: string }>;
-    };
-    return fieldsPage.values.map((f) => normalizeFieldMeta(f.fieldId, f));
   }
 
   /**

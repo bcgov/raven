@@ -130,10 +130,11 @@ function shapeScalar(
 
   switch (type) {
     case "option":
+      return shapeAgainstAllowedValues(value, field, "value");
     case "version":
     case "component":
     case "priority":
-      return shapeAgainstAllowedValues(value, field);
+      return shapeAgainstAllowedValues(value, field, "name");
     case "user":
     case "group":
       return { value: { name: String(value) } };
@@ -145,18 +146,20 @@ function shapeScalar(
 
 /**
  * Match a plain value against allowedValues case-insensitively and emit the
- * canonical {value}/{name} shape. Fields without allowedValues (or option
- * fields where Jira omits them) fall back to {value}.
+ * canonical {value}/{name} shape. When Jira omits allowedValues (common on
+ * some edit screens / large lists) fall back to the shape the schema type
+ * expects: {value} for options, {name} for versions/components/priorities.
  */
 function shapeAgainstAllowedValues(
   value: unknown,
-  field: JiraFieldMeta
+  field: JiraFieldMeta,
+  fallbackKey: "value" | "name"
 ): { value?: unknown; error?: string } {
   const raw = String(value);
   const allowed = field.allowedValues;
 
   if (!allowed || allowed.length === 0) {
-    return { value: { value: raw } };
+    return { value: { [fallbackKey]: raw } };
   }
 
   const lower = raw.toLowerCase();
