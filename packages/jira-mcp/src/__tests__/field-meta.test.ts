@@ -199,6 +199,94 @@ describe("resolveCustomFields", () => {
     expect(result.fields).toEqual({ customfield_11702: { id: "3" } });
   });
 
+  describe("cascading selects (option-with-child)", () => {
+    const cascadingMeta: JiraFieldMeta[] = [
+      {
+        fieldId: "customfield_12203",
+        name: "Infrastructure Considerations",
+        required: true,
+        schema: { type: "option-with-child", custom: "cascadingselect" },
+        allowedValues: [
+          { id: "1", value: "No" },
+          {
+            id: "2",
+            value: "Yes",
+            children: [
+              { id: "21", value: "Network" },
+              { id: "22", value: "Storage" },
+            ],
+          },
+        ],
+      },
+    ];
+
+    it("shapes a plain string as the parent {value}, canonicalized", () => {
+      const result = resolveCustomFields(
+        { "Infrastructure Considerations": "no" },
+        cascadingMeta
+      );
+      expect(result.errors).toEqual([]);
+      expect(result.fields).toEqual({ customfield_12203: { value: "No" } });
+    });
+
+    it("shapes {parent, child} into {value, child: {value}}, both canonicalized", () => {
+      const result = resolveCustomFields(
+        { "Infrastructure Considerations": { parent: "yes", child: "network" } },
+        cascadingMeta
+      );
+      expect(result.errors).toEqual([]);
+      expect(result.fields).toEqual({
+        customfield_12203: { value: "Yes", child: { value: "Network" } },
+      });
+    });
+
+    it("rejects an unknown parent, listing allowed parents", () => {
+      const result = resolveCustomFields(
+        { "Infrastructure Considerations": "Maybe" },
+        cascadingMeta
+      );
+      expect(result.fields).toEqual({});
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toContain('"Maybe"');
+      expect(result.errors[0]).toContain("No");
+      expect(result.errors[0]).toContain("Yes");
+    });
+
+    it("rejects an unknown child, listing that parent's children", () => {
+      const result = resolveCustomFields(
+        { "Infrastructure Considerations": { parent: "Yes", child: "Compute" } },
+        cascadingMeta
+      );
+      expect(result.fields).toEqual({});
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toContain('"Compute"');
+      expect(result.errors[0]).toContain("Network");
+      expect(result.errors[0]).toContain("Storage");
+    });
+
+    it("rejects a missing/empty parent instead of coercing to 'undefined'", () => {
+      for (const bad of [{ parent: undefined }, { parent: null }, { parent: "  " }, null]) {
+        const result = resolveCustomFields(
+          { "Infrastructure Considerations": bad },
+          cascadingMeta
+        );
+        expect(result.fields).toEqual({});
+        expect(result.errors).toHaveLength(1);
+        expect(result.errors[0]).toContain("Infrastructure Considerations");
+        expect(result.errors[0]).toContain("parent");
+      }
+    });
+
+    it("still passes pre-shaped {value} objects through untouched", () => {
+      const result = resolveCustomFields(
+        { "Infrastructure Considerations": { value: "No" } },
+        cascadingMeta
+      );
+      expect(result.errors).toEqual([]);
+      expect(result.fields).toEqual({ customfield_12203: { value: "No" } });
+    });
+  });
+
   it("reports unknown field names, listing available editable fields", () => {
     const result = resolveCustomFields({ "No Such Field": "x" }, META);
     expect(result.fields).toEqual({});

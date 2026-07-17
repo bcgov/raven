@@ -16,6 +16,7 @@ import type {
   JiraWatchersResponse,
 } from "./types.js";
 import type { JiraFieldMeta } from "./field-meta.js";
+import type { RawDeploySlot } from "./deploy-calendar.js";
 
 const DEFAULT_BASE_URL =
   process.env["ATLASSIAN_BASE_URL"]
@@ -891,6 +892,48 @@ export class JiraClient {
     return Object.entries(body.fields).map(([fieldId, f]) =>
       normalizeFieldMeta(fieldId, f)
     );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Deployment calendar (rest/deploymentcalendar plugin) — read-only
+  // ---------------------------------------------------------------------------
+
+  /**
+   * List deployment calendar slots in a window. Times use the plugin's
+   * "YYYY-MM-DD HH:mm" format. Returns both free and reserved slots.
+   */
+  async listDeploymentSlots(start: string, end: string): Promise<RawDeploySlot[]> {
+    const params = new URLSearchParams({ start, end });
+    const resp = await this.fetch(
+      `${this.baseUrl}/rest/deploymentcalendar/1.0/api/slots?${params}`
+    );
+    if (!resp.ok) {
+      throw new Error(
+        `Failed to list deployment slots (${resp.status}): ${await resp.text()}`
+      );
+    }
+    const body = (await resp.json()) as { results?: RawDeploySlot[] };
+    return body.results ?? [];
+  }
+
+  /**
+   * Get the deployment calendar reservation held by an issue, or null when
+   * the issue has no booking (the plugin 404s in that case).
+   */
+  async getDeploymentBooking(
+    issueKey: string
+  ): Promise<Record<string, unknown> | null> {
+    const params = new URLSearchParams({ sourceIssue: issueKey });
+    const resp = await this.fetch(
+      `${this.baseUrl}/rest/deploymentcalendar/1.0/api/slotReservation?${params}`
+    );
+    if (resp.status === 404) return null;
+    if (!resp.ok) {
+      throw new Error(
+        `Failed to get deployment booking for ${issueKey} (${resp.status}): ${await resp.text()}`
+      );
+    }
+    return (await resp.json()) as Record<string, unknown>;
   }
 }
 

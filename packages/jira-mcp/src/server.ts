@@ -5,6 +5,7 @@ import { JiraClient } from "./jira-client.js";
 import { saveAttachment } from "./attachment-fs.js";
 import { buildAttachmentContent, disambiguateFilename } from "./attachment-content.js";
 import { resolveCustomFields, formatFieldMeta } from "./field-meta.js";
+import { parseSlot, formatSlots, formatReservation, resolveSlotWindow } from "./deploy-calendar.js";
 import type { JiraIssue, JiraComment } from "./types.js";
 
 const pi = new PiScrubber();
@@ -223,7 +224,7 @@ export function createJiraServer(): McpServer {
       version: "0.1.0",
     },
     {
-      instructions: `You have access to tools for searching and managing Jira issues, sprints, versions, watchers, worklogs, attachments, and users. Read tools (search_issues, read_issue, list_comments, get_sprint, get_board, list_boards, list_worklogs, list_attachments, search_users, search_assignable_users, list_versions, get_version, list_watchers, get_field_meta) let you search, view, list, and look up. Write tools (create_issue, update_issue, add_comment, update_comment, delete_comment, transition_issue, link_issues, add_worklog, create_version, update_version, delete_version, add_watcher, remove_watcher, create_sprint, update_sprint, delete_sprint, move_issues_to_sprint) let you act on Jira content. delete_comment, delete_version, delete_sprint, create_sprint, update_sprint state transitions, create_version, and update_version are visible to the team — always confirm with the user before invoking. IMPORTANT: You MUST use the write tools when the user asks you to create, update, comment on, or transition Jira issues. Never refuse by claiming these tools are read-only — they are not. However, always confirm with the user before calling write tools, since these actions modify live Jira content. Keep API calls to a minimum to avoid overloading the server. When you call a tool and receive results, STOP calling tools and summarize the results for the user. Never call the same tool twice with the same arguments. Never guess or fabricate Jira issue keys or project keys — if you don't know them, ask the user. Always check for duplicate issues before creating new ones. If a tool returns an error, explain the error clearly to the user and suggest next steps. If you encounter authentication errors (401 Unauthorized or "No valid SMSESSION found"), inform the user they need to set ATLASSIAN_BASE_URL, ATLASSIAN_EMAIL, and ATLASSIAN_PASSWORD environment variables for Basic Auth, or re-authenticate via SMSESSION by running: node ${authCliPath}${WORKAROUND_NOTE}`,
+      instructions: `You have access to tools for searching and managing Jira issues, sprints, versions, watchers, worklogs, attachments, and users. Read tools (search_issues, read_issue, list_comments, get_sprint, get_board, list_boards, list_worklogs, list_attachments, search_users, search_assignable_users, list_versions, get_version, list_watchers, get_field_meta, list_deployment_slots, get_deployment_booking) let you search, view, list, and look up. Write tools (create_issue, update_issue, add_comment, update_comment, delete_comment, transition_issue, link_issues, add_worklog, create_version, update_version, delete_version, add_watcher, remove_watcher, create_sprint, update_sprint, delete_sprint, move_issues_to_sprint) let you act on Jira content. delete_comment, delete_version, delete_sprint, create_sprint, update_sprint state transitions, create_version, and update_version are visible to the team — always confirm with the user before invoking. IMPORTANT: You MUST use the write tools when the user asks you to create, update, comment on, or transition Jira issues. Never refuse by claiming these tools are read-only — they are not. However, always confirm with the user before calling write tools, since these actions modify live Jira content. Keep API calls to a minimum to avoid overloading the server. When you call a tool and receive results, STOP calling tools and summarize the results for the user. Never call the same tool twice with the same arguments. Never guess or fabricate Jira issue keys or project keys — if you don't know them, ask the user. Always check for duplicate issues before creating new ones. If a tool returns an error, explain the error clearly to the user and suggest next steps. If you encounter authentication errors (401 Unauthorized or "No valid SMSESSION found"), inform the user they need to set ATLASSIAN_BASE_URL, ATLASSIAN_EMAIL, and ATLASSIAN_PASSWORD environment variables for Basic Auth, or re-authenticate via SMSESSION by running: node ${authCliPath}${WORKAROUND_NOTE}`,
     }
   );
 
@@ -927,6 +928,69 @@ export function createJiraServer(): McpServer {
       } catch (err) {
         return {
           content: [{ type: "text", text: `Error getting field metadata: ${safeErr(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "list_deployment_slots",
+    "List deployment calendar slots (available and reserved) in a date window. " +
+      "Use this to see when a deployment can be scheduled before booking an RFD's slot. " +
+      "Read-only: reserving or cancelling a slot must be done in the Jira UI ('Deployment booking' panel on the RFD).",
+    {
+      startDate: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .optional()
+        .describe("Window start date (YYYY-MM-DD). Default: today."),
+      endDate: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .optional()
+        .describe("Window end date (YYYY-MM-DD), inclusive. Default: 14 days after start."),
+    },
+    { readOnlyHint: true },
+    async ({ startDate, endDate }) => {
+      try {
+        const { start, end } = resolveSlotWindow(new Date(), startDate, endDate);
+
+        const jira = await getClient();
+        const raw = await jira.listDeploymentSlots(`${start} 00:00`, `${end} 23:59`);
+        const text = `**Deployment slots ${start} → ${end}**\n\n${formatSlots(raw.map(parseSlot))}`;
+        return { content: [{ type: "text", text: pi.scrubText(text) }] };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Error listing deployment slots: ${safeErr(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "get_deployment_booking",
+    "Show the deployment calendar booking held by an issue (usually an RFD), or report that none exists. " +
+      "Read-only companion to list_deployment_slots.",
+    {
+      issueKey: z.string().describe("Issue key holding the booking (e.g., RRS-123)"),
+    },
+    { readOnlyHint: true },
+    async ({ issueKey }) => {
+      try {
+        const jira = await getClient();
+        const booking = await jira.getDeploymentBooking(issueKey);
+        return {
+          content: [
+            { type: "text", text: pi.scrubText(formatReservation(issueKey, booking)) },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: "text", text: `Error getting deployment booking for ${issueKey}: ${safeErr(err)}` },
+          ],
           isError: true,
         };
       }
