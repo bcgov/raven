@@ -3,6 +3,7 @@ import {
   parseSlot,
   formatSlots,
   formatReservation,
+  resolveSlotWindow,
   type RawDeploySlot,
 } from "../deploy-calendar.js";
 
@@ -78,6 +79,34 @@ describe("formatSlots", () => {
 
   it("reports when no slots exist in the window", () => {
     expect(formatSlots([])).toContain("No deployment slots");
+  });
+});
+
+describe("resolveSlotWindow", () => {
+  it("defaults start to the LOCAL date, not the UTC date", () => {
+    // 11:30pm local on July 17 — UTC may already be July 18.
+    const now = new Date(2026, 6, 17, 23, 30);
+    expect(resolveSlotWindow(now)).toEqual({ start: "2026-07-17", end: "2026-07-31" });
+  });
+
+  it("computes the default end with calendar arithmetic (DST-safe)", () => {
+    // Oct 25 + 14 days crosses the Nov 1 DST fall-back in Pacific time.
+    const now = new Date(2026, 9, 25, 12, 0);
+    expect(resolveSlotWindow(now).end).toBe("2026-11-08");
+  });
+
+  it("respects explicit start and end dates", () => {
+    expect(resolveSlotWindow(new Date(2026, 0, 1), "2026-07-20", "2026-07-22")).toEqual({
+      start: "2026-07-20",
+      end: "2026-07-22",
+    });
+  });
+
+  it("defaults the end relative to an explicit start", () => {
+    expect(resolveSlotWindow(new Date(2026, 0, 1), "2026-07-20")).toEqual({
+      start: "2026-07-20",
+      end: "2026-08-03",
+    });
   });
 });
 

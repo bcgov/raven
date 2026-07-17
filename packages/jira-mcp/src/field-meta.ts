@@ -168,6 +168,12 @@ function shapeCascading(
     childRaw = obj["child"];
   }
 
+  if (parentRaw === undefined || parentRaw === null || String(parentRaw).trim() === "") {
+    return {
+      error: `Field "${field.name}" is a cascading select and requires a parent value (a string, or {parent, child}).`,
+    };
+  }
+
   const raw = String(parentRaw);
   const allowed = field.allowedValues ?? [];
   const entry = allowed.find(

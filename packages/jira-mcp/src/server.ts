@@ -5,7 +5,7 @@ import { JiraClient } from "./jira-client.js";
 import { saveAttachment } from "./attachment-fs.js";
 import { buildAttachmentContent, disambiguateFilename } from "./attachment-content.js";
 import { resolveCustomFields, formatFieldMeta } from "./field-meta.js";
-import { parseSlot, formatSlots, formatReservation } from "./deploy-calendar.js";
+import { parseSlot, formatSlots, formatReservation, resolveSlotWindow } from "./deploy-calendar.js";
 import type { JiraIssue, JiraComment } from "./types.js";
 
 const pi = new PiScrubber();
@@ -954,12 +954,7 @@ export function createJiraServer(): McpServer {
     { readOnlyHint: true },
     async ({ startDate, endDate }) => {
       try {
-        const start = startDate ?? new Date().toISOString().slice(0, 10);
-        const end =
-          endDate ??
-          new Date(new Date(`${start}T00:00:00`).getTime() + 14 * 24 * 3600 * 1000)
-            .toISOString()
-            .slice(0, 10);
+        const { start, end } = resolveSlotWindow(new Date(), startDate, endDate);
 
         const jira = await getClient();
         const raw = await jira.listDeploymentSlots(`${start} 00:00`, `${end} 23:59`);

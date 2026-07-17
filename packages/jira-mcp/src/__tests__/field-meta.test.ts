@@ -264,6 +264,19 @@ describe("resolveCustomFields", () => {
       expect(result.errors[0]).toContain("Storage");
     });
 
+    it("rejects a missing/empty parent instead of coercing to 'undefined'", () => {
+      for (const bad of [{ parent: undefined }, { parent: null }, { parent: "  " }, null]) {
+        const result = resolveCustomFields(
+          { "Infrastructure Considerations": bad },
+          cascadingMeta
+        );
+        expect(result.fields).toEqual({});
+        expect(result.errors).toHaveLength(1);
+        expect(result.errors[0]).toContain("Infrastructure Considerations");
+        expect(result.errors[0]).toContain("parent");
+      }
+    });
+
     it("still passes pre-shaped {value} objects through untouched", () => {
       const result = resolveCustomFields(
         { "Infrastructure Considerations": { value: "No" } },

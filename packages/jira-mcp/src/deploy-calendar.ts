@@ -69,6 +69,28 @@ export function formatSlots(slots: DeploySlot[]): string {
   return lines.join("\n");
 }
 
+const localDateStr = (d: Date): string =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+/**
+ * Resolve the slot-listing window. Defaults use the caller's LOCAL calendar
+ * date (UTC would skip "today" every evening in Pacific time) and the default
+ * end is start + 14 days via calendar arithmetic, which is DST-safe.
+ */
+export function resolveSlotWindow(
+  now: Date,
+  startDate?: string,
+  endDate?: string
+): { start: string; end: string } {
+  const start = startDate ?? localDateStr(now);
+  let end = endDate;
+  if (!end) {
+    const [y, m, d] = start.split("-").map(Number);
+    end = localDateStr(new Date(y, m - 1, d + 14));
+  }
+  return { start, end };
+}
+
 export function formatReservation(
   issueKey: string,
   reservation: Record<string, unknown> | null
