@@ -27,13 +27,13 @@ One **RFC** per release per application (the change record). One **RFD** per tar
 5. Create the RFC (`create_issue` with `customFields`).
 6. Create one RFD per environment, then link each: `link_issues` with linkType `RFC-RFD`, outward = the RFC, inward = the RFD.
 7. If subtasks are needed: `create_issue` with issueType `RFD-subtask` and `parentKey` = the RFD. Deployment Category routes the work: Application deployment → App Services, Database change → DBAs (link the script's repo path + README, state run order), Infrastructure configuration change → Infra Services, Other → a named assignee.
-8. Report what remains manual (booking, Submit, approvals — see below) and stop.
+8. Offer to show open deployment slots for the target window (`list_deployment_slots`; `get_deployment_booking` shows an RFD's existing booking), then report what remains manual (reserving the slot, Submit, approvals — see below) and stop.
 
 ## Hard gates
 
 - Confirm with the user before every create/link, showing the full field payload first.
 - Do NOT transition tickets (Submit/Approve/Resolve), record client approval, or book deployment slots unless the user explicitly asks for that specific action.
-- Deployment booking ("Deployment booking → Reserve" calendar on the RFD) is a custom Jira plugin with no API — the user books it in the Jira UI. The Submit transition stays hidden until required fields + booking + assignee are all complete, so an unbookable RFD is not submittable.
+- Deployment booking: you may VIEW the calendar (`list_deployment_slots`, `get_deployment_booking`) but never reserve, release, or cancel a slot — the user books via "Deployment booking → Reserve" on the RFD in the Jira UI. The Submit transition stays hidden until required fields + booking + assignee are all complete, so an unbooked RFD is not submittable.
 
 ## Field gotchas (from live createmeta)
 
