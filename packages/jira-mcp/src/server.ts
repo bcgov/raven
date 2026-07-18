@@ -1061,7 +1061,7 @@ export function createJiraServer(): McpServer {
             content: [
               {
                 type: "text",
-                text: `${issueKey} holds no deployment booking — nothing to cancel.`,
+                text: pi.scrubText(`${issueKey} holds no deployment booking — nothing to cancel.`),
               },
             ],
           };
