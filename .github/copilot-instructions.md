@@ -2,7 +2,7 @@
 
 **Trust these instructions.** They have been validated end-to-end on `main`. Only fall back to file/code search when the answer is genuinely missing or appears wrong.
 
-> **Documentation map:** `README.md` = setup & usage · `docs/SYSTEM_DESIGN_AND_ARCHITECTURE.md` = architecture & security · this file = AI-agent operating guide · `docs/TOOL_INVENTORY.md` = the source of truth for the server/tool catalog, read/write split, and env vars. Don't restate tool counts or the catalog here — link to `docs/TOOL_INVENTORY.md`.
+> **Documentation map:** `README.md` = setup & usage · `docs/SYSTEM_DESIGN_AND_ARCHITECTURE.md` = architecture & security · this file = AI-agent operating guide · `docs/TOOL_INVENTORY.md` = the source of truth for the server/tool catalog, read/write split, and env vars. Don't restate tool counts or the catalog here — link to `docs/TOOL_INVENTORY.md`. · `docs/RFD_PLAYBOOK.md` = release-paperwork (RFC/RFD) playbook — in Copilot Chat invoke it with the `/rfd` prompt.
 
 ## What this repo is
 
