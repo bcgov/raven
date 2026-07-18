@@ -5,7 +5,13 @@ import { JiraClient } from "./jira-client.js";
 import { saveAttachment } from "./attachment-fs.js";
 import { buildAttachmentContent, disambiguateFilename } from "./attachment-content.js";
 import { resolveCustomFields, formatFieldMeta } from "./field-meta.js";
-import { parseSlot, formatSlots, formatReservation, resolveSlotWindow } from "./deploy-calendar.js";
+import {
+  parseSlot,
+  formatSlots,
+  formatReservation,
+  formatReserveConfirmation,
+  resolveSlotWindow,
+} from "./deploy-calendar.js";
 import type { JiraIssue, JiraComment } from "./types.js";
 
 const pi = new PiScrubber();
@@ -1027,7 +1033,7 @@ export function createJiraServer(): McpServer {
 
         await jira.reserveDeploymentSlot(issueKey, slotKey);
         const booking = await jira.getDeploymentBooking(issueKey);
-        const text = `Reserved ${slotKey} for ${issueKey}.\n\n${formatReservation(issueKey, booking)}`;
+        const text = formatReserveConfirmation(issueKey, slotKey, booking);
         return { content: [{ type: "text", text: pi.scrubText(text) }] };
       } catch (err) {
         return {

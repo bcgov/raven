@@ -90,6 +90,27 @@ export function resolveSlotWindow(
   return { start, end };
 }
 
+/**
+ * Confirmation message after reserving a slot. The post-reserve read-back can
+ * legitimately 404 (plugin lag), so a null booking is reported as
+ * unverified rather than echoing formatReservation's contradictory
+ * "No deployment booking found" text after a successful reserve.
+ */
+export function formatReserveConfirmation(
+  issueKey: string,
+  slotKey: string,
+  booking: Record<string, unknown> | null
+): string {
+  const header = `Reserved ${slotKey} for ${issueKey}.`;
+  if (!booking) {
+    return (
+      `${header}\n\nThe reservation was accepted but could not be verified by read-back yet — ` +
+      `check get_deployment_booking or the calendar UI before relying on it.`
+    );
+  }
+  return `${header}\n\n${formatReservation(issueKey, booking)}`;
+}
+
 export function formatReservation(
   issueKey: string,
   reservation: Record<string, unknown> | null
