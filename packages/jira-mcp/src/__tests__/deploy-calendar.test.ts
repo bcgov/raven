@@ -3,6 +3,7 @@ import {
   parseSlot,
   formatSlots,
   formatReservation,
+  formatReserveConfirmation,
   resolveSlotWindow,
   type RawDeploySlot,
 } from "../deploy-calendar.js";
@@ -124,5 +125,23 @@ describe("formatReservation", () => {
     const text = formatReservation("LEXIS-977", null);
     expect(text).toContain("No deployment booking");
     expect(text).toContain("LEXIS-977");
+  });
+});
+
+describe("formatReserveConfirmation", () => {
+  it("includes the booking details when the read-back succeeds", () => {
+    const text = formatReserveConfirmation("LEXIS-977", "IMBADSLOT-42", {
+      bookedDate: "2026-07-21T11:00:00.000-0700",
+    });
+    expect(text).toContain("Reserved IMBADSLOT-42 for LEXIS-977");
+    expect(text).toContain("2026-07-21");
+  });
+
+  it("flags an unverified reservation when the read-back returns null", () => {
+    const text = formatReserveConfirmation("LEXIS-977", "IMBADSLOT-42", null);
+    expect(text).toContain("Reserved IMBADSLOT-42 for LEXIS-977");
+    expect(text).toContain("could not be verified");
+    expect(text).toContain("get_deployment_booking");
+    expect(text).not.toContain("No deployment booking");
   });
 });

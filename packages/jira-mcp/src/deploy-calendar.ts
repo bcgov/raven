@@ -4,8 +4,7 @@
  * The deployment calendar plugin (rest/deploymentcalendar/1.0/api) stores
  * slots as issues whose description embeds JSON metadata ({bookedBy,
  * timestamp, duration}) and reports reservations via `reservedBy`. These
- * helpers normalize that into something an agent can read. Read-side only —
- * reserving/cancelling slots stays in the Jira UI.
+ * helpers normalize that into something an agent can read.
  */
 
 /** Raw slot entry as returned by GET /rest/deploymentcalendar/1.0/api/slots. */
@@ -89,6 +88,27 @@ export function resolveSlotWindow(
     end = localDateStr(new Date(y, m - 1, d + 14));
   }
   return { start, end };
+}
+
+/**
+ * Confirmation message after reserving a slot. The post-reserve read-back can
+ * legitimately 404 (plugin lag), so a null booking is reported as
+ * unverified rather than echoing formatReservation's contradictory
+ * "No deployment booking found" text after a successful reserve.
+ */
+export function formatReserveConfirmation(
+  issueKey: string,
+  slotKey: string,
+  booking: Record<string, unknown> | null
+): string {
+  const header = `Reserved ${slotKey} for ${issueKey}.`;
+  if (!booking) {
+    return (
+      `${header}\n\nThe reservation was accepted but could not be verified by read-back yet — ` +
+      `check get_deployment_booking or the calendar UI before relying on it.`
+    );
+  }
+  return `${header}\n\n${formatReservation(issueKey, booking)}`;
 }
 
 export function formatReservation(

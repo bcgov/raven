@@ -16,10 +16,10 @@
 | | Count |
 |---|---|
 | MCP servers | **15** |
-| Tools registered locally (in-process) | **185** |
-| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 185 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
-| **Tools advertised to the AI when everything is connected** | **~191** |
-| Mutating / write tools | **~62** (61 local + ~1 via Jarvis) |
+| Tools registered locally (in-process) | **187** |
+| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 187 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
+| **Tools advertised to the AI when everything is connected** | **~193** |
+| Mutating / write tools | **~64** (63 local + ~1 via Jarvis) |
 | Read-only tools | **~129** |
 | Non-server packages | `auth`, `pipeline`, `server-ui`, `raven-cli` |
 
@@ -29,7 +29,7 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 
 | Server | `.mcp.json` key | Read | Write | Total |
 |--------|-----------------|-----:|------:|------:|
-| Jira | `jira` | 16 | 18 | 34 |
+| Jira | `jira` | 16 | 20 | 36 |
 | Confluence | `confluence` | 10 | 8 | 18 |
 | Bitbucket | `bitbucket` | 18 | 7 | 25 |
 | Assets (CMDB) | `assets` | 14 | 0 | 14 |
@@ -43,17 +43,17 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 | Jenkins | `jenkins` | 19 | 15 | 34 |
 | RFC Buddy | `rfcbuddy` | 0 | 1 | 1 |
 | Artifactory | `artifactory` | 12 | 7 | 19 |
-| **Subtotal (local)** | | **124** | **61** | **185** |
+| **Subtotal (local)** | | **124** | **63** | **187** |
 | Jarvis (remote proxy) | `jarvis` | ~5 | ~1 | ~6 |
-| **Advertised total** | | **~129** | **~62** | **~191** |
+| **Advertised total** | | **~129** | **~64** | **~193** |
 
 ## Servers and tools
 
 ### Atlassian (shared auth session)
 
-#### jira-mcp — 34 tools (16 read / 18 write)
+#### jira-mcp — 36 tools (16 read / 20 write)
 - **Read:** `search_issues`, `read_issue`, `list_comments`, `get_sprint`, `get_board`, `list_boards`, `get_field_meta`, `list_deployment_slots`, `get_deployment_booking`, `list_worklogs`, `list_attachments`, `search_users`, `search_assignable_users`, `list_versions`, `get_version`, `list_watchers`
-- **Write:** `create_issue`, `update_issue`, `add_comment`, `transition_issue`, `link_issues`, `add_worklog`, `download_attachment`, `create_version`, `update_version`, `delete_version`, `add_watcher`, `remove_watcher`, `create_sprint`, `update_sprint`, `delete_sprint`, `move_issues_to_sprint`, `update_comment`, `delete_comment`
+- **Write:** `create_issue`, `update_issue`, `reserve_deployment_slot`, `cancel_deployment_booking`, `add_comment`, `transition_issue`, `link_issues`, `add_worklog`, `download_attachment`, `create_version`, `update_version`, `delete_version`, `add_watcher`, `remove_watcher`, `create_sprint`, `update_sprint`, `delete_sprint`, `move_issues_to_sprint`, `update_comment`, `delete_comment`
 
 #### confluence-mcp — 18 tools (10 read / 8 write)
 - **Read:** `search_confluence`, `read_pages`, `list_spaces`, `search_space`, `list_page_children`, `get_page_ancestors`, `list_attachments`, `get_labels`, `list_page_comments`, `search_cql`
