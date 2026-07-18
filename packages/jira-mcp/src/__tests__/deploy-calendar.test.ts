@@ -14,13 +14,13 @@ describe("parseSlot", () => {
       key: "IMBADSLOT-15788",
       description: '{"bookedBy":"SOMEUSER","timestamp":1784656800000,"duration":60}',
       timestampField: "2026-07-21 11:00:00.0",
-      reservedBy: "LRMBCTS-4239",
+      reservedBy: "OTHERAPP-4239",
     };
     expect(parseSlot(raw)).toEqual({
       key: "IMBADSLOT-15788",
       time: "2026-07-21 11:00",
       durationMinutes: 60,
-      reservedBy: "LRMBCTS-4239",
+      reservedBy: "OTHERAPP-4239",
     });
   });
 
@@ -52,7 +52,7 @@ describe("formatSlots", () => {
       key: "IMBADSLOT-1",
       time: "2026-07-21 11:00",
       durationMinutes: 60,
-      reservedBy: "LRMBCTS-4239",
+      reservedBy: "OTHERAPP-4239",
     },
     {
       key: "IMBADSLOT-3",
@@ -75,7 +75,7 @@ describe("formatSlots", () => {
     expect(i2).toBeGreaterThan(i3);
     expect(i1).toBeGreaterThan(i2);
     expect(lines[i2]).toContain("90 min");
-    expect(lines[i1]).toContain("reserved by LRMBCTS-4239");
+    expect(lines[i1]).toContain("reserved by OTHERAPP-4239");
   });
 
   it("reports when no slots exist in the window", () => {
@@ -113,33 +113,33 @@ describe("resolveSlotWindow", () => {
 
 describe("formatReservation", () => {
   it("formats an existing booking", () => {
-    const text = formatReservation("LEXIS-977", {
+    const text = formatReservation("MYAPP-977", {
       bookedDate: "2026-07-21T11:00:00.000-0700",
       created: "2026-07-16T09:00:00.000-0700",
     });
-    expect(text).toContain("LEXIS-977");
+    expect(text).toContain("MYAPP-977");
     expect(text).toContain("2026-07-21");
   });
 
   it("states clearly when there is no booking", () => {
-    const text = formatReservation("LEXIS-977", null);
+    const text = formatReservation("MYAPP-977", null);
     expect(text).toContain("No deployment booking");
-    expect(text).toContain("LEXIS-977");
+    expect(text).toContain("MYAPP-977");
   });
 });
 
 describe("formatReserveConfirmation", () => {
   it("includes the booking details when the read-back succeeds", () => {
-    const text = formatReserveConfirmation("LEXIS-977", "IMBADSLOT-42", {
+    const text = formatReserveConfirmation("MYAPP-977", "IMBADSLOT-42", {
       bookedDate: "2026-07-21T11:00:00.000-0700",
     });
-    expect(text).toContain("Reserved IMBADSLOT-42 for LEXIS-977");
+    expect(text).toContain("Reserved IMBADSLOT-42 for MYAPP-977");
     expect(text).toContain("2026-07-21");
   });
 
   it("flags an unverified reservation when the read-back returns null", () => {
-    const text = formatReserveConfirmation("LEXIS-977", "IMBADSLOT-42", null);
-    expect(text).toContain("Reserved IMBADSLOT-42 for LEXIS-977");
+    const text = formatReserveConfirmation("MYAPP-977", "IMBADSLOT-42", null);
+    expect(text).toContain("Reserved IMBADSLOT-42 for MYAPP-977");
     expect(text).toContain("could not be verified");
     expect(text).toContain("get_deployment_booking");
     expect(text).not.toContain("No deployment booking");
