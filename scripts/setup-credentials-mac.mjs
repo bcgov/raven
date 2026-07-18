@@ -17,10 +17,15 @@
 
 import { execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+import { parse as parseDotenv } from "dotenv";
 import {
   encodeKeychainBlob,
   decodeKeychainBlob,
 } from "../packages/auth/dist/load-env.js";
+import { mask, seedDefaults } from "./setup-credentials-mac.lib.mjs";
 
 const SERVICE = process.env.RAVEN_KEYCHAIN_SERVICE || "raven";
 const ACCOUNT = "credentials";
@@ -48,28 +53,62 @@ function writeStoredRecord(record) {
   });
 }
 
-function mask(value) {
-  if (value.length <= 4) return "****";
-  return value.slice(0, 2) + "*".repeat(value.length - 4) + value.slice(-2);
+/** Values from ~/.raven/.env, used as first-run defaults; {} when absent. */
+function readEnvFile() {
+  try {
+    return parseDotenv(readFileSync(join(homedir(), ".raven", ".env"), "utf-8"));
+  } catch {
+    return {};
+  }
 }
 
-/** Prompt on the terminal; sensitive values are read with echo suppressed. */
-function prompt(question, { sensitive = false } = {}) {
-  return new Promise((resolve) => {
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    if (sensitive) {
-      const write = rl._writeToOutput.bind(rl);
-      rl._writeToOutput = (s) => {
-        // Echo the prompt itself but not the typed characters.
-        if (s.includes(question)) write(s);
-      };
-    }
-    rl.question(`${question}: `, (answer) => {
-      rl.close();
-      if (sensitive) process.stdout.write("\n");
-      resolve(answer.trim());
-    });
+/**
+ * One readline interface for the whole session — a fresh interface per
+ * question would buffer and discard piped stdin, hanging every question
+ * after the first. Sensitive questions suppress the echo of typed
+ * characters; stdin ending early (Ctrl-D, short pipe) answers blank.
+ */
+function createPrompter() {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  let muted = false;
+  let closed = false;
+  let pending = null;
+  const write = rl._writeToOutput.bind(rl);
+  rl._writeToOutput = (s) => {
+    if (!muted) write(s);
+  };
+  rl.on("close", () => {
+    closed = true;
+    pending?.("");
   });
+  return {
+    ask(question, { sensitive = false } = {}) {
+      return new Promise((resolve) => {
+        // stdin already ended (short pipe / Ctrl-D): keep remaining defaults.
+        if (closed) {
+          resolve("");
+          return;
+        }
+        pending = resolve;
+        if (sensitive) {
+          process.stdout.write(`${question}: `);
+          muted = true;
+        }
+        rl.question(sensitive ? "" : `${question}: `, (answer) => {
+          if (sensitive) {
+            muted = false;
+            process.stdout.write("\n");
+          }
+          pending = null;
+          resolve(answer.trim());
+        });
+      });
+    },
+    close() {
+      pending = null;
+      rl.close();
+    },
+  };
 }
 
 // --- Verify mode ---
@@ -97,10 +136,6 @@ console.log("existing value (or skip an optional integration).");
 console.log("");
 
 const existing = readStoredRecord() ?? {};
-if (Object.keys(existing).length > 0) {
-  console.log("Existing keychain credentials found - press Enter to keep each value.");
-  console.log("");
-}
 
 // Same variables, sections, and order as setup-credentials.ps1.
 const SECTIONS = [
@@ -160,19 +195,35 @@ const SECTIONS = [
   },
 ];
 
-const record = { ...existing }; // carry forward extra keys (e.g. IMIS_CSV_PATH)
+const promptedKeys = SECTIONS.flatMap((s) => s.fields.map(([name]) => name));
+const envValues = readEnvFile();
+// Blank answers keep these: keychain values first, then ~/.raven/.env values
+// for prompted keys (first-run migration), plus keychain-only extras.
+const defaults = seedDefaults(promptedKeys, envValues, existing);
+const record = { ...defaults };
 
+if (Object.keys(existing).length > 0) {
+  console.log("Existing keychain credentials found - press Enter to keep each value.");
+  console.log("");
+}
+if (promptedKeys.some((k) => !existing[k] && defaults[k])) {
+  console.log("Values found in ~/.raven/.env will be imported for any prompt you leave blank.");
+  console.log("");
+}
+
+const prompter = createPrompter();
 for (const section of SECTIONS) {
   if (section.header) {
     console.log("");
     console.log(section.header);
   }
   for (const [name, label, sensitive] of section.fields) {
-    const hint = existing[name] ? " [keep existing]" : "";
-    const answer = await prompt(`${label}${hint}`, { sensitive });
+    const hint = existing[name] ? " [keep existing]" : defaults[name] ? " [import from .env]" : "";
+    const answer = await prompter.ask(`${label}${hint}`, { sensitive });
     if (answer) record[name] = answer;
   }
 }
+prompter.close();
 
 console.log("");
 
