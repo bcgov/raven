@@ -11,16 +11,19 @@ import { execFileSync } from "node:child_process";
  * (e.g. from .mcp.json or the shell) always take precedence.
  *
  * On Windows, if ~/.raven/.env.dpapi exists (a DPAPI-encrypted JSON file
- * created by scripts/setup-credentials.ps1) it is decrypted first. The
- * plain-text ~/.raven/.env is still loaded afterwards as a fallback, so
- * both mechanisms can coexist.
+ * created by scripts/setup-credentials.ps1) it is decrypted first. On
+ * macOS, the login keychain item written by scripts/setup-credentials-mac.mjs
+ * is read first. The plain-text ~/.raven/.env is still loaded afterwards as
+ * a fallback, so both mechanisms can coexist.
  *
  * Call this once at server startup before initialising any clients.
  */
 export function loadEnv(): void {
-  // 1. Try DPAPI-encrypted credentials on Windows first.
+  // 1. Try OS-encrypted credentials first.
   if (process.platform === "win32") {
     loadDpapi();
+  } else if (process.platform === "darwin") {
+    loadKeychain();
   }
 
   // 2. Fall back to plain-text .env (values already set are NOT overwritten).
@@ -115,6 +118,71 @@ function warnUnquotedHashes(envPath: string): void {
     }
   } catch {
     // File missing or unreadable — nothing to warn about.
+  }
+}
+
+/** Keychain item coordinates; the service can be overridden for testing. */
+const KEYCHAIN_ACCOUNT = "credentials";
+const DEFAULT_KEYCHAIN_SERVICE = "raven";
+
+/** Encode a credential record as the base64 JSON blob stored in the keychain. */
+export function encodeKeychainBlob(record: Record<string, string>): string {
+  return Buffer.from(JSON.stringify(record), "utf-8").toString("base64");
+}
+
+/**
+ * Decode the keychain blob back into a credential record. Non-string values
+ * are dropped. Throws on malformed input — loadKeychain() swallows the
+ * throw, while setup-credentials-mac.mjs surfaces it.
+ */
+export function decodeKeychainBlob(blob: string): Record<string, string> {
+  const parsed = JSON.parse(Buffer.from(blob.trim(), "base64").toString("utf-8")) as unknown;
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("Keychain blob is not a JSON object");
+  }
+  const record: Record<string, string> = {};
+  for (const [key, val] of Object.entries(parsed)) {
+    if (typeof val === "string") record[key] = val;
+  }
+  return record;
+}
+
+type ExecFileSync = (cmd: string, args: string[], opts: object) => string;
+
+/**
+ * Read the RAVEN credential blob from the macOS login keychain (a single
+ * generic-password item, service "raven" / account "credentials", written by
+ * scripts/setup-credentials-mac.mjs) and merge it into process.env.
+ *
+ * Silently no-ops when the item does not exist, `security` is unavailable,
+ * or the blob is corrupt. Values are only written when the key is NOT
+ * already set, preserving the explicit-env-var-wins contract.
+ *
+ * The one-item-blob design mirrors ~/.raven/.env.dpapi on Windows: one
+ * subprocess call per server startup, and any later "Confirm before allowing
+ * access" ACL gates all credentials behind a single prompt.
+ */
+export function loadKeychain(exec: ExecFileSync = execFileSync as ExecFileSync): void {
+  const service = process.env["RAVEN_KEYCHAIN_SERVICE"] || DEFAULT_KEYCHAIN_SERVICE;
+  try {
+    const output = exec(
+      "/usr/bin/security",
+      ["find-generic-password", "-s", service, "-a", KEYCHAIN_ACCOUNT, "-w"],
+      {
+        encoding: "utf-8",
+        timeout: 10_000,
+        // Suppress stderr so security warnings don't leak to stdout (MCP stdio transport)
+        stdio: ["ignore", "pipe", "ignore"],
+      }
+    );
+    const record = decodeKeychainBlob(output);
+    for (const [key, val] of Object.entries(record)) {
+      if (key && !(key in process.env)) {
+        process.env[key] = val;
+      }
+    }
+  } catch {
+    // Item not found, security unavailable, or corrupt blob — silently skip.
   }
 }
 

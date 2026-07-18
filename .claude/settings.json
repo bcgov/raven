@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(security find-generic-password:*)",
+      "Bash(security dump-keychain:*)",
+      "Read(~/.raven/.env)",
+      "Read(~/.raven/.env.dpapi)"
+    ]
+  }
+}
