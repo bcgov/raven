@@ -13,7 +13,7 @@ One **RFC** per release per application (the change record). One **RFD** per tar
 | Fully automated deployment platform that records its own deploy history, application change only | RFC only (the platform records the deploys) |
 | Single-step push-button deploy (one pipeline job does the whole deployment) | RFC + one RFD per environment with Deployment Category set — no subtasks |
 | Multi-step or multi-person (DB scripts, infra changes, stop/start) | RFC + RFDs + one RFD-subtask per step: one per DB script, one per infra service; app stop / deploy / restart are separate subtasks |
-| Release spans multiple applications | RFC per application, but ALL RFDs link to the primary app's RFC only |
+| Release spans multiple applications, deployments bundled together | RFC per application, with each secondary RFC linked to the primary app's RFC — but only ONE set of RFDs/RFD-subtasks for the whole release (per environment, subtasks covering every app), all linked to the primary app's RFC. Secondary RFCs get no RFDs |
 
 ## Recipe
 
