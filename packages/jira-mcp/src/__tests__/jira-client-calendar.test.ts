@@ -96,3 +96,53 @@ describe("getDeploymentBooking", () => {
     );
   });
 });
+
+describe("reserveDeploymentSlot", () => {
+  it("POSTs sourceIssue and slotKey to reserveSlot", async () => {
+    const mockFetch = createMockFetch({ ok: true, status: 200, body: {} });
+    const client = new JiraClient(mockFetch, BASE_URL);
+
+    await client.reserveDeploymentSlot("LEXIS-977", "IMBADSLOT-42");
+
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toBe(`${BASE_URL}/rest/deploymentcalendar/1.0/api/reserveSlot`);
+    expect(init.method).toBe("POST");
+    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(JSON.parse(init.body)).toEqual({
+      sourceIssue: "LEXIS-977",
+      slotKey: "IMBADSLOT-42",
+    });
+  });
+
+  it("throws on a non-ok response", async () => {
+    const mockFetch = createMockFetch({ ok: false, status: 409, text: "slot taken" });
+    const client = new JiraClient(mockFetch, BASE_URL);
+    await expect(
+      client.reserveDeploymentSlot("LEXIS-977", "IMBADSLOT-42")
+    ).rejects.toThrow("Failed to reserve slot IMBADSLOT-42 for LEXIS-977 (409)");
+  });
+});
+
+describe("cancelDeploymentBooking", () => {
+  it("POSTs sourceIssue to cancelSlotReservation", async () => {
+    const mockFetch = createMockFetch({ ok: true, status: 200, body: {} });
+    const client = new JiraClient(mockFetch, BASE_URL);
+
+    await client.cancelDeploymentBooking("LEXIS-977");
+
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toBe(
+      `${BASE_URL}/rest/deploymentcalendar/1.0/api/cancelSlotReservation`
+    );
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual({ sourceIssue: "LEXIS-977" });
+  });
+
+  it("throws on a non-ok response", async () => {
+    const mockFetch = createMockFetch({ ok: false, status: 500, text: "boom" });
+    const client = new JiraClient(mockFetch, BASE_URL);
+    await expect(client.cancelDeploymentBooking("LEXIS-977")).rejects.toThrow(
+      "Failed to cancel deployment booking for LEXIS-977 (500)"
+    );
+  });
+});

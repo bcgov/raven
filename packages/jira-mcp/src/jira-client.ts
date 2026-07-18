@@ -935,6 +935,44 @@ export class JiraClient {
     }
     return (await resp.json()) as Record<string, unknown>;
   }
+
+  /**
+   * Reserve a deployment calendar slot for an issue (usually an RFD).
+   */
+  async reserveDeploymentSlot(issueKey: string, slotKey: string): Promise<void> {
+    const resp = await this.fetch(
+      `${this.baseUrl}/rest/deploymentcalendar/1.0/api/reserveSlot`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceIssue: issueKey, slotKey }),
+      }
+    );
+    if (!resp.ok) {
+      throw new Error(
+        `Failed to reserve slot ${slotKey} for ${issueKey} (${resp.status}): ${await resp.text()}`
+      );
+    }
+  }
+
+  /**
+   * Cancel the deployment calendar booking held by an issue.
+   */
+  async cancelDeploymentBooking(issueKey: string): Promise<void> {
+    const resp = await this.fetch(
+      `${this.baseUrl}/rest/deploymentcalendar/1.0/api/cancelSlotReservation`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceIssue: issueKey }),
+      }
+    );
+    if (!resp.ok) {
+      throw new Error(
+        `Failed to cancel deployment booking for ${issueKey} (${resp.status}): ${await resp.text()}`
+      );
+    }
+  }
 }
 
 /** Raw field metadata entry as returned by createmeta/editmeta. */

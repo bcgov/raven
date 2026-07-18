@@ -4,8 +4,7 @@
  * The deployment calendar plugin (rest/deploymentcalendar/1.0/api) stores
  * slots as issues whose description embeds JSON metadata ({bookedBy,
  * timestamp, duration}) and reports reservations via `reservedBy`. These
- * helpers normalize that into something an agent can read. Read-side only —
- * reserving/cancelling slots stays in the Jira UI.
+ * helpers normalize that into something an agent can read.
  */
 
 /** Raw slot entry as returned by GET /rest/deploymentcalendar/1.0/api/slots. */

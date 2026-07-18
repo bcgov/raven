@@ -27,13 +27,13 @@ One **RFC** per release per application (the change record). One **RFD** per tar
 5. Create the RFC (`create_issue` with `customFields`).
 6. Create one RFD per environment, then link each: `link_issues` with linkType `RFC-RFD`, outward = the RFC, inward = the RFD.
 7. If subtasks are needed: `create_issue` with issueType `RFD-subtask` and `parentKey` = the RFD. Deployment Category routes the work: Application deployment → App Services, Database change → DBAs (link the script's repo path + README, state run order), Infrastructure configuration change → Infra Services, Other → a named assignee.
-8. Offer to show open deployment slots for the target window (`list_deployment_slots`; `get_deployment_booking` shows an RFD's existing booking), then report what remains manual (reserving the slot, Submit, approvals — see below) and stop.
+8. Offer to show open deployment slots for the target window (`list_deployment_slots`; `get_deployment_booking` shows an RFD's existing booking). If the user asks you to book, confirm the exact slot, then `reserve_deployment_slot`. Report what remains manual (Submit, approvals — see below) and stop.
 
 ## Hard gates
 
 - Confirm with the user before every create/link, showing the full field payload first.
 - Do NOT transition tickets (Submit/Approve/Resolve), record client approval, or book deployment slots unless the user explicitly asks for that specific action.
-- Deployment booking: you may VIEW the calendar (`list_deployment_slots`, `get_deployment_booking`) but never reserve, release, or cancel a slot — the user books via "Deployment booking → Reserve" on the RFD in the Jira UI. The Submit transition stays hidden until required fields + booking + assignee are all complete, so an unbooked RFD is not submittable.
+- Deployment booking: view freely (`list_deployment_slots`, `get_deployment_booking`); reserve or cancel (`reserve_deployment_slot`, `cancel_deployment_booking`) only when the user explicitly asks, and confirm the exact slot (date, time, RFD key) before reserving. Never cancel another team's booking. If the RFD already holds a booking (e.g. it was cloned), `reserve_deployment_slot` refuses — ask the user before cancelling and rebooking. The Submit transition stays hidden until required fields + booking + assignee are all complete, so an unbooked RFD is not submittable.
 
 ## Field gotchas (from live createmeta)
 
@@ -63,4 +63,4 @@ One **RFC** per release per application (the change record). One **RFD** per tar
 - Linking RFC↔RFD with `blocks`/`relates to` — the link type is `RFC-RFD`.
 - Setting invented date fields ("Planned Start/End") on RFDs — scheduling is the calendar booking.
 - Skipping RFD-subtasks when another team must act — each manual step by DBAs/Infra is its own subtask.
-- Cloning RFDs without releasing the copied booking — a cloned RFD double-books the slot.
+- Cloning RFDs without releasing the copied booking — a cloned RFD double-books the slot (`cancel_deployment_booking` on the clone releases it).

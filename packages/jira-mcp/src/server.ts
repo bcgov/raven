@@ -224,7 +224,7 @@ export function createJiraServer(): McpServer {
       version: "0.1.0",
     },
     {
-      instructions: `You have access to tools for searching and managing Jira issues, sprints, versions, watchers, worklogs, attachments, and users. Read tools (search_issues, read_issue, list_comments, get_sprint, get_board, list_boards, list_worklogs, list_attachments, search_users, search_assignable_users, list_versions, get_version, list_watchers, get_field_meta, list_deployment_slots, get_deployment_booking) let you search, view, list, and look up. Write tools (create_issue, update_issue, add_comment, update_comment, delete_comment, transition_issue, link_issues, add_worklog, create_version, update_version, delete_version, add_watcher, remove_watcher, create_sprint, update_sprint, delete_sprint, move_issues_to_sprint) let you act on Jira content. delete_comment, delete_version, delete_sprint, create_sprint, update_sprint state transitions, create_version, and update_version are visible to the team — always confirm with the user before invoking. IMPORTANT: You MUST use the write tools when the user asks you to create, update, comment on, or transition Jira issues. Never refuse by claiming these tools are read-only — they are not. However, always confirm with the user before calling write tools, since these actions modify live Jira content. Keep API calls to a minimum to avoid overloading the server. When you call a tool and receive results, STOP calling tools and summarize the results for the user. Never call the same tool twice with the same arguments. Never guess or fabricate Jira issue keys or project keys — if you don't know them, ask the user. Always check for duplicate issues before creating new ones. If a tool returns an error, explain the error clearly to the user and suggest next steps. If you encounter authentication errors (401 Unauthorized or "No valid SMSESSION found"), inform the user they need to set ATLASSIAN_BASE_URL, ATLASSIAN_EMAIL, and ATLASSIAN_PASSWORD environment variables for Basic Auth, or re-authenticate via SMSESSION by running: node ${authCliPath}${WORKAROUND_NOTE}`,
+      instructions: `You have access to tools for searching and managing Jira issues, sprints, versions, watchers, worklogs, attachments, and users. Read tools (search_issues, read_issue, list_comments, get_sprint, get_board, list_boards, list_worklogs, list_attachments, search_users, search_assignable_users, list_versions, get_version, list_watchers, get_field_meta, list_deployment_slots, get_deployment_booking) let you search, view, list, and look up. Write tools (create_issue, update_issue, add_comment, update_comment, delete_comment, transition_issue, link_issues, add_worklog, create_version, update_version, delete_version, add_watcher, remove_watcher, create_sprint, update_sprint, delete_sprint, move_issues_to_sprint, reserve_deployment_slot, cancel_deployment_booking) let you act on Jira content. delete_comment, delete_version, delete_sprint, create_sprint, update_sprint state transitions, create_version, update_version, reserve_deployment_slot, and cancel_deployment_booking are visible to the team — always confirm with the user before invoking. IMPORTANT: You MUST use the write tools when the user asks you to create, update, comment on, or transition Jira issues. Never refuse by claiming these tools are read-only — they are not. However, always confirm with the user before calling write tools, since these actions modify live Jira content. Keep API calls to a minimum to avoid overloading the server. When you call a tool and receive results, STOP calling tools and summarize the results for the user. Never call the same tool twice with the same arguments. Never guess or fabricate Jira issue keys or project keys — if you don't know them, ask the user. Always check for duplicate issues before creating new ones. If a tool returns an error, explain the error clearly to the user and suggest next steps. If you encounter authentication errors (401 Unauthorized or "No valid SMSESSION found"), inform the user they need to set ATLASSIAN_BASE_URL, ATLASSIAN_EMAIL, and ATLASSIAN_PASSWORD environment variables for Basic Auth, or re-authenticate via SMSESSION by running: node ${authCliPath}${WORKAROUND_NOTE}`,
     }
   );
 
@@ -937,8 +937,8 @@ export function createJiraServer(): McpServer {
   server.tool(
     "list_deployment_slots",
     "List deployment calendar slots (available and reserved) in a date window. " +
-      "Use this to see when a deployment can be scheduled before booking an RFD's slot. " +
-      "Read-only: reserving or cancelling a slot must be done in the Jira UI ('Deployment booking' panel on the RFD).",
+      "Use this to see when a deployment can be scheduled before booking an RFD's slot " +
+      "with reserve_deployment_slot.",
     {
       startDate: z
         .string()
@@ -990,6 +990,93 @@ export function createJiraServer(): McpServer {
         return {
           content: [
             { type: "text", text: `Error getting deployment booking for ${issueKey}: ${safeErr(err)}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "reserve_deployment_slot",
+    "Reserve a deployment calendar slot for an issue (usually an RFD). " +
+      "Find a free slot with list_deployment_slots first — reserving a slot another issue holds will fail. " +
+      "Refuses if the issue already holds a booking (cancel_deployment_booking first); " +
+      "a cloned RFD silently carries its source's booking, so this guard prevents double-booking. " +
+      "Always confirm with the user before invoking.",
+    {
+      issueKey: z.string().describe("Issue key to hold the booking (e.g., RRS-123)"),
+      slotKey: z
+        .string()
+        .describe("Slot key from list_deployment_slots (e.g., IMBADSLOT-42)"),
+    },
+    { readOnlyHint: false },
+    async ({ issueKey, slotKey }) => {
+      try {
+        const jira = await getClient();
+
+        const existing = await jira.getDeploymentBooking(issueKey);
+        if (existing) {
+          const text =
+            `${issueKey} already holds a deployment booking — not reserving ${slotKey}.\n\n` +
+            `${formatReservation(issueKey, existing)}\n\n` +
+            `Use cancel_deployment_booking first if this booking should be replaced ` +
+            `(a cloned RFD keeps its source's booking).`;
+          return { content: [{ type: "text", text: pi.scrubText(text) }], isError: true };
+        }
+
+        await jira.reserveDeploymentSlot(issueKey, slotKey);
+        const booking = await jira.getDeploymentBooking(issueKey);
+        const text = `Reserved ${slotKey} for ${issueKey}.\n\n${formatReservation(issueKey, booking)}`;
+        return { content: [{ type: "text", text: pi.scrubText(text) }] };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Error reserving slot ${slotKey} for ${issueKey}: ${safeErr(err)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "cancel_deployment_booking",
+    "Cancel the deployment calendar booking held by an issue (usually an RFD), freeing its slot. " +
+      "Reports the booking being released. Always confirm with the user before invoking.",
+    {
+      issueKey: z.string().describe("Issue key holding the booking (e.g., RRS-123)"),
+    },
+    { readOnlyHint: false },
+    async ({ issueKey }) => {
+      try {
+        const jira = await getClient();
+
+        const existing = await jira.getDeploymentBooking(issueKey);
+        if (!existing) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `${issueKey} holds no deployment booking — nothing to cancel.`,
+              },
+            ],
+          };
+        }
+
+        await jira.cancelDeploymentBooking(issueKey);
+        const text = `Cancelled deployment booking for ${issueKey}. Released:\n\n${formatReservation(issueKey, existing)}`;
+        return { content: [{ type: "text", text: pi.scrubText(text) }] };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Error cancelling deployment booking for ${issueKey}: ${safeErr(err)}`,
+            },
           ],
           isError: true,
         };
