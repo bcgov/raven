@@ -33,3 +33,35 @@ export interface BasicAuthConfig {
   email: string;
   password: string;
 }
+
+/** SharePoint Online auth cookie pair captured from a browser login. */
+export interface SpoCookies {
+  fedAuth: string;
+  rtFa: string;
+}
+
+/** Cached SPO session data persisted to ~/.workflow-suite/spo-session.json */
+export interface SpoSessionData {
+  fedAuth: string;
+  rtFa: string;
+  cachedAt: number;
+  capturedFor: string;
+}
+
+/** Configuration for SharePoint Online auth. */
+export interface SpoAuthConfig {
+  /** SharePoint tenant root URL (e.g. https://example.sharepoint.com) */
+  targetUrl: string;
+  /** Path to the SPO session cache file */
+  cachePath: string;
+  /** Session TTL in seconds (default: 28800 = 8 hours) */
+  sessionTtlSeconds: number;
+}
+
+/** Result from the SPO Playwright auth subprocess */
+export interface SpoAuthResult {
+  status: "ok" | "error";
+  fedAuth?: string;
+  rtFa?: string;
+  message?: string;
+}
