@@ -46,3 +46,12 @@ export type {
   AuthenticatedFetch,
   BasicAuthConfig,
 } from "./types.js";
+export {
+  sanitizeFilename,
+  classifyAttachment,
+  decodeUtf8,
+  extractPdfText,
+  disambiguateFilename,
+  buildAttachmentContent,
+} from "./content-blocks.js";
+export type { AttachmentKind, McpContentBlock } from "./content-blocks.js";

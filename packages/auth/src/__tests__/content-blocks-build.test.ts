@@ -4,7 +4,7 @@ vi.mock("pdf-parse/lib/pdf-parse.js", () => ({
   default: vi.fn(async () => ({ text: "extracted pdf text", numpages: 1, info: {}, metadata: {}, version: "" })),
 }));
 
-import { extractPdfText, buildAttachmentContent } from "../attachment-content.js";
+import { extractPdfText, buildAttachmentContent } from "../content-blocks.js";
 
 describe("extractPdfText", () => {
   it("returns the text from a pdf buffer", async () => {
