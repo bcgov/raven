@@ -35,7 +35,9 @@ async function main(): Promise<void> {
   console.log("No valid session found. Opening browser for IDIR login...");
   console.log("  - A Chromium window will open");
   console.log("  - Log in with your IDIR credentials");
-  console.log("  - The window closes automatically once authenticated\n");
+  console.log("  - The window closes automatically once authenticated");
+  console.log("  - If a page shows 'This site can't be reached', it retries");
+  console.log("    automatically; refresh the page manually if it lingers\n");
 
   const sm = new SessionManager();
 
