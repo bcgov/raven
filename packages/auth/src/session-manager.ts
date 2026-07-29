@@ -161,8 +161,20 @@ const { chromium } = require('playwright');
       { waitUntil: 'networkidle', timeout: 120000 }
     );
   } catch (navErr) {
-    // A failed hop mid-redirect is retried by the handler above; the cookie
-    // poll below is what actually completes the flow, so keep going.
+    const navMsg = navErr && navErr.message ? String(navErr.message) : String(navErr);
+    const isTransientNet = navMsg.indexOf('net::ERR_') !== -1;
+    const isTimeout = navErr && navErr.name === 'TimeoutError';
+    if (!isTransientNet && !isTimeout) {
+      // Real failure (closed browser, crashed renderer, bad URL): fail fast
+      // with the script's JSON error contract instead of polling pointlessly.
+      await browser.close().catch(() => {});
+      console.log(JSON.stringify({ status: 'error', message: 'Navigation failed: ' + navMsg.split('\\n')[0] }));
+      return;
+    }
+    // net::ERR_* drops are reloaded by the requestfailed handler above, and a
+    // goto timeout can coexist with a login the user already completed
+    // (networkidle may never fire on a chatty login page) — the SMSESSION
+    // poll below is the authoritative success signal for both, so keep going.
   }
 
   const startTime = Date.now();
