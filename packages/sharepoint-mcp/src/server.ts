@@ -115,7 +115,7 @@ Always include the full SharePoint URL when referencing results.`,
             content: [
               {
                 type: "text",
-                text: `No results for '${query}'. Permission-trimming applies — content you cannot access is never listed.`,
+                text: pi.scrubText(`No results for '${query}'. Permission-trimming applies — content you cannot access is never listed.`),
               },
             ],
           };
@@ -155,7 +155,7 @@ libraries.`,
         const spo = await getClient();
         const { hits } = await spo.search(`contentclass:STS_Site ${query}`, { rowLimit: limit });
         if (hits.length === 0) {
-          return { content: [{ type: "text", text: `No sites found matching '${query}'.` }] };
+          return { content: [{ type: "text", text: pi.scrubText(`No sites found matching '${query}'.`) }] };
         }
         const body = hits.map((hit, i) => formatSearchHit(hit, i)).join("\n\n");
         return { content: [{ type: "text", text: pi.scrubText(`Sites matching '${query}':\n\n${body}`) }] };
