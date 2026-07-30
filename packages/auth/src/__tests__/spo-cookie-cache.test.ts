@@ -51,6 +51,24 @@ describe("spo cookie cache", () => {
     expect(await readCachedSpoSession(cachePath)).toBeNull();
   });
 
+  it("returns null when cachedAt is missing (NaN age must not bypass the TTL)", async () => {
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(
+      cachePath,
+      JSON.stringify({ fedAuth: "fa", rtFa: "rt", capturedFor: "x" })
+    );
+    expect(await readCachedSpoSession(cachePath)).toBeNull();
+  });
+
+  it("returns null when cachedAt is not a finite number", async () => {
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(
+      cachePath,
+      JSON.stringify({ fedAuth: "fa", rtFa: "rt", cachedAt: "garbage", capturedFor: "x" })
+    );
+    expect(await readCachedSpoSession(cachePath)).toBeNull();
+  });
+
   it("writes the cache file with mode 0600", async () => {
     await writeCachedSpoSession(cachePath, { fedAuth: "fa", rtFa: "rt" }, "example.sharepoint.com");
     const st = await stat(cachePath);

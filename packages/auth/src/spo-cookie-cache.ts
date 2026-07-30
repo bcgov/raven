@@ -21,6 +21,10 @@ export async function readCachedSpoSession(
 
     if (!data.fedAuth || !data.rtFa) return null;
 
+    // A missing/garbage cachedAt makes the age NaN, which would bypass the
+    // TTL comparison and never expire — reject the entry instead.
+    if (!Number.isFinite(data.cachedAt)) return null;
+
     const ageSeconds = (Date.now() - data.cachedAt) / 1000;
     if (ageSeconds >= ttlSeconds) return null;
 
