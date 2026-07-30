@@ -20,6 +20,50 @@ export function escapeODataPath(path: string): string {
   return path.replace(/'/g, "''");
 }
 
+const SEARCH_PROPERTIES =
+  "Title,Path,Author,LastModifiedTime,HitHighlightedSummary,FileType,SiteName";
+
+/** Strip SPO hit-highlighting markup: <c0>..</c0> emphasis and <ddd/> ellipses. */
+export function cleanSummary(raw: string): string {
+  return raw
+    .replace(/<c\d+>/g, "")
+    .replace(/<\/c\d+>/g, "")
+    .replace(/<ddd\s*\/>/g, "…")
+    .trim();
+}
+
+/** Parse the /_api/search/query JSON into flat SearchHit records. */
+export function parseSearchResults(json: unknown): { hits: SearchHit[]; totalRows: number } {
+  const relevant = (json as {
+    PrimaryQueryResult?: {
+      RelevantResults?: {
+        TotalRows?: number;
+        Table?: { Rows?: Array<{ Cells?: Array<{ Key?: string; Value?: string | null }> }> };
+      };
+    };
+  }).PrimaryQueryResult?.RelevantResults;
+
+  const rows = relevant?.Table?.Rows ?? [];
+  const hits: SearchHit[] = rows.map((row) => {
+    const cells = new Map<string, string>();
+    for (const cell of row.Cells ?? []) {
+      if (cell.Key && cell.Value != null) cells.set(cell.Key, String(cell.Value));
+    }
+    const summary = cells.get("HitHighlightedSummary");
+    return {
+      title: cells.get("Title") ?? "(untitled)",
+      path: cells.get("Path") ?? "",
+      author: cells.get("Author"),
+      modified: cells.get("LastModifiedTime"),
+      summary: summary ? cleanSummary(summary) : undefined,
+      fileType: cells.get("FileType"),
+      siteName: cells.get("SiteName"),
+    };
+  });
+
+  return { hits, totalRows: relevant?.TotalRows ?? hits.length };
+}
+
 /**
  * REST client for SharePoint Online (site-scoped /_api endpoints + tenant
  * search). Auth (FedAuth/rtFa cookies today, Graph bearer later) is baked
@@ -126,6 +170,30 @@ export class SharePointClient {
       `/ListItemAllFields?$select=Title,CanvasContent1`;
     const item = await this.getJson<{ Title?: string; CanvasContent1?: string }>(url);
     return { title: item.Title ?? "", canvasContent: item.CanvasContent1 ?? "" };
+  }
+
+  /**
+   * Tenant-wide KQL search, permission-trimmed to what the user can see.
+   * Optional scoping: sitePath restricts via Path:"…*", fileType via FileType:.
+   */
+  async search(
+    queryText: string,
+    opts?: { rowLimit?: number; sitePath?: string; fileType?: string }
+  ): Promise<{ hits: SearchHit[]; totalRows: number }> {
+    const clauses = [queryText];
+    if (opts?.sitePath) clauses.push(`Path:"${this.baseUrl}${opts.sitePath}*"`);
+    if (opts?.fileType) clauses.push(`FileType:${opts.fileType}`);
+    const kql = clauses.join(" ").replace(/'/g, "''");
+
+    const url =
+      `${this.baseUrl}/_api/search/query` +
+      `?querytext='${encodeURIComponent(kql)}'` +
+      `&rowlimit=${opts?.rowLimit ?? 10}` +
+      `&selectproperties='${encodeURIComponent(SEARCH_PROPERTIES)}'` +
+      `&trimduplicates=true`;
+
+    const json = await this.getJson<unknown>(url);
+    return parseSearchResults(json);
   }
 
   get root(): string {
