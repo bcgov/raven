@@ -3,12 +3,9 @@ import TurndownService from "turndown";
 const turndown = new TurndownService({
   headingStyle: "atx",
   codeBlockStyle: "fenced",
+  emDelimiter: "*",
 });
 turndown.remove(["script", "style"]);
-turndown.addRule("em", {
-  filter: ["em"],
-  replacement: (content) => `*${content}*`,
-});
 
 /**
  * Convert a modern site page's CanvasContent1 markup to markdown.

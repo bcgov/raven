@@ -4,12 +4,9 @@ import TurndownService from "turndown";
 const turndown = new TurndownService({
   headingStyle: "atx",
   codeBlockStyle: "fenced",
+  emDelimiter: "*",
 });
 turndown.remove(["script", "style"]);
-turndown.addRule("em", {
-  filter: ["em"],
-  replacement: (content) => `*${content}*`,
-});
 
 /**
  * Convert a Word document's bytes to markdown (mammoth docx→HTML, then
