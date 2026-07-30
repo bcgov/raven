@@ -17,6 +17,7 @@ import { SessionManager } from "./session-manager.js";
 import { readCachedSession } from "./cookie-cache.js";
 import { SpoSessionManager } from "./spo-session-manager.js";
 import { readCachedSpoSession } from "./spo-cookie-cache.js";
+import { loadEnv } from "./load-env.js";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -46,7 +47,7 @@ async function siteMinderAuth(): Promise<void> {
   const sm = new SessionManager();
 
   try {
-    const cookie = await sm.authenticate();
+    await sm.authenticate();
     console.log("\nAuthentication successful!");
     console.log(`  Cached: ~/.workflow-suite/session.json`);
     console.log(`  TTL:    25 minutes`);
@@ -64,7 +65,10 @@ async function sharePointAuth(): Promise<void> {
   console.log("RAVEN Auth - SharePoint Online Session Manager");
   console.log("==============================================\n");
 
-  const existing = await readCachedSpoSession(spoCachePath);
+  const existing = await readCachedSpoSession(
+    spoCachePath,
+    Number(process.env["SHAREPOINT_SESSION_TTL"]) || undefined
+  );
   if (existing) {
     console.log("Valid SharePoint session found in cache.");
     console.log("  Cache:  ~/.workflow-suite/spo-session.json");
@@ -97,6 +101,7 @@ async function sharePointAuth(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  loadEnv();
   if (process.argv.includes("--sharepoint")) {
     await sharePointAuth();
     return;

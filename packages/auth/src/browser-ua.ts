@@ -1,4 +1,4 @@
-/** User-agent string, selected by host OS so SiteMinder does not get a mismatched UA. */
+/** User-agent string, selected by host OS so login flows (SiteMinder, Entra/SharePoint) do not get a mismatched UA. */
 function buildUserAgent(): string {
   switch (process.platform) {
     case "win32":

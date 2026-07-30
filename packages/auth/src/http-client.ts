@@ -2,6 +2,7 @@ import type { SessionManager } from "./session-manager.js";
 import type { AuthenticatedFetch } from "./types.js";
 import { wrapFetchWithLimits, atlassianLimiterOpts } from "./rate-limit.js";
 
+/** Set or replace a cookie in a request Headers object's Cookie header (case-insensitive, no duplicates). */
 export function setCookieHeader(headers: Headers, name: string, value: string): void {
   const parts = (headers.get("Cookie") ?? "")
     .split(";")
