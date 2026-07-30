@@ -15,7 +15,7 @@
 
 | | Count |
 |---|---|
-| MCP servers | **15** |
+| MCP servers | **16** |
 | Tools registered locally (in-process) | **187** |
 | Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 187 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
 | **Tools advertised to the AI when everything is connected** | **~193** |
@@ -43,6 +43,7 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 | Jenkins | `jenkins` | 19 | 15 | 34 |
 | RFC Buddy | `rfcbuddy` | 0 | 1 | 1 |
 | Artifactory | `artifactory` | 12 | 7 | 19 |
+| SharePoint | `sharepoint` | 0 | 0 | 0 |
 | **Subtotal (local)** | | **124** | **63** | **187** |
 | Jarvis (remote proxy) | `jarvis` | ~5 | ~1 | ~6 |
 | **Advertised total** | | **~129** | **~64** | **~193** |
@@ -114,6 +115,11 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 #### artifactory-mcp — 19 tools (12 read / 7 write)
 - **Read:** `artifactory_ping`, `artifactory_get_version`, `artifactory_list_repositories`, `artifactory_get_item_info`, `artifactory_list_folder`, `artifactory_get_item_properties`, `artifactory_get_item_stats`, `artifactory_search_artifacts`, `artifactory_search_items`, `artifactory_list_builds`, `artifactory_list_build_runs`, `artifactory_get_build_info`
 - **Write:** `artifactory_download_artifact`, `artifactory_upload_artifact`, `artifactory_copy_item`, `artifactory_move_item`, `artifactory_delete_item`, `artifactory_set_item_properties`, `artifactory_delete_item_properties`
+
+### Microsoft 365
+
+#### sharepoint-mcp — 0 tools (read-only)
+
 
 ### Remote proxy (data egress)
 
