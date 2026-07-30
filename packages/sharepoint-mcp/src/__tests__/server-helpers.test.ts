@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatBytes, formatSearchHit, describeSpoError } from "../server.js";
+import { formatBytes, formatSearchHit, describeSpoError, truncateText, mimeFromExtension } from "../server.js";
 import { SpoApiError } from "../types.js";
 
 describe("formatBytes", () => {
@@ -39,5 +39,27 @@ describe("describeSpoError", () => {
   });
   it("falls back to the scrubbed message otherwise", () => {
     expect(describeSpoError(new Error("boom"))).toContain("boom");
+  });
+});
+
+describe("truncateText", () => {
+  it("passes short text through unchanged", () => {
+    expect(truncateText("hello", 50)).toBe("hello");
+  });
+  it("truncates long text with an explicit notice", () => {
+    const out = truncateText("x".repeat(100), 10);
+    expect(out.startsWith("x".repeat(10))).toBe(true);
+    expect(out).toContain("[truncated — showing 10 of 100 characters]");
+  });
+});
+
+describe("mimeFromExtension", () => {
+  it("maps the formats read_document routes on", () => {
+    expect(mimeFromExtension("a.docx")).toBe("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    expect(mimeFromExtension("a.pdf")).toBe("application/pdf");
+    expect(mimeFromExtension("a.PNG")).toBe("image/png");
+    expect(mimeFromExtension("a.jpeg")).toBe("image/jpeg");
+    expect(mimeFromExtension("notes.md")).toBe("text/plain");
+    expect(mimeFromExtension("a.bin")).toBe("application/octet-stream");
   });
 });

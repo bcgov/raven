@@ -1,8 +1,13 @@
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { SpoSessionManager, createSpoFetch, PiScrubber } from "@nrs/auth";
+import { SpoSessionManager, createSpoFetch, PiScrubber, classifyAttachment, decodeUtf8, extractPdfText, sanitizeFilename } from "@nrs/auth";
 import { SharePointClient } from "./sharepoint-client.js";
 import { SpoApiError, type SearchHit } from "./types.js";
+import { extractDocxMarkdown } from "./extractors/docx.js";
+import { extractPageMarkdown } from "./extractors/page-canvas.js";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { homedir } from "node:os";
 
 const pi = new PiScrubber();
 const safeErr = (err: unknown): string =>
@@ -10,6 +15,9 @@ const safeErr = (err: unknown): string =>
 
 const DEFAULT_SEARCH_LIMIT = 10;
 const MAX_SEARCH_LIMIT = 50;
+const MAX_FETCH_BYTES = 10 * 1024 * 1024;
+const MAX_TEXT_CHARS = 50_000;
+const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 
 const DEFAULT_SITE = process.env["SHAREPOINT_DEFAULT_SITE"] ?? "";
 
@@ -56,6 +64,39 @@ export function describeSpoError(err: unknown): string {
     }
   }
   return safeErr(err);
+}
+
+/** Cap text output with an explicit truncation notice. */
+export function truncateText(text: string, cap: number = MAX_TEXT_CHARS): string {
+  if (text.length <= cap) return text;
+  return (
+    text.slice(0, cap) +
+    `\n\n[truncated — showing ${cap} of ${text.length} characters]`
+  );
+}
+
+const EXT_MIME: Record<string, string> = {
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  pdf: "application/pdf",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  txt: "text/plain",
+  md: "text/plain",
+  log: "text/plain",
+  csv: "text/plain",
+  json: "text/plain",
+  xml: "text/plain",
+  yml: "text/plain",
+  yaml: "text/plain",
+};
+
+/** SPO file metadata carries no MIME type — derive one from the extension. */
+export function mimeFromExtension(filename: string): string {
+  const dot = filename.lastIndexOf(".");
+  const ext = dot >= 0 ? filename.slice(dot + 1).toLowerCase() : "";
+  return EXT_MIME[ext] ?? "application/octet-stream";
 }
 
 let client: SharePointClient | null = null;
@@ -258,6 +299,172 @@ names, sizes, and modified dates plus sub-folder item counts.`,
           ],
           isError: true,
         };
+      }
+    }
+  );
+
+  server.tool(
+    "get_file_info",
+    `Get metadata for a single SharePoint file: size, modified date, version, and URL. Use before read_document to check whether a large file is worth reading inline.`,
+    {
+      sitePath: sitePathSchema,
+      filePath: z.string().describe('Server-relative file path, e.g. "/sites/MyProject/Shared Documents/design.docx"'),
+    },
+    { readOnlyHint: true },
+    async ({ sitePath, filePath }) => {
+      try {
+        const spo = await getClient();
+        const info = await spo.getFileInfo(sitePath, filePath);
+        const text = [
+          `**${info.name}**`,
+          `- Size: ${formatBytes(info.length)}`,
+          `- Modified: ${info.timeLastModified}`,
+          info.versionLabel ? `- Version: ${info.versionLabel}` : "",
+          `- URL: ${info.webUrl}`,
+        ].filter(Boolean).join("\n");
+        return { content: [{ type: "text", text: pi.scrubText(text) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: `get_file_info error: ${describeSpoError(err)}` }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    "read_document",
+    `Read a SharePoint file's content directly in the tool result.
+
+Word documents (.docx) come back as markdown, PDFs as extracted text, plain
+text/markdown/CSV/JSON verbatim, and images (png/jpg/gif — diagrams, mock-ups)
+as the image itself. Files over 10 MB (2 MB for images) and other formats
+(xlsx, pptx, vsd, ...) are not readable inline — use download_file for those.
+NOTE: inlined image content may contain personal information visible to the AI
+and cannot be PI-scrubbed.`,
+    {
+      sitePath: sitePathSchema,
+      filePath: z.string().describe('Server-relative file path, e.g. "/sites/MyProject/Shared Documents/design.docx"'),
+    },
+    { readOnlyHint: true },
+    async ({ sitePath, filePath }) => {
+      try {
+        const spo = await getClient();
+        const info = await spo.getFileInfo(sitePath, filePath);
+        if (info.length > MAX_FETCH_BYTES) {
+          return {
+            content: [{ type: "text", text: pi.scrubText(`File is ${formatBytes(info.length)} — larger than the ${formatBytes(MAX_FETCH_BYTES)} inline limit. It is viewable at: ${info.webUrl}`) }],
+            isError: true,
+          };
+        }
+
+        const mime = mimeFromExtension(info.name);
+        const kind = classifyAttachment(mime, info.name);
+        // classifyAttachment doesn't know docx (it reports "other" for the
+        // OOXML MIME type) — route on the extension before the early return.
+        const isDocx = info.name.toLowerCase().endsWith(".docx");
+        if (kind === "other" && !isDocx) {
+          return {
+            content: [{ type: "text", text: pi.scrubText(`No inline reader for '${info.name}' (${mime}). Use download_file to save it locally, or view it at: ${info.webUrl}`) }],
+            isError: true,
+          };
+        }
+        if (kind === "image" && info.length > MAX_IMAGE_BYTES) {
+          return {
+            content: [{ type: "text", text: pi.scrubText(`Image is ${formatBytes(info.length)} — larger than the ${formatBytes(MAX_IMAGE_BYTES)} inline limit. Use download_file, or view it at: ${info.webUrl}`) }],
+            isError: true,
+          };
+        }
+
+        const bytes = await spo.downloadFile(sitePath, filePath);
+        const header = `**${info.name}** (${formatBytes(info.length)}, modified ${info.timeLastModified.slice(0, 10)}) — ${info.webUrl}\n\n`;
+
+        if (kind === "image") {
+          return {
+            content: [
+              { type: "text", text: pi.scrubText(header.trim()) },
+              { type: "image", data: Buffer.from(bytes).toString("base64"), mimeType: mime },
+            ],
+          };
+        }
+
+        let text: string;
+        if (isDocx) {
+          text = await extractDocxMarkdown(bytes);
+        } else if (kind === "pdf") {
+          text = await extractPdfText(bytes);
+          if (!text.trim()) text = "(PDF contained no extractable text — it may be a scanned image.)";
+        } else {
+          text = decodeUtf8(bytes);
+        }
+
+        return { content: [{ type: "text", text: pi.scrubText(header) + truncateText(pi.scrubText(text)) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: `read_document error: ${describeSpoError(err)}` }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    "read_page",
+    `Read a modern SharePoint site page (.aspx) as markdown.
+
+Extracts the text-webpart content of pages in a Site Pages library (knowledge
+articles, decisions, wiki-style pages). Embedded webparts (video, lists,
+Power BI, ...) are omitted. If the page has no extractable text you get a link
+to view it instead.`,
+    {
+      sitePath: sitePathSchema,
+      pagePath: z
+        .string()
+        .refine((v) => v.toLowerCase().endsWith(".aspx"), { message: "pagePath must end in .aspx" })
+        .describe('Server-relative page path, e.g. "/sites/MyProject/SitePages/Architecture-Decisions.aspx"'),
+    },
+    { readOnlyHint: true },
+    async ({ sitePath, pagePath }) => {
+      try {
+        const spo = await getClient();
+        const { title, canvasContent } = await spo.getPageCanvasContent(sitePath, pagePath);
+        const webUrl = `${spo.root}${pagePath}`;
+        const md = extractPageMarkdown(canvasContent);
+        if (!md) {
+          return { content: [{ type: "text", text: pi.scrubText(`This page has no extractable text (or an unsupported layout). View it directly: ${webUrl}`) }] };
+        }
+        const text = `# ${title || pagePath}\n\n${md}\n\n---\nSource: ${webUrl}`;
+        return { content: [{ type: "text", text: truncateText(pi.scrubText(text)) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: `read_page error: ${describeSpoError(err)}` }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    "download_file",
+    `Download a SharePoint file to the local protected download directory
+(RAVEN_SHAREPOINT_DOWNLOAD_DIR, default ~/.raven/sharepoint-downloads).
+
+Use for formats read_document cannot show inline (xlsx, pptx, vsd, zip, large
+files) or when the user wants the actual file. Returns the saved path.`,
+    {
+      sitePath: sitePathSchema,
+      filePath: z.string().describe("Server-relative file path"),
+    },
+    { readOnlyHint: true },
+    async ({ sitePath, filePath }) => {
+      try {
+        const spo = await getClient();
+        const info = await spo.getFileInfo(sitePath, filePath);
+        const bytes = await spo.downloadFile(sitePath, filePath);
+
+        const dir =
+          process.env["RAVEN_SHAREPOINT_DOWNLOAD_DIR"] ??
+          join(homedir(), ".raven", "sharepoint-downloads");
+        await mkdir(dir, { recursive: true, mode: 0o700 });
+        const target = join(dir, sanitizeFilename(info.name));
+        await writeFile(target, bytes);
+
+        return {
+          content: [{ type: "text", text: pi.scrubText(`Saved **${info.name}** (${formatBytes(bytes.length)}) to ${target}`) }],
+        };
+      } catch (err) {
+        return { content: [{ type: "text", text: `download_file error: ${describeSpoError(err)}` }], isError: true };
       }
     }
   );
