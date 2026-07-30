@@ -18,12 +18,12 @@ const MAX_SEARCH_LIMIT = 50;
 const MAX_FETCH_BYTES = 10 * 1024 * 1024;
 const MAX_TEXT_CHARS = 50_000;
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
-
-const DEFAULT_SITE = process.env["SHAREPOINT_DEFAULT_SITE"] ?? "";
+// Same default as packages/artifactory-mcp/src/server.ts's DEFAULT_MAX_TRANSFER_BYTES.
+const MAX_DOWNLOAD_BYTES_DEFAULT = 512 * 1024 * 1024;
 
 const sitePathSchema = z
   .string()
-  .default(DEFAULT_SITE)
+  .default(() => process.env["SHAREPOINT_DEFAULT_SITE"] ?? "")
   .describe(
     'Server-relative site path, e.g. "/sites/MyProject" or "/teams/MyTeam". ' +
       "Empty string for the tenant root site. Defaults to SHAREPOINT_DEFAULT_SITE when configured."
@@ -441,7 +441,9 @@ to view it instead.`,
 (RAVEN_SHAREPOINT_DOWNLOAD_DIR, default ~/.raven/sharepoint-downloads).
 
 Use for formats read_document cannot show inline (xlsx, pptx, vsd, zip, large
-files) or when the user wants the actual file. Returns the saved path.`,
+files) or when the user wants the actual file. Files over 512 MB by default
+(RAVEN_SHAREPOINT_MAX_DOWNLOAD_BYTES) are rejected rather than downloaded.
+Returns the saved path.`,
     {
       sitePath: sitePathSchema,
       filePath: z.string().describe("Server-relative file path"),
@@ -451,6 +453,23 @@ files) or when the user wants the actual file. Returns the saved path.`,
       try {
         const spo = await getClient();
         const info = await spo.getFileInfo(sitePath, filePath);
+
+        const maxDownload =
+          Number(process.env["RAVEN_SHAREPOINT_MAX_DOWNLOAD_BYTES"]) || MAX_DOWNLOAD_BYTES_DEFAULT;
+        if (info.length > maxDownload) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: pi.scrubText(
+                  `File is ${formatBytes(info.length)} — larger than the ${formatBytes(maxDownload)} download limit (RAVEN_SHAREPOINT_MAX_DOWNLOAD_BYTES). View it at: ${info.webUrl}`
+                ),
+              },
+            ],
+            isError: true,
+          };
+        }
+
         const bytes = await spo.downloadFile(sitePath, filePath);
 
         const dir =

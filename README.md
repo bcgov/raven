@@ -206,6 +206,8 @@ SHAREPOINT_URL=https://<tenant>.sharepoint.com
 # SHAREPOINT_SESSION_TTL=28800
 # Optional: where download_file saves files (default ~/.raven/sharepoint-downloads)
 # RAVEN_SHAREPOINT_DOWNLOAD_DIR=~/.raven/sharepoint-downloads
+# Optional: reject download_file for files larger than this (bytes; default 536870912 = 512 MB)
+# RAVEN_SHAREPOINT_MAX_DOWNLOAD_BYTES=536870912
 # Optional: SPO rate-limit tuning (burst capacity / sustained requests-per-second)
 # RATE_LIMIT_SPO_BURST=10
 # RATE_LIMIT_SPO_RPS=4
@@ -442,7 +444,7 @@ RAVEN includes a `.mcp.json` file in the repo root that VS Code detects automati
 
 **Verify MCP servers are connected:**
 - Open the Command Palette (**⌘⇧P** / **Ctrl+Shift+P**) and run **MCP: List Servers**
-- All 12 servers should show as registered — click any to start/restart it
+- All servers in `.mcp.json` should show as registered — click any to start/restart it
 - In the Copilot Chat input bar, click the **tools icon** (🔧) to see which tools are available
 
 No manual MCP configuration needed — the `.mcp.json` in the project root handles everything. If you need to customize server paths, edit `.mcp.json` directly.

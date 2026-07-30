@@ -227,6 +227,7 @@ If dedicated Jenkins credentials are omitted, the server falls back to the cache
 | `SHAREPOINT_SESSION_TTL` | optional | no | sharepoint | cached FedAuth/rtFa session lifetime in seconds (default 28800 = 8h) |
 | `SPO_FEDAUTH` / `SPO_RTFA` | optional | **yes** | sharepoint | pre-captured session cookies; skips the `raven-auth --sharepoint` browser login when both are set |
 | `RAVEN_SHAREPOINT_DOWNLOAD_DIR` | optional | no | sharepoint | protected download destination (default `~/.raven/sharepoint-downloads`) |
+| `RAVEN_SHAREPOINT_MAX_DOWNLOAD_BYTES` | optional | no | sharepoint | maximum `download_file` size (default 512 MiB) |
 | `RATE_LIMIT_SPO_BURST` | optional | no | sharepoint | token-bucket burst capacity for the SPO host limiter (default 10) |
 | `RATE_LIMIT_SPO_RPS` | optional | no | sharepoint | token-bucket sustained requests/sec for the SPO host limiter (default 4) |
 
