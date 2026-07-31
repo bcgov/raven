@@ -30,6 +30,7 @@ import { createBugClassifierServer } from "../packages/bug-classifier-mcp/dist/s
 import { createRfcBuddyServer } from "../packages/rfcbuddy-mcp/dist/server.js";
 import { createArtifactoryServer } from "../packages/artifactory-mcp/dist/server.js";
 import { createSharePointServer } from "../packages/sharepoint-mcp/dist/server.js";
+import { createGitHubServer } from "../packages/github-mcp/dist/server.js";
 
 const INVENTORY = fileURLToPath(new URL("../docs/TOOL_INVENTORY.md", import.meta.url));
 
@@ -50,6 +51,7 @@ const SERVERS = [
   { display: "RFC Buddy", pkg: "rfcbuddy-mcp", mcpKey: "rfcbuddy", group: "RFC tracking & schedules", factory: createRfcBuddyServer },
   { display: "Artifactory", pkg: "artifactory-mcp", mcpKey: "artifactory", group: "Build and artifact infrastructure", factory: createArtifactoryServer },
   { display: "SharePoint", pkg: "sharepoint-mcp", mcpKey: "sharepoint", group: "Microsoft 365", factory: createSharePointServer },
+  { display: "GitHub", pkg: "github-mcp", mcpKey: "github", group: "GitHub platform / security", factory: createGitHubServer },
 ];
 
 async function listTools(factory) {

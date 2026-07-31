@@ -23,7 +23,8 @@
     "packages/jenkins-mcp",
     "packages/rfcbuddy-mcp",
     "packages/artifactory-mcp",
-    "packages/sharepoint-mcp"
+    "packages/sharepoint-mcp",
+    "packages/github-mcp"
   ],
   "scripts": {
     "build": "tsc --build",
