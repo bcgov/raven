@@ -22,7 +22,8 @@
     "packages/sonar-mcp",
     "packages/jenkins-mcp",
     "packages/rfcbuddy-mcp",
-    "packages/artifactory-mcp"
+    "packages/artifactory-mcp",
+    "packages/github-mcp"
   ],
   "scripts": {
     "build": "tsc --build",

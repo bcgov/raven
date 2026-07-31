@@ -1,0 +1,22 @@
+{
+  "name": "@nrs/github-mcp",
+  "version": "0.1.0",
+  "description": "GitHub MCP server for RAVEN suite — GHAS security findings, code scanning, secret scanning, Dependabot, issues, and pull requests via the GitHub REST API",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./client": "./dist/github-client.js"
+  },
+  "bin": { "raven-github-mcp": "dist/index.js" },
+  "scripts": {
+    "build": "tsc --build",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@nrs/auth": "*",
+    "zod": "^3.24.0"
+  }
+}

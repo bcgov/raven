@@ -15,12 +15,12 @@
 
 | | Count |
 |---|---|
-| MCP servers | **15** |
-| Tools registered locally (in-process) | **187** |
-| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 187 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
-| **Tools advertised to the AI when everything is connected** | **~193** |
-| Mutating / write tools | **~64** (63 local + ~1 via Jarvis) |
-| Read-only tools | **~129** |
+| MCP servers | **16** |
+| Tools registered locally (in-process) | **221** |
+| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 221 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
+| **Tools advertised to the AI when everything is connected** | **~227** |
+| Mutating / write tools | **~79** (78 local + ~1 via Jarvis) |
+| Read-only tools | **~148** |
 | Non-server packages | `auth`, `pipeline`, `server-ui`, `raven-cli` |
 
 Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share one SiteMinder/Basic-Auth session; Server Monitor, IMIS, Azure DevOps, Sonar, Jenkins, Artifactory, RFC Buddy, and Jarvis authenticate separately via `~/.raven/.env`.
@@ -43,9 +43,10 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 | Jenkins | `jenkins` | 19 | 15 | 34 |
 | RFC Buddy | `rfcbuddy` | 0 | 1 | 1 |
 | Artifactory | `artifactory` | 12 | 7 | 19 |
-| **Subtotal (local)** | | **124** | **63** | **187** |
+| GitHub | `github` | 19 | 15 | 34 |
+| **Subtotal (local)** | | **143** | **78** | **221** |
 | Jarvis (remote proxy) | `jarvis` | ~5 | ~1 | ~6 |
-| **Advertised total** | | **~129** | **~64** | **~193** |
+| **Advertised total** | | **~148** | **~79** | **~227** |
 
 ## Servers and tools
 
@@ -114,6 +115,12 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 #### artifactory-mcp — 19 tools (12 read / 7 write)
 - **Read:** `artifactory_ping`, `artifactory_get_version`, `artifactory_list_repositories`, `artifactory_get_item_info`, `artifactory_list_folder`, `artifactory_get_item_properties`, `artifactory_get_item_stats`, `artifactory_search_artifacts`, `artifactory_search_items`, `artifactory_list_builds`, `artifactory_list_build_runs`, `artifactory_get_build_info`
 - **Write:** `artifactory_download_artifact`, `artifactory_upload_artifact`, `artifactory_copy_item`, `artifactory_move_item`, `artifactory_delete_item`, `artifactory_set_item_properties`, `artifactory_delete_item_properties`
+
+### GitHub platform / security
+
+#### github-mcp — 34 tools (19 read / 15 write)
+- **Read:** `github_health`, `github_config`, `security_get_sarif_upload_status`, `security_list_code_scanning_alerts`, `security_get_code_scanning_alert`, `security_get_code_scanning_alert_instances`, `security_get_code_scanning_autofix_status`, `security_list_secret_scanning_alerts`, `security_get_secret_scanning_alert`, `security_list_dependabot_alerts`, `security_get_dependabot_alert`, `issue_search`, `pr_get`, `repo_get_security_configuration`, `repo_get_rulesets`, `repo_get_security_summary`, `org_list_security_alerts`, `org_security_summary`, `org_find_repositories_missing_security_controls`
+- **Write:** `security_publish_sarif`, `security_update_code_scanning_alert`, `security_create_code_scanning_autofix`, `security_commit_code_scanning_autofix`, `security_update_secret_scanning_alert`, `security_update_dependabot_alert`, `issue_create`, `issue_update`, `issue_close`, `issue_add_comment`, `pr_create`, `pr_update`, `pr_request_review`, `pr_comment`, `pr_merge`
 
 ### Remote proxy (data egress)
 

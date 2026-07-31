@@ -28,6 +28,7 @@ import { createOverviewServer } from "../packages/overview-mcp/dist/server.js";
 import { createBugClassifierServer } from "../packages/bug-classifier-mcp/dist/server.js";
 import { createRfcBuddyServer } from "../packages/rfcbuddy-mcp/dist/server.js";
 import { createArtifactoryServer } from "../packages/artifactory-mcp/dist/server.js";
+import { createGitHubServer } from "../packages/github-mcp/dist/server.js";
 
 const INVENTORY = fileURLToPath(new URL("../docs/TOOL_INVENTORY.md", import.meta.url));
 
@@ -47,6 +48,7 @@ const SERVERS = [
   { display: "Jenkins", pkg: "jenkins-mcp", mcpKey: "jenkins", group: "CI/CD", factory: createJenkinsServer },
   { display: "RFC Buddy", pkg: "rfcbuddy-mcp", mcpKey: "rfcbuddy", group: "RFC tracking & schedules", factory: createRfcBuddyServer },
   { display: "Artifactory", pkg: "artifactory-mcp", mcpKey: "artifactory", group: "Build and artifact infrastructure", factory: createArtifactoryServer },
+  { display: "GitHub", pkg: "github-mcp", mcpKey: "github", group: "GitHub platform / security", factory: createGitHubServer },
 ];
 
 async function listTools(factory) {

@@ -136,9 +136,23 @@ $jenkinsToken    = Prompt-Value "JENKINS_TOKEN"    "Jenkins API token" -isSensit
 $jenkinsPassword = Prompt-Value "JENKINS_PASSWORD" "Jenkins password (leave blank when using an API token)" -isSensitive $true
 
 Write-Host ""
+Write-Host "GitHub (leave blank to skip)" -ForegroundColor Cyan
+Write-Host "Required token scopes: security_events, issues, pull_requests, contents, metadata"
+$githubToken = Prompt-Value "GITHUB_TOKEN" "GitHub Personal Access Token (PAT)" -isSensitive $true
+$githubApiUrl = Prompt-Value "GITHUB_API_URL" "GitHub API URL (default: https://api.github.com)"
+$githubAllowList = Prompt-Value "GITHUB_REPOSITORY_ALLOWLIST" "GitHub repository allow-list (e.g. bcgov/*)"
+$githubAutofix = Prompt-Value "GITHUB_ENABLE_AUTOFIX" "Enable GitHub autofix tools? (true/false; default false)"
+$githubMerge = Prompt-Value "GITHUB_ENABLE_MERGE" "Enable GitHub PR merge tool? (true/false; default false)"
+$githubTimeout = Prompt-Value "GITHUB_TIMEOUT_MS" "GitHub request timeout in ms (default 30000)"
+
+Write-Host ""
 
 if (-not $baseUrl -or -not $email -or -not $password) {
     Write-Host "Error: ATLASSIAN_BASE_URL, ATLASSIAN_EMAIL, and ATLASSIAN_PASSWORD are required." -ForegroundColor Red
+    exit 1
+}
+if ($githubToken -and -not $githubAllowList) {
+    Write-Host "Error: GITHUB_REPOSITORY_ALLOWLIST is required when configuring GITHUB_TOKEN." -ForegroundColor Red
     exit 1
 }
 
@@ -166,6 +180,12 @@ if ($jenkinsUrl)      { $creds["JENKINS_URL"]      = Protect-String $jenkinsUrl 
 if ($jenkinsUser)     { $creds["JENKINS_USER"]     = Protect-String $jenkinsUser }
 if ($jenkinsToken)    { $creds["JENKINS_TOKEN"]    = Protect-String $jenkinsToken }
 if ($jenkinsPassword) { $creds["JENKINS_PASSWORD"] = Protect-String $jenkinsPassword }
+if ($githubToken)     { $creds["GITHUB_TOKEN"]     = Protect-String $githubToken }
+if ($githubApiUrl)    { $creds["GITHUB_API_URL"]  = Protect-String $githubApiUrl }
+if ($githubAllowList) { $creds["GITHUB_REPOSITORY_ALLOWLIST"] = Protect-String $githubAllowList }
+if ($githubAutofix)   { $creds["GITHUB_ENABLE_AUTOFIX"] = Protect-String $githubAutofix }
+if ($githubMerge)     { $creds["GITHUB_ENABLE_MERGE"] = Protect-String $githubMerge }
+if ($githubTimeout)   { $creds["GITHUB_TIMEOUT_MS"] = Protect-String $githubTimeout }
 
 # Carry forward any extra keys that were already stored (e.g. IMIS_CSV_PATH)
 foreach ($prop in $existing.GetEnumerator()) {
