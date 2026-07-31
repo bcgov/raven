@@ -3,6 +3,7 @@ export {
   createAuthenticatedFetch,
   createBasicAuthFetch,
   isSessionExpired,
+  setCookieHeader,
 } from "./http-client.js";
 export {
   TokenBucket,
@@ -45,4 +46,27 @@ export type {
   AuthResult,
   AuthenticatedFetch,
   BasicAuthConfig,
+} from "./types.js";
+export {
+  sanitizeFilename,
+  classifyAttachment,
+  decodeUtf8,
+  extractPdfText,
+  disambiguateFilename,
+  buildAttachmentContent,
+} from "./content-blocks.js";
+export type { AttachmentKind, McpContentBlock } from "./content-blocks.js";
+export { SpoSessionManager } from "./spo-session-manager.js";
+export { createSpoFetch, isSpoSessionExpired } from "./spo-http-client.js";
+export { spoLimiterOpts } from "./rate-limit.js";
+export {
+  readCachedSpoSession,
+  writeCachedSpoSession,
+  clearCachedSpoSession,
+} from "./spo-cookie-cache.js";
+export type {
+  SpoCookies,
+  SpoSessionData,
+  SpoAuthConfig,
+  SpoAuthResult,
 } from "./types.js";

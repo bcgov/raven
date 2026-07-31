@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sanitizeFilename, classifyAttachment, decodeUtf8, disambiguateFilename } from "../attachment-content.js";
+import { sanitizeFilename, classifyAttachment, decodeUtf8, disambiguateFilename } from "../content-blocks.js";
 
 describe("sanitizeFilename", () => {
   it("reduces path/traversal input to a safe basename", () => {

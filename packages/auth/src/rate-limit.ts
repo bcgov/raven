@@ -254,6 +254,16 @@ export function sshLimiterOpts(): LimiterOpts {
   };
 }
 
+export function spoLimiterOpts(): LimiterOpts {
+  return {
+    burst: readEnvInt("RATE_LIMIT_SPO_BURST", 10),
+    rps: readEnvInt("RATE_LIMIT_SPO_RPS", 4),
+    breakerFailures: readEnvInt("RATE_LIMIT_BREAKER_FAILURES", 3),
+    breakerWindowSec: readEnvInt("RATE_LIMIT_BREAKER_WINDOW_S", 30),
+    breakerCooldownSec: readEnvInt("RATE_LIMIT_BREAKER_COOLDOWN_S", 30),
+  };
+}
+
 // ─── Fetch wrapper (Atlassian APIs) ──────────────────────────────────
 
 /**

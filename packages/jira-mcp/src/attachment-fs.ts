@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
-import { sanitizeFilename } from "./attachment-content.js";
+import { sanitizeFilename } from "@nrs/auth";
 
 /**
  * Save attachment bytes to disk under destDir (default: process.cwd()).
