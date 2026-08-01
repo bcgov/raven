@@ -404,12 +404,13 @@ and cannot be PI-scrubbed.`,
 
   server.tool(
     "read_page",
-    `Read a modern SharePoint site page (.aspx) as markdown.
+    `Read a SharePoint site page (.aspx) as markdown.
 
-Extracts the text-webpart content of pages in a Site Pages library (knowledge
-articles, decisions, wiki-style pages). Embedded webparts (video, lists,
-Power BI, ...) are omitted. If the page has no extractable text you get a link
-to view it instead.`,
+Extracts the text content of pages in a Site Pages library (knowledge
+articles, decisions, wiki-style pages) — modern text webparts and classic
+wiki-format pages both work. Embedded webparts (video, lists, Power BI, ...)
+are omitted. If the page has no extractable text you get a link to view it
+instead.`,
     {
       sitePath: sitePathSchema,
       pagePath: z

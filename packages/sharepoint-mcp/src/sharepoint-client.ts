@@ -167,9 +167,18 @@ export class SharePointClient {
     const url =
       `${this.baseUrl}${sitePath}/_api/web/GetFileByServerRelativePath(` +
       `decodedurl='${encodeURIComponent(escapeODataPath(pagePath))}')` +
-      `/ListItemAllFields?$select=Title,CanvasContent1`;
-    const item = await this.getJson<{ Title?: string; CanvasContent1?: string }>(url);
-    return { title: item.Title ?? "", canvasContent: item.CanvasContent1 ?? "" };
+      `/ListItemAllFields?$select=Title,CanvasContent1,WikiField`;
+    const item = await this.getJson<{
+      Title?: string | null;
+      CanvasContent1?: string | null;
+      WikiField?: string | null;
+    }>(url);
+    // Classic wiki-format Site Pages have null CanvasContent1 with the body
+    // HTML in WikiField; both are plain HTML the extractor can convert.
+    const canvas = item.CanvasContent1?.trim()
+      ? item.CanvasContent1
+      : (item.WikiField ?? "");
+    return { title: item.Title ?? "", canvasContent: canvas };
   }
 
   /**

@@ -91,6 +91,19 @@ describe("SharePointClient", () => {
     const client = clientWith(200, { Title: "Page", CanvasContent1: "<div>x</div>" }, capture);
     const page = await client.getPageCanvasContent("/sites/p", "/sites/p/SitePages/Home.aspx");
     expect(page.canvasContent).toBe("<div>x</div>");
-    expect(capture.url).toContain("/ListItemAllFields?$select=Title,CanvasContent1");
+    expect(capture.url).toContain("/ListItemAllFields?$select=Title,CanvasContent1,WikiField");
+  });
+
+  it("getPageCanvasContent falls back to WikiField for classic wiki pages", async () => {
+    // Wiki-format Site Pages (observed live) have null Title/CanvasContent1
+    // with the body HTML in WikiField.
+    const client = clientWith(200, {
+      Title: null,
+      CanvasContent1: null,
+      WikiField: "<div>wiki body</div>",
+    });
+    const page = await client.getPageCanvasContent("/sites/p", "/sites/p/SitePages/Old.aspx");
+    expect(page.canvasContent).toBe("<div>wiki body</div>");
+    expect(page.title).toBe("");
   });
 });
