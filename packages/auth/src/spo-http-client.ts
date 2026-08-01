@@ -7,10 +7,15 @@ import { wrapFetchWithLimits, spoLimiterOpts } from "./rate-limit.js";
  * Check whether a SharePoint Online response indicates an expired or missing
  * auth session (as opposed to a real 403 permission denial).
  *
- * SPO signals cookie expiry with 403 + the X-Forms_Based_Auth_Required
- * header, or by redirecting to the Entra login page.
+ * SPO signals cookie expiry with a bare 401 (observed live on the REST API —
+ * no WWW-Authenticate or X-Forms_Based_Auth_Required header), with 403 + the
+ * X-Forms_Based_Auth_Required header, or by redirecting to the Entra login
+ * page.
  */
 export function isSpoSessionExpired(response: Response): boolean {
+  // Every request through createSpoFetch carries the cookie pair, so an
+  // unauthenticated response can only mean the pair is no longer valid.
+  if (response.status === 401) return true;
   if (response.status === 403) {
     return response.headers.has("X-Forms_Based_Auth_Required");
   }

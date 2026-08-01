@@ -44,6 +44,10 @@ describe("isSpoSessionExpired", () => {
     expect(isSpoSessionExpired(new Response("", { status: 403 }))).toBe(false);
   });
 
+  it("treats a bare 401 as expired (SPO returns this for stale cookies)", () => {
+    expect(isSpoSessionExpired(new Response("", { status: 401 }))).toBe(true);
+  });
+
   it("treats 200 as not expired", () => {
     expect(isSpoSessionExpired(okResponse())).toBe(false);
   });
