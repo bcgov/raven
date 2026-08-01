@@ -5,7 +5,7 @@ import { SharePointClient } from "./sharepoint-client.js";
 import { SpoApiError, type SearchHit } from "./types.js";
 import { extractDocxMarkdown } from "./extractors/docx.js";
 import { extractPageMarkdown } from "./extractors/page-canvas.js";
-import { mkdir, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -31,6 +31,43 @@ const sitePathSchema = z
   .refine((v) => v === "" || v.startsWith("/"), {
     message: "sitePath must be empty or start with '/'",
   });
+
+/** A required server-relative path input (folder, file, or page). */
+export function serverRelativePath(description: string) {
+  return z
+    .string()
+    .refine((v) => v.startsWith("/"), {
+      message: "path must be server-relative (start with '/')",
+    })
+    .describe(description);
+}
+
+/**
+ * Write downloaded bytes into the protected download directory. Enforces
+ * mode 0700 on the directory even when it already exists, refuses to write
+ * through a symlink or non-regular file, and writes the file with mode 0600
+ * (same protected-file pattern as the Jenkins and Artifactory servers).
+ */
+export async function writeProtectedDownload(
+  dir: string,
+  filename: string,
+  bytes: Uint8Array
+): Promise<string> {
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await chmod(dir, 0o700);
+  const target = join(dir, sanitizeFilename(filename));
+  try {
+    const existing = await lstat(target);
+    if (existing.isSymbolicLink() || !existing.isFile()) {
+      throw new Error("Download target must be a regular file, not a symlink.");
+    }
+  } catch (err) {
+    if (!(err instanceof Error && "code" in err && err.code === "ENOENT")) throw err;
+  }
+  await writeFile(target, bytes, { mode: 0o600 });
+  await chmod(target, 0o600);
+  return target;
+}
 
 /** Human-readable byte size. */
 export function formatBytes(n: number): string {
@@ -156,7 +193,7 @@ Always include the full SharePoint URL when referencing results.`,
             content: [
               {
                 type: "text",
-                text: pi.scrubText(`No results for '${query}'. Permission-trimming applies — content you cannot access is never listed.`),
+                text: pi.scrubText(`No results for '${query}'. Search results are permission-trimmed, so content you cannot access is usually (though not always) excluded.`),
               },
             ],
           };
@@ -260,11 +297,9 @@ folderPath is the server-relative path from get_site (e.g.
 names, sizes, and modified dates plus sub-folder item counts.`,
     {
       sitePath: sitePathSchema,
-      folderPath: z
-        .string()
-        .describe(
-          'Server-relative folder path, e.g. "/sites/MyProject/Shared Documents/Designs"'
-        ),
+      folderPath: serverRelativePath(
+        'Server-relative folder path, e.g. "/sites/MyProject/Shared Documents/Designs"'
+      ),
     },
     { readOnlyHint: true },
     async ({ sitePath, folderPath }) => {
@@ -308,7 +343,7 @@ names, sizes, and modified dates plus sub-folder item counts.`,
     `Get metadata for a single SharePoint file: size, modified date, version, and URL. Use before read_document to check whether a large file is worth reading inline.`,
     {
       sitePath: sitePathSchema,
-      filePath: z.string().describe('Server-relative file path, e.g. "/sites/MyProject/Shared Documents/design.docx"'),
+      filePath: serverRelativePath('Server-relative file path, e.g. "/sites/MyProject/Shared Documents/design.docx"'),
     },
     { readOnlyHint: true },
     async ({ sitePath, filePath }) => {
@@ -341,7 +376,7 @@ NOTE: inlined image content may contain personal information visible to the AI
 and cannot be PI-scrubbed.`,
     {
       sitePath: sitePathSchema,
-      filePath: z.string().describe('Server-relative file path, e.g. "/sites/MyProject/Shared Documents/design.docx"'),
+      filePath: serverRelativePath('Server-relative file path, e.g. "/sites/MyProject/Shared Documents/design.docx"'),
     },
     { readOnlyHint: true },
     async ({ sitePath, filePath }) => {
@@ -415,6 +450,9 @@ instead.`,
       sitePath: sitePathSchema,
       pagePath: z
         .string()
+        .refine((v) => v.startsWith("/"), {
+          message: "path must be server-relative (start with '/')",
+        })
         .refine((v) => v.toLowerCase().endsWith(".aspx"), { message: "pagePath must end in .aspx" })
         .describe('Server-relative page path, e.g. "/sites/MyProject/SitePages/Architecture-Decisions.aspx"'),
     },
@@ -447,7 +485,7 @@ files) or when the user wants the actual file. Files over 512 MB by default
 Returns the saved path.`,
     {
       sitePath: sitePathSchema,
-      filePath: z.string().describe("Server-relative file path"),
+      filePath: serverRelativePath("Server-relative file path"),
     },
     { readOnlyHint: true },
     async ({ sitePath, filePath }) => {
@@ -476,9 +514,7 @@ Returns the saved path.`,
         const dir =
           process.env["RAVEN_SHAREPOINT_DOWNLOAD_DIR"] ??
           join(homedir(), ".raven", "sharepoint-downloads");
-        await mkdir(dir, { recursive: true, mode: 0o700 });
-        const target = join(dir, sanitizeFilename(info.name));
-        await writeFile(target, bytes);
+        const target = await writeProtectedDownload(dir, info.name, bytes);
 
         return {
           content: [{ type: "text", text: pi.scrubText(`Saved **${info.name}** (${formatBytes(bytes.length)}) to ${target}`) }],

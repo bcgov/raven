@@ -1,5 +1,16 @@
-import { describe, it, expect } from "vitest";
-import { formatBytes, formatSearchHit, describeSpoError, truncateText, mimeFromExtension } from "../server.js";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtemp, mkdir, rm, stat, readFile, writeFile, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  formatBytes,
+  formatSearchHit,
+  describeSpoError,
+  truncateText,
+  mimeFromExtension,
+  serverRelativePath,
+  writeProtectedDownload,
+} from "../server.js";
 import { SpoApiError } from "../types.js";
 
 describe("formatBytes", () => {
@@ -61,5 +72,67 @@ describe("mimeFromExtension", () => {
     expect(mimeFromExtension("a.jpeg")).toBe("image/jpeg");
     expect(mimeFromExtension("notes.md")).toBe("text/plain");
     expect(mimeFromExtension("a.bin")).toBe("application/octet-stream");
+  });
+});
+
+describe("serverRelativePath", () => {
+  it("accepts paths starting with '/'", () => {
+    const schema = serverRelativePath("a file path");
+    expect(schema.safeParse("/sites/P/Shared Documents/a.docx").success).toBe(true);
+  });
+
+  it("rejects relative paths", () => {
+    const schema = serverRelativePath("a file path");
+    expect(schema.safeParse("Shared Documents/a.docx").success).toBe(false);
+    expect(schema.safeParse("").success).toBe(false);
+  });
+});
+
+describe("writeProtectedDownload", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "spo-dl-"));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("writes the file with mode 0600 in a 0700 directory", async () => {
+    const sub = join(dir, "downloads");
+    const target = await writeProtectedDownload(sub, "a.pdf", new Uint8Array([1, 2]));
+    expect((await stat(sub)).mode & 0o777).toBe(0o700);
+    expect((await stat(target)).mode & 0o777).toBe(0o600);
+    expect(target).toBe(join(sub, "a.pdf"));
+  });
+
+  it("re-tightens a pre-existing directory to 0700", async () => {
+    const sub = join(dir, "downloads");
+    await mkdir(sub, { recursive: true, mode: 0o755 });
+    await writeProtectedDownload(sub, "a.pdf", new Uint8Array([1]));
+    expect((await stat(sub)).mode & 0o777).toBe(0o700);
+  });
+
+  it("overwrites an existing regular file with fresh bytes", async () => {
+    await writeProtectedDownload(dir, "a.pdf", new Uint8Array([1]));
+    const target = await writeProtectedDownload(dir, "a.pdf", new Uint8Array([9, 9]));
+    expect((await readFile(target)).length).toBe(2);
+  });
+
+  it("refuses to write through a symlink", async () => {
+    const outside = join(dir, "outside.txt");
+    await writeFile(outside, "x");
+    const sub = join(dir, "downloads");
+    await mkdir(sub, { recursive: true, mode: 0o700 });
+    await symlink(outside, join(sub, "a.pdf"));
+    await expect(
+      writeProtectedDownload(sub, "a.pdf", new Uint8Array([1]))
+    ).rejects.toThrow(/regular file/i);
+  });
+
+  it("sanitizes traversal attempts in the filename", async () => {
+    const target = await writeProtectedDownload(dir, "../../evil.sh", new Uint8Array([1]));
+    expect(target).toBe(join(dir, "evil.sh"));
   });
 });
