@@ -543,3 +543,109 @@ describe("repo_get_security_summary error honesty", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Round 2 review: security policy locations, truncation disclosure
+// ---------------------------------------------------------------------------
+
+describe("security policy location checks", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("finds a policy at .github/SECURITY.md when the root file is absent", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        const u = String(url);
+        if (u.includes("/contents/")) {
+          const found = u.includes(".github%2FSECURITY.md") || u.includes(".github/SECURITY.md");
+          return new Response(JSON.stringify(found ? { name: "SECURITY.md" } : { message: "Not Found" }), {
+            status: found ? 200 : 404,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ default_branch: "main", private: false }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+    const { client, teardown } = await startServer({
+      GITHUB_TOKEN: "policy-loc-token",
+      GITHUB_REPOSITORY_ALLOWLIST: "bcgov/allowed-repo",
+    });
+    try {
+      const result = await callTool(client, "repo_get_security_configuration", {
+        owner: "bcgov",
+        repo: "allowed-repo",
+      });
+      expect(result.isError).toBeFalsy();
+      const text = (result.content as Array<{ text?: string }>).map((c) => c.text ?? "").join("\n");
+      expect(text).toMatch(/security policy.*(present|yes|✓)/i);
+    } finally {
+      await teardown();
+    }
+  });
+});
+
+describe("truncation disclosure", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("labels alert counts as 100+ when a source returns a full page", async () => {
+    const fullPage = Array.from({ length: 100 }, (_, i) => ({
+      number: i + 1,
+      state: "open",
+      dependency: { package: { ecosystem: "npm", name: `pkg${i}` } },
+      security_advisory: { severity: "high", summary: "x" },
+      html_url: "https://example.invalid",
+    }));
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        ["code-scanning/alerts", 200, []],
+        ["dependabot/alerts", 200, fullPage],
+        ["secret-scanning/alerts", 200, []],
+      ]),
+    );
+    const { client, teardown } = await startServer({
+      GITHUB_TOKEN: "cap-label-token",
+      GITHUB_REPOSITORY_ALLOWLIST: "bcgov/allowed-repo",
+    });
+    try {
+      const result = await callTool(client, "repo_get_security_summary", {
+        owner: "bcgov",
+        repo: "allowed-repo",
+      });
+      const text = (result.content as Array<{ text?: string }>).map((c) => c.text ?? "").join("\n");
+      expect(text).toMatch(/100\+/);
+      expect(text).not.toMatch(/\(100 open/);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("discloses when an org scan is cut at 50 repositories", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        ["code-scanning/alerts", 200, []],
+        ["dependabot/alerts", 200, []],
+        ["secret-scanning/alerts", 200, []],
+      ]),
+    );
+    const { client, teardown } = await startServer({
+      GITHUB_TOKEN: "org-slice-token",
+      GITHUB_REPOSITORY_ALLOWLIST: "bcgov/*",
+    });
+    try {
+      const repositories = Array.from({ length: 53 }, (_, i) => `repo-${i}`);
+      const result = await callTool(client, "org_security_summary", {
+        org: "bcgov",
+        repositories,
+      });
+      const text = (result.content as Array<{ text?: string }>).map((c) => c.text ?? "").join("\n");
+      expect(text).toMatch(/first 50 of 53/i);
+    } finally {
+      await teardown();
+    }
+  });
+});

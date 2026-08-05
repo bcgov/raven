@@ -63,6 +63,31 @@ function isMergeEnabled(): boolean {
 }
 
 /**
+ * Standard locations GitHub recognises for a repository security policy.
+ * Checked in order; the root location is by far the most common.
+ */
+const SECURITY_POLICY_PATHS = ["SECURITY.md", ".github/SECURITY.md", "docs/SECURITY.md"];
+
+async function hasSecurityPolicyFile(
+  c: GitHubClient,
+  owner: string,
+  repo: string,
+): Promise<boolean> {
+  for (const path of SECURITY_POLICY_PATHS) {
+    if (await c.checkFileExists(owner, repo, path)) return true;
+  }
+  return false;
+}
+
+/**
+ * Alert-count label for capped, single-page listings: a full page means
+ * "at least this many", never an exact total.
+ */
+function countLabel(n: number, pageSize = 100): string {
+  return n >= pageSize ? `${pageSize}+` : String(n);
+}
+
+/**
  * For multi-source security summaries: 403/404 means the security product is
  * not enabled (or not visible to this token) for the repo — report that
  * explicitly as unavailable. Anything else (rate limit, auth, 5xx) rethrows:
@@ -1685,7 +1710,7 @@ export function createGitHubServer(): McpServer {
         const c = getClient();
         const [repoData, hasSecurityPolicy] = await Promise.all([
           c.getRepository(owner, repo),
-          c.checkFileExists(owner, repo, "SECURITY.md"),
+          hasSecurityPolicyFile(c, owner, repo),
         ]);
 
         const sa = repoData.security_and_analysis;
@@ -1701,7 +1726,7 @@ export function createGitHubServer(): McpServer {
           `- Secret Scanning: ${status(sa?.secret_scanning)}`,
           `- Secret Scanning Push Protection: ${status(sa?.secret_scanning_push_protection)}`,
           `- Dependabot Security Updates: ${status(sa?.dependabot_security_updates)}`,
-          `- SECURITY.md: ${hasSecurityPolicy ? "present" : "absent"}`,
+          `- Security policy (SECURITY.md in root, .github/, or docs/): ${hasSecurityPolicy ? "present" : "absent"}`,
           `- URL: ${repoData.html_url}`,
         ];
         return { content: [{ type: "text", text: pi.scrubText(lines.join("\n")) }] };
@@ -1821,21 +1846,31 @@ export function createGitHubServer(): McpServer {
           ``,
           codeScanningAlerts === "n/a"
             ? `**Code Scanning** (${NA_NOTE})`
-            : `**Code Scanning** (${codeScanningAlerts.length} open alert(s))\n` +
+            : `**Code Scanning** (${countLabel(codeScanningAlerts.length)} open alert(s))\n` +
               `  Critical: ${csBySeverity.critical} | High: ${csBySeverity.high} | Medium: ${csBySeverity.medium} | Low: ${csBySeverity.low}`,
           ``,
           dependabotAlerts === "n/a"
             ? `**Dependabot** (${NA_NOTE})`
-            : `**Dependabot** (${dependabotAlerts.length} open alert(s))\n` +
+            : `**Dependabot** (${countLabel(dependabotAlerts.length)} open alert(s))\n` +
               `  Critical: ${depBySeverity.critical} | High: ${depBySeverity.high} | Medium: ${depBySeverity.medium} | Low: ${depBySeverity.low}`,
           ``,
           secretAlerts === "n/a"
             ? `**Secret Scanning** (${NA_NOTE})`
-            : `**Secret Scanning** (${secretAlerts.length} open alert(s))\n` +
+            : `**Secret Scanning** (${countLabel(secretAlerts.length)} open alert(s))\n` +
               (secretAlerts.length
                 ? `  Types: ${[...new Set(secretAlerts.map((a) => a.secret_type))].join(", ")}`
                 : "  No open alerts."),
         ];
+        if (
+          [codeScanningAlerts, dependabotAlerts, secretAlerts].some(
+            (v) => v !== "n/a" && v.length >= 100,
+          )
+        ) {
+          lines.push(
+            ``,
+            `_Counts marked 100+ are lower bounds: each source is read as a single page of 100. Severity breakdowns cover only that first page._`,
+          );
+        }
         return { content: [{ type: "text", text: pi.scrubText(lines.join("\n")) }] };
       } catch (err) {
         return {
@@ -1937,8 +1972,13 @@ export function createGitHubServer(): McpServer {
           repoNames = repos.map((r) => r.name);
         }
 
+        const scanned = repoNames.slice(0, 50);
+        const scopeNote =
+          scanned.length < repoNames.length
+            ? `showing first 50 of ${repoNames.length} repo(s)`
+            : `${repoNames.length} repo(s)`;
         const rows: string[] = [
-          `**Org Security Summary — ${org}** (${repoNames.length} repo(s))\n`,
+          `**Org Security Summary — ${org}** (${scopeNote})\n`,
           `| Repository | Code Scanning | Dependabot | Secret Scanning |`,
           `| --- | --- | --- | --- |`,
         ];
@@ -1946,8 +1986,8 @@ export function createGitHubServer(): McpServer {
         // 403/404 per repo = product not enabled → "n/a" cell; any other
         // failure aborts the scan rather than reporting a false zero.
         const cell = (v: unknown[] | "n/a" | "off") =>
-          v === "n/a" ? "n/a" : v === "off" ? "—" : String(v.length);
-        for (const repoName of repoNames.slice(0, 50)) {
+          v === "n/a" ? "n/a" : v === "off" ? "—" : countLabel(v.length);
+        for (const repoName of scanned) {
           const [cs, dep, sec] = await Promise.all([
             include_code_scanning
               ? alertsOrUnavailable(
@@ -2049,7 +2089,7 @@ export function createGitHubServer(): McpServer {
           if (required_controls.includes("security_policy")) {
             // checkFileExists already maps 404 → false and rethrows real
             // failures — do not re-swallow them into "policy missing".
-            const has = await c.checkFileExists(org, repo.name, "SECURITY.md");
+            const has = await hasSecurityPolicyFile(c, org, repo.name);
             if (!has) lacking.push("security_policy");
           }
 
