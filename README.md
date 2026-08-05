@@ -23,13 +23,14 @@ RAVEN gives your local LLM direct access to our Atlassian tools via [MCP (Model 
 | **Sonar** | Code issues, quality gates, security hotspots, project metrics, and local `sonar-scanner` runs |
 | **Artifactory** | Repositories, artifacts, checksums, properties, AQL searches, build-info, protected transfers, and guarded copy/move/delete operations |
 | **Jenkins** | Inspect and configure jobs; run and monitor builds; manage queue items, artifacts, promotions, and credential metadata/lifecycle |
+| **GitHub** | GHAS security: publish SARIF findings to code scanning; triage code/secret/Dependabot alerts; issues, PRs, and org security posture — all gated by a repository allow-list |
 | **RFC Buddy** | Filter and search RFCs from current/completed schedule; updates/advances the API-side baseline |
 | **Health** | Sprint velocity, issue aging, composite health scores, workload, portfolio comparison |
 | **Overview** | One-shot cross-system project summary (Jira + Confluence + Bitbucket) |
 | **Bug Classifier** | Cluster Jira bugs by shared root cause across projects |
 | **Jarvis** | Query the central Jarvis application inventory (dynamic proxy to a BC Gov API) |
 
-See **[`docs/TOOL_INVENTORY.md`](docs/TOOL_INVENTORY.md)** for the complete tool catalog, per-server counts, and the read/write split. The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share a single authentication session — log in once, use everywhere. Server Monitor, IMIS, Azure DevOps, Jarvis, Sonar, Jenkins, Artifactory, RFC Buddy, and SharePoint authenticate separately via credentials in `~/.raven/.env`.
+See **[`docs/TOOL_INVENTORY.md`](docs/TOOL_INVENTORY.md)** for the complete tool catalog, per-server counts, and the read/write split. The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share a single authentication session — log in once, use everywhere. Server Monitor, IMIS, Azure DevOps, Jarvis, Sonar, Jenkins, Artifactory, RFC Buddy, SharePoint, and GitHub authenticate separately via credentials in `~/.raven/.env`.
 
 ### Autonomous Pipeline (`@nrs/pipeline`)
 
@@ -169,6 +170,22 @@ JENKINS_URL=<your HTTPS Jenkins base URL>
 ```
 
 If dedicated Jenkins credentials are not set, the Jenkins MCP falls back to cached SMSESSION authentication. Job configuration updates require an expected SHA-256 and exact XML from the protected config directory. Credential writes accept secret references from environment variables or mode-restricted files; raw secret values are not accepted as tool arguments.
+
+Optional GitHub settings:
+
+```env
+# GitHub Personal Access Token. Required scopes: security_events (GHAS tools),
+# repo or fine-grained issues/pull_requests/contents (issue and PR tools)
+GITHUB_TOKEN=<your GitHub PAT>
+# Required: comma-separated repos the tools may target (owner/repo or owner/*)
+GITHUB_REPOSITORY_ALLOWLIST=bcgov/your-repo,bcgov/*
+# GITHUB_API_URL=https://api.github.com
+# Feature flags — merge and autofix tools are disabled unless explicitly enabled:
+# GITHUB_ENABLE_MERGE=true
+# GITHUB_ENABLE_AUTOFIX=true
+```
+
+All GitHub tools refuse to run without `GITHUB_REPOSITORY_ALLOWLIST`; mutating tools additionally require a `confirm: true` argument per call.
 
 Optional RFC Buddy settings:
 
