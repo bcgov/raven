@@ -3,6 +3,7 @@ import { z } from "zod";
 import { PiScrubber } from "@nrs/auth";
 import {
   GitHubClient,
+  GitHubApiError,
   checkAllowList,
   checkOrgAllowList,
   validateOwnerRepo,
@@ -59,6 +60,23 @@ function isAutofixEnabled(): boolean {
 /** True if PR merge is enabled via config. */
 function isMergeEnabled(): boolean {
   return process.env.GITHUB_ENABLE_MERGE === "true";
+}
+
+/**
+ * For multi-source security summaries: 403/404 means the security product is
+ * not enabled (or not visible to this token) for the repo — report that
+ * explicitly as unavailable. Anything else (rate limit, auth, 5xx) rethrows:
+ * a real failure must never masquerade as "0 alerts" in a security summary.
+ */
+async function alertsOrUnavailable<T>(p: Promise<T[]>): Promise<T[] | "n/a"> {
+  try {
+    return await p;
+  } catch (err) {
+    if (err instanceof GitHubApiError && (err.status === 403 || err.status === 404)) {
+      return "n/a";
+    }
+    throw err;
+  }
 }
 
 /** Throws when a mutating operation hasn't been explicitly confirmed. */
@@ -1755,30 +1773,35 @@ export function createGitHubServer(): McpServer {
         checkAllowList(owner, repo);
         const c = getClient();
 
-        // Fetch summaries in parallel; treat 403/404 as feature not enabled
+        // Fetch summaries in parallel; 403/404 = product not enabled → "n/a",
+        // any other failure aborts the summary (no silent zeros).
         const [codeScanningAlerts, dependabotAlerts, secretAlerts] =
           await Promise.all([
-            c
-              .listCodeScanningAlerts(owner, repo, { state: "open", per_page: 100 })
-              .catch((): import("./types.js").GitHubCodeScanningAlert[] => []),
-            c
-              .listDependabotAlerts(owner, repo, { state: "open", per_page: 100 })
-              .catch((): import("./types.js").GitHubDependabotAlert[] => []),
-            c
-              .listSecretScanningAlerts(owner, repo, { state: "open", per_page: 100 })
-              .catch((): import("./types.js").GitHubSecretScanningAlert[] => []),
+            alertsOrUnavailable(
+              c.listCodeScanningAlerts(owner, repo, { state: "open", per_page: 100 }),
+            ),
+            alertsOrUnavailable(
+              c.listDependabotAlerts(owner, repo, { state: "open", per_page: 100 }),
+            ),
+            alertsOrUnavailable(
+              c.listSecretScanningAlerts(owner, repo, { state: "open", per_page: 100 }),
+            ),
           ]);
+
+        const NA_NOTE = "n/a — not enabled or not visible to this token";
 
         // Code scanning breakdown by severity
         const csBySeverity: Record<string, number> = {
           critical: 0, high: 0, medium: 0, low: 0, other: 0,
         };
-        for (const a of codeScanningAlerts) {
-          const sev = a.rule?.severity?.toLowerCase() ?? "other";
-          if (sev in csBySeverity) {
-            csBySeverity[sev]++;
-          } else {
-            csBySeverity.other++;
+        if (codeScanningAlerts !== "n/a") {
+          for (const a of codeScanningAlerts) {
+            const sev = a.rule?.severity?.toLowerCase() ?? "other";
+            if (sev in csBySeverity) {
+              csBySeverity[sev]++;
+            } else {
+              csBySeverity.other++;
+            }
           }
         }
 
@@ -1786,24 +1809,32 @@ export function createGitHubServer(): McpServer {
         const depBySeverity: Record<string, number> = {
           critical: 0, high: 0, medium: 0, low: 0,
         };
-        for (const a of dependabotAlerts) {
-          const sev = a.security_advisory?.severity ?? "low";
-          depBySeverity[sev] = (depBySeverity[sev] ?? 0) + 1;
+        if (dependabotAlerts !== "n/a") {
+          for (const a of dependabotAlerts) {
+            const sev = a.security_advisory?.severity ?? "low";
+            depBySeverity[sev] = (depBySeverity[sev] ?? 0) + 1;
+          }
         }
 
         const lines = [
           `**Security Summary — ${owner}/${repo}**`,
           ``,
-          `**Code Scanning** (${codeScanningAlerts.length} open alert(s))`,
-          `  Critical: ${csBySeverity.critical} | High: ${csBySeverity.high} | Medium: ${csBySeverity.medium} | Low: ${csBySeverity.low}`,
+          codeScanningAlerts === "n/a"
+            ? `**Code Scanning** (${NA_NOTE})`
+            : `**Code Scanning** (${codeScanningAlerts.length} open alert(s))\n` +
+              `  Critical: ${csBySeverity.critical} | High: ${csBySeverity.high} | Medium: ${csBySeverity.medium} | Low: ${csBySeverity.low}`,
           ``,
-          `**Dependabot** (${dependabotAlerts.length} open alert(s))`,
-          `  Critical: ${depBySeverity.critical} | High: ${depBySeverity.high} | Medium: ${depBySeverity.medium} | Low: ${depBySeverity.low}`,
+          dependabotAlerts === "n/a"
+            ? `**Dependabot** (${NA_NOTE})`
+            : `**Dependabot** (${dependabotAlerts.length} open alert(s))\n` +
+              `  Critical: ${depBySeverity.critical} | High: ${depBySeverity.high} | Medium: ${depBySeverity.medium} | Low: ${depBySeverity.low}`,
           ``,
-          `**Secret Scanning** (${secretAlerts.length} open alert(s))`,
-          secretAlerts.length
-            ? `  Types: ${[...new Set(secretAlerts.map((a) => a.secret_type))].join(", ")}`
-            : "  No open alerts.",
+          secretAlerts === "n/a"
+            ? `**Secret Scanning** (${NA_NOTE})`
+            : `**Secret Scanning** (${secretAlerts.length} open alert(s))\n` +
+              (secretAlerts.length
+                ? `  Types: ${[...new Set(secretAlerts.map((a) => a.secret_type))].join(", ")}`
+                : "  No open alerts."),
         ];
         return { content: [{ type: "text", text: pi.scrubText(lines.join("\n")) }] };
       } catch (err) {
@@ -1912,27 +1943,29 @@ export function createGitHubServer(): McpServer {
           `| --- | --- | --- | --- |`,
         ];
 
+        // 403/404 per repo = product not enabled → "n/a" cell; any other
+        // failure aborts the scan rather than reporting a false zero.
+        const cell = (v: unknown[] | "n/a" | "off") =>
+          v === "n/a" ? "n/a" : v === "off" ? "—" : String(v.length);
         for (const repoName of repoNames.slice(0, 50)) {
           const [cs, dep, sec] = await Promise.all([
             include_code_scanning
-              ? c
-                  .listCodeScanningAlerts(org, repoName, { state: "open", per_page: 100 })
-                  .catch(() => [])
-              : Promise.resolve([]),
+              ? alertsOrUnavailable(
+                  c.listCodeScanningAlerts(org, repoName, { state: "open", per_page: 100 }),
+                )
+              : Promise.resolve("off" as const),
             include_dependabot
-              ? c
-                  .listDependabotAlerts(org, repoName, { state: "open", per_page: 100 })
-                  .catch(() => [])
-              : Promise.resolve([]),
+              ? alertsOrUnavailable(
+                  c.listDependabotAlerts(org, repoName, { state: "open", per_page: 100 }),
+                )
+              : Promise.resolve("off" as const),
             include_secret_scanning
-              ? c
-                  .listSecretScanningAlerts(org, repoName, { state: "open", per_page: 100 })
-                  .catch(() => [])
-              : Promise.resolve([]),
+              ? alertsOrUnavailable(
+                  c.listSecretScanningAlerts(org, repoName, { state: "open", per_page: 100 }),
+                )
+              : Promise.resolve("off" as const),
           ]);
-          rows.push(
-            `| ${repoName} | ${cs.length} | ${dep.length} | ${sec.length} |`,
-          );
+          rows.push(`| ${repoName} | ${cell(cs)} | ${cell(dep)} | ${cell(sec)} |`);
         }
 
         return { content: [{ type: "text", text: pi.scrubText(rows.join("\n")) }] };
@@ -2014,7 +2047,9 @@ export function createGitHubServer(): McpServer {
           }
 
           if (required_controls.includes("security_policy")) {
-            const has = await c.checkFileExists(org, repo.name, "SECURITY.md").catch(() => false);
+            // checkFileExists already maps 404 → false and rethrows real
+            // failures — do not re-swallow them into "policy missing".
+            const has = await c.checkFileExists(org, repo.name, "SECURITY.md");
             if (!has) lacking.push("security_policy");
           }
 

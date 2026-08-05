@@ -1,4 +1,4 @@
-﻿import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createGitHubServer } from "../server.js";
@@ -323,7 +323,7 @@ describe("PR merge feature gate", () => {
 });
 
 // ---------------------------------------------------------------------------
-// github_config tool (pure config â€” no network)
+// github_config tool (pure config — no network)
 // ---------------------------------------------------------------------------
 
 describe("github_config tool", () => {
@@ -466,6 +466,78 @@ describe("PI scrubbing of tool outputs", () => {
       expect(text).toContain("#7");
       expect(text).not.toContain("jane.doe@gov.bc.ca");
       expect(text).toMatch(/\[EMAIL\]|\[REDACTED\]|\[email\]/i);
+    } finally {
+      await teardown();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Security summaries must not mask real failures as zero alerts
+// ---------------------------------------------------------------------------
+
+function routedFetch(routes: Array<[substring: string, status: number, body: unknown]>) {
+  return vi.fn(async (url: string) => {
+    const hit = routes.find(([s]) => String(url).includes(s));
+    const [, status, body] = hit ?? [undefined, 200, []];
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  });
+}
+
+describe("repo_get_security_summary error honesty", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("reports n/a (not zero) when a product returns 404 not-enabled", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        ["code-scanning/alerts", 404, { message: "Code scanning is not enabled" }],
+        ["dependabot/alerts", 200, []],
+        ["secret-scanning/alerts", 200, []],
+      ]),
+    );
+    const { client, teardown } = await startServer({
+      GITHUB_TOKEN: "summary-na-token",
+      GITHUB_REPOSITORY_ALLOWLIST: "bcgov/allowed-repo",
+    });
+    try {
+      const result = await callTool(client, "repo_get_security_summary", {
+        owner: "bcgov",
+        repo: "allowed-repo",
+      });
+      expect(result.isError).toBeFalsy();
+      const text = (result.content as Array<{ text?: string }>).map((c) => c.text ?? "").join("\n");
+      expect(text).toMatch(/n\/a|not enabled|unavailable/i);
+      expect(text).not.toMatch(/Code Scanning.*\(0 open/);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("fails the summary when a source errors for a non-403/404 reason", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        ["code-scanning/alerts", 200, []],
+        ["dependabot/alerts", 500, { message: "boom" }],
+        ["secret-scanning/alerts", 200, []],
+      ]),
+    );
+    const { client, teardown } = await startServer({
+      GITHUB_TOKEN: "summary-fail-token",
+      GITHUB_REPOSITORY_ALLOWLIST: "bcgov/allowed-repo",
+    });
+    try {
+      const result = await callTool(client, "repo_get_security_summary", {
+        owner: "bcgov",
+        repo: "allowed-repo",
+      });
+      expect(result.isError).toBe(true);
+      const text = (result.content as Array<{ text?: string }>).map((c) => c.text ?? "").join("\n");
+      expect(text).toMatch(/500/);
     } finally {
       await teardown();
     }
