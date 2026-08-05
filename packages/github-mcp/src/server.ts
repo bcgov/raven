@@ -966,10 +966,11 @@ export function createGitHubServer(): McpServer {
       severity: z.enum(["low", "medium", "high", "critical"]).optional(),
       ecosystem: z.string().optional().describe("e.g. npm, pip, maven"),
       package: z.string().optional(),
-      ...paginationSchema,
+      // No page input: this endpoint is cursor-paginated and rejects `page`.
+      per_page: z.number().int().min(1).max(100).default(30),
     },
     { readOnlyHint: true },
-    async ({ owner, repo, state, severity, ecosystem, package: pkg, page, per_page }) => {
+    async ({ owner, repo, state, severity, ecosystem, package: pkg, per_page }) => {
       try {
         validateOwnerRepo(owner, repo);
         checkAllowList(owner, repo);
@@ -979,7 +980,6 @@ export function createGitHubServer(): McpServer {
           severity,
           ecosystem,
           package: pkg,
-          page,
           per_page,
         });
         if (!alerts.length) {

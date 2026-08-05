@@ -702,10 +702,12 @@ export class GitHubClient {
       severity?: string;
       ecosystem?: string;
       package?: string;
-      page?: number;
+      page?: number; // accepted for interface symmetry; never sent (see below)
       per_page?: number;
     } = {},
   ): Promise<GitHubDependabotAlert[]> {
+    // Unlike the other alert endpoints, /dependabot/alerts uses cursor
+    // pagination and rejects a `page` parameter with 400.
     return this.request<GitHubDependabotAlert[]>(
       "GET",
       `repos/${owner}/${repo}/dependabot/alerts`,
@@ -715,7 +717,6 @@ export class GitHubClient {
         severity: params.severity,
         ecosystem: params.ecosystem,
         package: params.package,
-        page: params.page ?? 1,
         per_page: clampPerPage(params.per_page ?? DEFAULT_PER_PAGE),
       },
     );

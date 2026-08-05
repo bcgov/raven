@@ -525,3 +525,19 @@ describe("encodeSarif", () => {
     expect(decoded[1]).toBe(0x8b);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Dependabot pagination (cursor-based endpoint)
+// ---------------------------------------------------------------------------
+
+describe("listDependabotAlerts pagination", () => {
+  it("never sends the page parameter — the endpoint rejects it with 400", async () => {
+    const fetch = mockFetch({ ok: true, status: 200, body: [] });
+    const c = new GitHubClient("https://api.github.com", "tok", {}, fetch as any);
+    await c.listDependabotAlerts("bcgov", "raven", { state: "open", page: 3, per_page: 50 });
+    const url = String(fetch.mock.calls[0][0]);
+    expect(url).toContain("per_page=50");
+    expect(url).toContain("state=open");
+    expect(url).not.toMatch(/[?&]page=/);
+  });
+});
