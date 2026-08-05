@@ -232,7 +232,7 @@ export function createGitHubServer(): McpServer {
           `- Autofix enabled: ${isAutofixEnabled()}`,
           `- PR merge enabled: ${isMergeEnabled()}`,
         ];
-        return { content: [{ type: "text", text: lines.join("\n") }] };
+        return { content: [{ type: "text", text: pi.scrubText(lines.join("\n")) }] };
       } catch (err) {
         return {
           content: [{ type: "text", text: `Error: ${safeErr(err, process.env.GITHUB_TOKEN)}` }],
@@ -258,7 +258,7 @@ export function createGitHubServer(): McpServer {
         `- PR merge enabled: ${isMergeEnabled()}`,
         `- Timeout: ${getTimeoutMs()}ms`,
       ];
-      return { content: [{ type: "text", text: lines.join("\n") }] };
+      return { content: [{ type: "text", text: pi.scrubText(lines.join("\n")) }] };
     },
   );
 
@@ -393,7 +393,7 @@ export function createGitHubServer(): McpServer {
           ``,
           `Poll for processing completion with security_get_sarif_upload_status(sarif_id="${result.id}").`,
         ];
-        return { content: [{ type: "text", text: lines.join("\n") }] };
+        return { content: [{ type: "text", text: pi.scrubText(lines.join("\n")) }] };
       } catch (err) {
         return {
           content: [{ type: "text", text: `Error: ${safeErr(err, process.env.GITHUB_TOKEN)}` }],
@@ -426,7 +426,7 @@ export function createGitHubServer(): McpServer {
             ? `- Errors:\n${s.errors.map((e) => `  - ${e}`).join("\n")}`
             : "",
         ].filter(Boolean);
-        return { content: [{ type: "text", text: lines.join("\n") }] };
+        return { content: [{ type: "text", text: pi.scrubText(lines.join("\n")) }] };
       } catch (err) {
         return {
           content: [{ type: "text", text: `Error: ${safeErr(err, process.env.GITHUB_TOKEN)}` }],
@@ -482,7 +482,7 @@ export function createGitHubServer(): McpServer {
             content: [
               {
                 type: "text",
-                text: `No code scanning alerts found for ${owner}/${repo} (state=${state ?? "open"}).`,
+                text: pi.scrubText(`No code scanning alerts found for ${owner}/${repo} (state=${state ?? "open"}).`),
               },
             ],
           };
@@ -490,7 +490,7 @@ export function createGitHubServer(): McpServer {
         const body =
           `**${alerts.length} code scanning alert(s) for ${owner}/${repo}**\n\n` +
           alerts.map(fmtAlert).join("\n");
-        return { content: [{ type: "text", text: body }] };
+        return { content: [{ type: "text", text: pi.scrubText(body) }] };
       } catch (err) {
         return {
           content: [{ type: "text", text: `Error: ${safeErr(err, process.env.GITHUB_TOKEN)}` }],
@@ -532,7 +532,7 @@ export function createGitHubServer(): McpServer {
           `- Rule description: ${a.rule.description?.slice(0, 500) ?? "(none)"}`,
           `- URL: ${a.html_url}`,
         ].filter(Boolean);
-        return { content: [{ type: "text", text: lines.join("\n") }] };
+        return { content: [{ type: "text", text: pi.scrubText(lines.join("\n")) }] };
       } catch (err) {
         return {
           content: [{ type: "text", text: `Error: ${safeErr(err, process.env.GITHUB_TOKEN)}` }],
@@ -569,7 +569,7 @@ export function createGitHubServer(): McpServer {
             content: [
               {
                 type: "text",
-                text: `No instances found for alert #${alert_number} in ${owner}/${repo}.`,
+                text: pi.scrubText(`No instances found for alert #${alert_number} in ${owner}/${repo}.`),
               },
             ],
           };
@@ -583,7 +583,7 @@ export function createGitHubServer(): McpServer {
             (inst.ref ? ` (ref: ${inst.ref})` : "")
           );
         });
-        return { content: [{ type: "text", text: header + rows.join("\n") }] };
+        return { content: [{ type: "text", text: pi.scrubText(header + rows.join("\n")) }] };
       } catch (err) {
         return {
           content: [{ type: "text", text: `Error: ${safeErr(err, process.env.GITHUB_TOKEN)}` }],
@@ -654,10 +654,11 @@ export function createGitHubServer(): McpServer {
           content: [
             {
               type: "text",
-              text:
+              text: pi.scrubText(
                 `**Alert #${a.number} updated** — state: ${a.state}` +
                 (a.dismissed_reason ? ` (${a.dismissed_reason})` : "") +
                 `\n${a.html_url}`,
+              ),
             },
           ],
         };
@@ -702,11 +703,12 @@ export function createGitHubServer(): McpServer {
           content: [
             {
               type: "text",
-              text:
+              text: pi.scrubText(
                 `**Autofix requested for alert #${alert_number} in ${owner}/${repo}**\n` +
                 `- Status: ${result.status}\n` +
                 (result.description ? `- Description: ${result.description}\n` : "") +
                 `Poll with security_get_code_scanning_autofix_status.`,
+              ),
             },
           ],
         };
@@ -749,7 +751,7 @@ export function createGitHubServer(): McpServer {
             ? `- Proposed changes:\n${a.changes.map((ch) => `  - ${ch.path} (+${ch.additions}/-${ch.deletions})`).join("\n")}`
             : "",
         ].filter(Boolean);
-        return { content: [{ type: "text", text: lines.join("\n") }] };
+        return { content: [{ type: "text", text: pi.scrubText(lines.join("\n")) }] };
       } catch (err) {
         return {
           content: [{ type: "text", text: `Error: ${safeErr(err, process.env.GITHUB_TOKEN)}` }],
@@ -787,10 +789,11 @@ export function createGitHubServer(): McpServer {
           content: [
             {
               type: "text",
-              text:
+              text: pi.scrubText(
                 `**Autofix committed for alert #${alert_number} → ${target_branch}**\n` +
                 (result.commit_url ? `- Commit: ${result.commit_url}\n` : "") +
                 (result.message ? `- Message: ${result.message}` : ""),
+              ),
             },
           ],
         };
@@ -837,7 +840,7 @@ export function createGitHubServer(): McpServer {
             content: [
               {
                 type: "text",
-                text: `No secret scanning alerts found for ${owner}/${repo}.`,
+                text: pi.scrubText(`No secret scanning alerts found for ${owner}/${repo}.`),
               },
             ],
           };
@@ -845,7 +848,7 @@ export function createGitHubServer(): McpServer {
         const body =
           `**${alerts.length} secret scanning alert(s) for ${owner}/${repo}**\n\n` +
           alerts.map(fmtSecretAlert).join("\n");
-        return { content: [{ type: "text", text: body }] };
+        return { content: [{ type: "text", text: pi.scrubText(body) }] };
       } catch (err) {
         return {
           content: [{ type: "text", text: `Error: ${safeErr(err, process.env.GITHUB_TOKEN)}` }],
@@ -884,7 +887,7 @@ export function createGitHubServer(): McpServer {
           ``,
           `_Note: The secret value is not returned._`,
         ].filter(Boolean);
-        return { content: [{ type: "text", text: lines.join("\n") }] };
+        return { content: [{ type: "text", text: pi.scrubText(lines.join("\n")) }] };
       } catch (err) {
         return {
           content: [{ type: "text", text: `Error: ${safeErr(err, process.env.GITHUB_TOKEN)}` }],
@@ -933,10 +936,11 @@ export function createGitHubServer(): McpServer {
           content: [
             {
               type: "text",
-              text:
+              text: pi.scrubText(
                 `**Secret scanning alert #${a.number} updated** — state: ${a.state}` +
                 (a.resolution ? ` (${a.resolution})` : "") +
                 `\n${a.html_url}`,
+              ),
             },
           ],
         };
@@ -983,7 +987,7 @@ export function createGitHubServer(): McpServer {
             content: [
               {
                 type: "text",
-                text: `No Dependabot alerts found for ${owner}/${repo}.`,
+                text: pi.scrubText(`No Dependabot alerts found for ${owner}/${repo}.`),
               },
             ],
           };
@@ -991,7 +995,7 @@ export function createGitHubServer(): McpServer {
         const body =
           `**${alerts.length} Dependabot alert(s) for ${owner}/${repo}**\n\n` +
           alerts.map(fmtDependabotAlert).join("\n");
-        return { content: [{ type: "text", text: body }] };
+        return { content: [{ type: "text", text: pi.scrubText(body) }] };
       } catch (err) {
         return {
           content: [{ type: "text", text: `Error: ${safeErr(err, process.env.GITHUB_TOKEN)}` }],
@@ -1036,7 +1040,7 @@ export function createGitHubServer(): McpServer {
           a.dismissed_comment ? `- Dismissal comment: ${a.dismissed_comment}` : "",
           `- URL: ${a.html_url}`,
         ].filter(Boolean);
-        return { content: [{ type: "text", text: lines.join("\n") }] };
+        return { content: [{ type: "text", text: pi.scrubText(lines.join("\n")) }] };
       } catch (err) {
         return {
           content: [{ type: "text", text: `Error: ${safeErr(err, process.env.GITHUB_TOKEN)}` }],
@@ -1080,10 +1084,11 @@ export function createGitHubServer(): McpServer {
           content: [
             {
               type: "text",
-              text:
+              text: pi.scrubText(
                 `**Dependabot alert #${a.number} updated** — state: ${a.state}` +
                 (a.dismissed_reason ? ` (${a.dismissed_reason})` : "") +
                 `\n${a.html_url}`,
+              ),
             },
           ],
         };
@@ -1133,10 +1138,11 @@ export function createGitHubServer(): McpServer {
           content: [
             {
               type: "text",
-              text:
+              text: pi.scrubText(
                 `**Issue #${issue.number} created: ${issue.title}**\n` +
                 `- State: ${issue.state}\n` +
                 `- URL: ${issue.html_url}`,
+              ),
             },
           ],
         };
@@ -1198,11 +1204,12 @@ export function createGitHubServer(): McpServer {
           content: [
             {
               type: "text",
-              text:
+              text: pi.scrubText(
                 `**Issue #${issue.number} updated**\n` +
                 `- Title: ${issue.title}\n` +
                 `- State: ${issue.state}\n` +
                 `- URL: ${issue.html_url}`,
+              ),
             },
           ],
         };
@@ -1253,9 +1260,10 @@ export function createGitHubServer(): McpServer {
           content: [
             {
               type: "text",
-              text:
+              text: pi.scrubText(
                 `**Issue #${issue.number} closed** (${state_reason})\n` +
                 `- URL: ${issue.html_url}`,
+              ),
             },
           ],
         };
@@ -1296,7 +1304,7 @@ export function createGitHubServer(): McpServer {
             content: [
               {
                 type: "text",
-                text: `No issues found in ${owner}/${repo} matching: ${query}`,
+                text: pi.scrubText(`No issues found in ${owner}/${repo} matching: ${query}`),
               },
             ],
           };
@@ -1304,7 +1312,7 @@ export function createGitHubServer(): McpServer {
         const body =
           `**${result.total_count} issue(s) matching "${query}" in ${owner}/${repo}**\n\n` +
           result.items.map(fmtIssue).join("\n");
-        return { content: [{ type: "text", text: body }] };
+        return { content: [{ type: "text", text: pi.scrubText(body) }] };
       } catch (err) {
         return {
           content: [{ type: "text", text: `Error: ${safeErr(err, process.env.GITHUB_TOKEN)}` }],
@@ -1335,9 +1343,10 @@ export function createGitHubServer(): McpServer {
           content: [
             {
               type: "text",
-              text:
+              text: pi.scrubText(
                 `**Comment added to issue #${issue_number}**\n` +
                 `- URL: ${comment.html_url}`,
+              ),
             },
           ],
         };
@@ -1399,11 +1408,12 @@ export function createGitHubServer(): McpServer {
           content: [
             {
               type: "text",
-              text:
+              text: pi.scrubText(
                 `**PR #${pr.number} created: ${pr.title}**\n` +
                 `- State: ${pr.state}${pr.draft ? " (draft)" : ""}\n` +
                 `- ${pr.head.ref} → ${pr.base.ref}\n` +
                 `- URL: ${pr.html_url}`,
+              ),
             },
           ],
         };
@@ -1443,7 +1453,7 @@ export function createGitHubServer(): McpServer {
           pr.merged_at ? `- Merged: ${pr.merged_at}` : "",
           `- URL: ${pr.html_url}`,
         ].filter(Boolean);
-        return { content: [{ type: "text", text: lines.join("\n") }] };
+        return { content: [{ type: "text", text: pi.scrubText(lines.join("\n")) }] };
       } catch (err) {
         return {
           content: [{ type: "text", text: `Error: ${safeErr(err, process.env.GITHUB_TOKEN)}` }],
@@ -1482,10 +1492,11 @@ export function createGitHubServer(): McpServer {
           content: [
             {
               type: "text",
-              text:
+              text: pi.scrubText(
                 `**PR #${pr.number} updated**\n` +
                 `- State: ${pr.state}${pr.draft ? " (draft)" : ""}\n` +
                 `- URL: ${pr.html_url}`,
+              ),
             },
           ],
         };
@@ -1520,12 +1531,13 @@ export function createGitHubServer(): McpServer {
           content: [
             {
               type: "text",
-              text:
+              text: pi.scrubText(
                 `**Review requested on PR #${pull_number}**\n` +
                 (reviewers.length ? `- Users: ${reviewers.join(", ")}\n` : "") +
                 (team_reviewers.length
                   ? `- Teams: ${team_reviewers.join(", ")}\n`
                   : ""),
+              ),
             },
           ],
         };
@@ -1559,9 +1571,10 @@ export function createGitHubServer(): McpServer {
           content: [
             {
               type: "text",
-              text:
+              text: pi.scrubText(
                 `**Comment added to PR #${pull_number}**\n` +
                 `- URL: ${comment.html_url}`,
+              ),
             },
           ],
         };
@@ -1618,10 +1631,11 @@ export function createGitHubServer(): McpServer {
           content: [
             {
               type: "text",
-              text:
+              text: pi.scrubText(
                 `**PR #${pull_number} merged** (${merge_method})\n` +
                 `- SHA: ${result.sha}\n` +
                 `- Message: ${result.message}`,
+              ),
             },
           ],
         };
@@ -1672,7 +1686,7 @@ export function createGitHubServer(): McpServer {
           `- SECURITY.md: ${hasSecurityPolicy ? "present" : "absent"}`,
           `- URL: ${repoData.html_url}`,
         ];
-        return { content: [{ type: "text", text: lines.join("\n") }] };
+        return { content: [{ type: "text", text: pi.scrubText(lines.join("\n")) }] };
       } catch (err) {
         return {
           content: [{ type: "text", text: `Error: ${safeErr(err, process.env.GITHUB_TOKEN)}` }],
@@ -1701,7 +1715,7 @@ export function createGitHubServer(): McpServer {
             content: [
               {
                 type: "text",
-                text: `No rulesets configured for ${owner}/${repo}.`,
+                text: pi.scrubText(`No rulesets configured for ${owner}/${repo}.`),
               },
             ],
           };
@@ -1717,7 +1731,7 @@ export function createGitHubServer(): McpServer {
           }
           lines.push("");
         }
-        return { content: [{ type: "text", text: lines.join("\n") }] };
+        return { content: [{ type: "text", text: pi.scrubText(lines.join("\n")) }] };
       } catch (err) {
         return {
           content: [{ type: "text", text: `Error: ${safeErr(err, process.env.GITHUB_TOKEN)}` }],
@@ -1791,7 +1805,7 @@ export function createGitHubServer(): McpServer {
             ? `  Types: ${[...new Set(secretAlerts.map((a) => a.secret_type))].join(", ")}`
             : "  No open alerts.",
         ];
-        return { content: [{ type: "text", text: lines.join("\n") }] };
+        return { content: [{ type: "text", text: pi.scrubText(lines.join("\n")) }] };
       } catch (err) {
         return {
           content: [{ type: "text", text: `Error: ${safeErr(err, process.env.GITHUB_TOKEN)}` }],
@@ -1836,7 +1850,7 @@ export function createGitHubServer(): McpServer {
             content: [
               {
                 type: "text",
-                text: `No code scanning alerts found for org ${org}.`,
+                text: pi.scrubText(`No code scanning alerts found for org ${org}.`),
               },
             ],
           };
@@ -1844,7 +1858,7 @@ export function createGitHubServer(): McpServer {
         const body =
           `**${alerts.length} code scanning alert(s) in org ${org}**\n\n` +
           alerts.map(fmtAlert).join("\n");
-        return { content: [{ type: "text", text: body }] };
+        return { content: [{ type: "text", text: pi.scrubText(body) }] };
       } catch (err) {
         return {
           content: [{ type: "text", text: `Error: ${safeErr(err, process.env.GITHUB_TOKEN)}` }],
@@ -1921,7 +1935,7 @@ export function createGitHubServer(): McpServer {
           );
         }
 
-        return { content: [{ type: "text", text: rows.join("\n") }] };
+        return { content: [{ type: "text", text: pi.scrubText(rows.join("\n")) }] };
       } catch (err) {
         return {
           content: [{ type: "text", text: `Error: ${safeErr(err, process.env.GITHUB_TOKEN)}` }],
@@ -2015,7 +2029,7 @@ export function createGitHubServer(): McpServer {
             content: [
               {
                 type: "text",
-                text: `All ${repos.length} checked repo(s) in ${org} have the required controls.`,
+                text: pi.scrubText(`All ${repos.length} checked repo(s) in ${org} have the required controls.`),
               },
             ],
           };
@@ -2027,7 +2041,7 @@ export function createGitHubServer(): McpServer {
           `| --- | --- |`,
           ...entries.map(([name, ctrls]) => `| ${name} | ${ctrls.join(", ")} |`),
         ];
-        return { content: [{ type: "text", text: lines.join("\n") }] };
+        return { content: [{ type: "text", text: pi.scrubText(lines.join("\n")) }] };
       } catch (err) {
         return {
           content: [{ type: "text", text: `Error: ${safeErr(err, process.env.GITHUB_TOKEN)}` }],

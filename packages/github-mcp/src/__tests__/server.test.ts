@@ -418,3 +418,56 @@ describe("input validation", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// PI scrubbing on success-path outputs
+// ---------------------------------------------------------------------------
+
+describe("PI scrubbing of tool outputs", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("scrubs emails from success-path output when RAVEN_SCRUB_PI is enabled", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            total_count: 1,
+            items: [
+              {
+                number: 7,
+                title: "Login broken — contact jane.doe@gov.bc.ca for repro",
+                state: "open",
+                html_url: "https://github.com/bcgov/allowed-repo/issues/7",
+                created_at: "2026-08-01T00:00:00Z",
+                labels: [],
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+
+    const { client, teardown } = await startServer({
+      GITHUB_TOKEN: "scrub-test-token", // unique — forces a fresh client that sees the stubbed fetch
+      GITHUB_REPOSITORY_ALLOWLIST: "bcgov/allowed-repo",
+      RAVEN_SCRUB_PI: "true",
+    });
+    try {
+      const result = await callTool(client, "issue_search", {
+        owner: "bcgov",
+        repo: "allowed-repo",
+        query: "login",
+      });
+      expect(result.isError).toBeFalsy();
+      const content = result.content as Array<{ type: string; text?: string }>;
+      const text = content.map((c) => c.text ?? "").join("\n");
+      expect(text).toContain("#7");
+      expect(text).not.toContain("jane.doe@gov.bc.ca");
+      expect(text).toMatch(/\[EMAIL\]|\[REDACTED\]|\[email\]/i);
+    } finally {
+      await teardown();
+    }
+  });
+});
