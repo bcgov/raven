@@ -417,11 +417,13 @@ export class GitHubClient {
     }
     clearTimeout(timer);
 
-    // Rate limit: log remaining and retry-after, but don't auto-retry here
-    // (caller can implement retry logic if needed).
+    // Rate-limit rejection: GitHub signals primary-limit exhaustion as 403
+    // with x-ratelimit-remaining: 0, secondary limits as 429. A successful
+    // response with remaining 0 is still the caller's data — only the next
+    // request gets rejected, so never discard it here.
     const remaining = resp.headers.get("x-ratelimit-remaining");
     const retryAfter = resp.headers.get("retry-after");
-    if (remaining === "0" || resp.status === 429) {
+    if (resp.status === 429 || (resp.status === 403 && remaining === "0")) {
       const wait = retryAfter ?? "unknown";
       throw new Error(
         `GitHub API rate limit exceeded on ${path}. Retry after ${wait}s.`,

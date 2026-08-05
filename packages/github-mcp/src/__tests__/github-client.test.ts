@@ -107,15 +107,42 @@ describe("GitHubClient token redaction", () => {
 // ---------------------------------------------------------------------------
 
 describe("GitHubClient rate limit handling", () => {
-  it("throws a descriptive error when x-ratelimit-remaining is 0", async () => {
+  it("returns a successful response even when x-ratelimit-remaining is 0", async () => {
+    // The last request in a quota window still succeeds — only the NEXT
+    // request is rejected by GitHub. Discarding a 200 here loses data.
     const fetch = mockFetch({
       ok: true,
       status: 200,
-      body: {},
+      body: { rate: { limit: 5000, remaining: 0, reset: 1 } },
       headers: { "x-ratelimit-remaining": "0" },
     });
     const c = new GitHubClient("https://api.github.com", "tok", {}, fetch as any);
+    await expect(c.getRateLimit()).resolves.toEqual({
+      rate: { limit: 5000, remaining: 0, reset: 1 },
+    });
+  });
+
+  it("throws a rate-limit error on 403 with x-ratelimit-remaining 0", async () => {
+    const fetch = mockFetch({
+      ok: false,
+      status: 403,
+      headers: { "x-ratelimit-remaining": "0", "retry-after": "30" },
+      text: "API rate limit exceeded",
+    });
+    const c = new GitHubClient("https://api.github.com", "tok", {}, fetch as any);
     await expect(c.getRateLimit()).rejects.toThrow(/rate limit/i);
+  });
+
+  it("treats a 403 with remaining quota as a permission error, not rate limiting", async () => {
+    const fetch = mockFetch({
+      ok: false,
+      status: 403,
+      headers: { "x-ratelimit-remaining": "4999" },
+      text: "Resource not accessible by personal access token",
+    });
+    const c = new GitHubClient("https://api.github.com", "tok", {}, fetch as any);
+    await expect(c.getRateLimit()).rejects.toThrow(/403/);
+    await expect(c.getRateLimit()).rejects.toThrow(/not accessible/i);
   });
 
   it("throws a descriptive error on 429 status", async () => {
