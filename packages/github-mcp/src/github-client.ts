@@ -439,7 +439,9 @@ export class GitHubClient {
     }
 
     if (!resp.ok) {
-      const text = await this.readBounded(resp).catch(() => "");
+      // Truncate mode: an oversize error body is excerpted, never masked into
+      // a "too large" failure that would hide the HTTP status.
+      const text = await this.readBounded(resp, true).catch(() => "");
       throw new GitHubApiError(
         resp.status,
         `GitHub API error ${resp.status} on ${method} ${path}: ${this.redactToken(text.slice(0, 500))}`,
@@ -451,16 +453,51 @@ export class GitHubClient {
     return JSON.parse(text) as T;
   }
 
-  /** Reads the response body up to maxBodyBytes, returning a string. */
-  private async readBounded(resp: Response): Promise<string> {
-    const text = await resp.text();
-    const byteLen = Buffer.byteLength(text, "utf-8");
-    if (byteLen > this.maxBodyBytes) {
-      throw new Error(
-        `GitHub API response too large (${byteLen} bytes > ${this.maxBodyBytes} max)`,
-      );
+  /**
+   * Reads the response body up to maxBodyBytes without buffering more than
+   * the cap. In `truncate` mode (error bodies, where only a excerpt is
+   * reported) an oversize body is cut at the cap instead of throwing, so the
+   * HTTP status error is preserved.
+   */
+  private async readBounded(resp: Response, truncate = false): Promise<string> {
+    const oversize = (detail: string) =>
+      new Error(`GitHub API response too large (${detail} > ${this.maxBodyBytes} max)`);
+
+    const declared = Number(resp.headers.get("content-length"));
+    if (!truncate && Number.isFinite(declared) && declared > this.maxBodyBytes) {
+      await resp.body?.cancel().catch(() => {});
+      throw oversize(`${declared} bytes`);
     }
-    return text;
+
+    // Undici always exposes a body stream; test doubles may not.
+    if (!resp.body) {
+      const text = await resp.text();
+      const byteLen = Buffer.byteLength(text, "utf-8");
+      if (byteLen > this.maxBodyBytes) {
+        if (truncate) return text.slice(0, this.maxBodyBytes);
+        throw oversize(`${byteLen} bytes`);
+      }
+      return text;
+    }
+
+    const reader = resp.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (total + value.byteLength > this.maxBodyBytes) {
+        await reader.cancel().catch(() => {});
+        if (truncate) {
+          chunks.push(value.subarray(0, this.maxBodyBytes - total));
+          break;
+        }
+        throw oversize(`${total + value.byteLength}+ bytes streamed`);
+      }
+      total += value.byteLength;
+      chunks.push(value);
+    }
+    return Buffer.concat(chunks).toString("utf-8");
   }
 
   /** Removes the token from a string to prevent leakage in error messages. */

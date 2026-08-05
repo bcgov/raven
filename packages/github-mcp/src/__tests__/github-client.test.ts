@@ -541,3 +541,97 @@ describe("listDependabotAlerts pagination", () => {
     expect(url).not.toMatch(/[?&]page=/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bounded response reading
+// ---------------------------------------------------------------------------
+
+function streamOf(...parts: string[]): ReadableStream<Uint8Array> {
+  const enc = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      for (const p of parts) controller.enqueue(enc.encode(p));
+      controller.close();
+    },
+  });
+}
+
+function streamedResponse(opts: {
+  status: number;
+  ok: boolean;
+  parts: string[];
+  headers?: Record<string, string>;
+}) {
+  const headers = new Headers(opts.headers ?? {});
+  return vi.fn().mockResolvedValue({
+    ok: opts.ok,
+    status: opts.status,
+    statusText: opts.ok ? "OK" : "Error",
+    headers,
+    body: streamOf(...opts.parts),
+    text: () => Promise.resolve(opts.parts.join("")),
+    json: () => Promise.resolve(JSON.parse(opts.parts.join(""))),
+  });
+}
+
+describe("GitHubClient bounded body reading", () => {
+  it("aborts a streamed body that exceeds maxBodyBytes instead of buffering it", async () => {
+    const fetch = streamedResponse({ ok: true, status: 200, parts: ["x".repeat(64), "y".repeat(64)] });
+    const c = new GitHubClient("https://api.github.com", "tok", { maxBodyBytes: 100 }, fetch as any);
+    await expect(c.getRateLimit()).rejects.toThrow(/too large/i);
+  });
+
+  it("fails fast on a declared oversize content-length without reading the body", async () => {
+    const fetch = streamedResponse({
+      ok: true,
+      status: 200,
+      parts: ["irrelevant"],
+      headers: { "content-length": "999999999" },
+    });
+    const c = new GitHubClient("https://api.github.com", "tok", { maxBodyBytes: 100 }, fetch as any);
+    await expect(c.getRateLimit()).rejects.toThrow(/too large/i);
+  });
+
+  it("parses a streamed body under the cap", async () => {
+    const fetch = streamedResponse({ ok: true, status: 200, parts: ['{"rate":', '{"limit":1,"remaining":1,"reset":0}}'] });
+    const c = new GitHubClient("https://api.github.com", "tok", { maxBodyBytes: 1024 }, fetch as any);
+    await expect(c.getRateLimit()).resolves.toEqual({ rate: { limit: 1, remaining: 1, reset: 0 } });
+  });
+
+  it("truncates an oversize error body but preserves the HTTP status error", async () => {
+    const fetch = streamedResponse({ ok: false, status: 500, parts: ["e".repeat(4096)] });
+    const c = new GitHubClient("https://api.github.com", "tok", { maxBodyBytes: 128 }, fetch as any);
+    await expect(c.getRateLimit()).rejects.toThrow(/500/);
+    await expect(c.getRateLimit()).rejects.not.toThrow(/too large/i);
+  });
+
+  it("enforces the cap on the text() fallback when no body stream exists", async () => {
+    const fetch = mockFetch({ ok: true, status: 200, text: "z".repeat(200) });
+    const c = new GitHubClient("https://api.github.com", "tok", { maxBodyBytes: 100 }, fetch as any);
+    await expect(c.getRateLimit()).rejects.toThrow(/too large/i);
+  });
+});
+
+describe("GitHubClient bounded body reading — streaming proof", () => {
+  it("rejects an endless stream at the cap instead of buffering forever", async () => {
+    const enc = new TextEncoder();
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(enc.encode("data".repeat(256)));
+      },
+    });
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers(),
+      body: endless,
+      // text() would await the whole (endless) stream — a buffering
+      // implementation hangs here and the test times out.
+      text: () => new Promise(() => {}),
+      json: () => Promise.reject(new Error("unused")),
+    });
+    const c = new GitHubClient("https://api.github.com", "tok", { maxBodyBytes: 10_000 }, fetch as any);
+    await expect(c.getRateLimit()).rejects.toThrow(/too large/i);
+  }, 4000);
+});
