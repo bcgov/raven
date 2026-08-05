@@ -38,10 +38,10 @@
     "node": ">=20.0.0"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/node": "^25.2.3",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.10"
   },
   "dependencies": {
     "oracledb": "^6.10.0",
