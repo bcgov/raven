@@ -15,12 +15,12 @@
 
 | | Count |
 |---|---|
-| MCP servers | **16** |
-| Tools registered locally (in-process) | **195** |
-| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 195 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
-| **Tools advertised to the AI when everything is connected** | **~201** |
-| Mutating / write tools | **~64** (63 local + ~1 via Jarvis) |
-| Read-only tools | **~137** |
+| MCP servers | **17** |
+| Tools registered locally (in-process) | **229** |
+| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 229 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
+| **Tools advertised to the AI when everything is connected** | **~235** |
+| Mutating / write tools | **~79** (78 local + ~1 via Jarvis) |
+| Read-only tools | **~156** |
 | Non-server packages | `auth`, `pipeline`, `server-ui`, `raven-cli` |
 
 Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share one SiteMinder/Basic-Auth session; Server Monitor, IMIS, Azure DevOps, Sonar, Jenkins, Artifactory, RFC Buddy, and Jarvis authenticate separately via `~/.raven/.env`.
@@ -44,9 +44,10 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 | RFC Buddy | `rfcbuddy` | 0 | 1 | 1 |
 | Artifactory | `artifactory` | 12 | 7 | 19 |
 | SharePoint | `sharepoint` | 8 | 0 | 8 |
-| **Subtotal (local)** | | **132** | **63** | **195** |
+| GitHub | `github` | 19 | 15 | 34 |
+| **Subtotal (local)** | | **151** | **78** | **229** |
 | Jarvis (remote proxy) | `jarvis` | ~5 | ~1 | ~6 |
-| **Advertised total** | | **~137** | **~64** | **~201** |
+| **Advertised total** | | **~156** | **~79** | **~235** |
 
 ## Servers and tools
 
@@ -120,6 +121,12 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 
 #### sharepoint-mcp — 8 tools (read-only)
 `search_sharepoint`, `list_sites`, `get_site`, `list_folder`, `get_file_info`, `read_document`, `read_page`, `download_file`
+
+### GitHub platform / security
+
+#### github-mcp — 34 tools (19 read / 15 write)
+- **Read:** `github_health`, `github_config`, `security_get_sarif_upload_status`, `security_list_code_scanning_alerts`, `security_get_code_scanning_alert`, `security_get_code_scanning_alert_instances`, `security_get_code_scanning_autofix_status`, `security_list_secret_scanning_alerts`, `security_get_secret_scanning_alert`, `security_list_dependabot_alerts`, `security_get_dependabot_alert`, `issue_search`, `pr_get`, `repo_get_security_configuration`, `repo_get_rulesets`, `repo_get_security_summary`, `org_list_security_alerts`, `org_security_summary`, `org_find_repositories_missing_security_controls`
+- **Write:** `security_publish_sarif`, `security_update_code_scanning_alert`, `security_create_code_scanning_autofix`, `security_commit_code_scanning_autofix`, `security_update_secret_scanning_alert`, `security_update_dependabot_alert`, `issue_create`, `issue_update`, `issue_close`, `issue_add_comment`, `pr_create`, `pr_update`, `pr_request_review`, `pr_comment`, `pr_merge`
 
 ### Remote proxy (data egress)
 

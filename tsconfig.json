@@ -20,6 +20,7 @@
     { "path": "packages/jenkins-mcp" },
     { "path": "packages/rfcbuddy-mcp" },
     { "path": "packages/artifactory-mcp" },
-    { "path": "packages/sharepoint-mcp" }
+    { "path": "packages/sharepoint-mcp" },
+    { "path": "packages/github-mcp" }
   ]
 }

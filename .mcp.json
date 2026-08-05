@@ -63,6 +63,10 @@
     "sharepoint": {
       "command": "node",
       "args": ["./packages/sharepoint-mcp/dist/index.js"]
+    },
+    "github": {
+      "command": "node",
+      "args": ["./packages/github-mcp/dist/index.js"]
     }
   }
 }

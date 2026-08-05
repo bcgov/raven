@@ -1,0 +1,637 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import {
+  GitHubClient,
+  checkAllowList,
+  checkOrgAllowList,
+  validateOwnerRepo,
+  clampPerPage,
+  normalizeApiBaseUrl,
+  computeFingerprint,
+  findingsToSarif,
+  validateSarif,
+  encodeSarif,
+} from "../github-client.js";
+import type { CanonicalFinding } from "../types.js";
+
+// ---------------------------------------------------------------------------
+// Mock fetch factory
+// ---------------------------------------------------------------------------
+
+function mockFetch(response: {
+  ok: boolean;
+  status: number;
+  statusText?: string;
+  body?: unknown;
+  text?: string;
+  headers?: Record<string, string>;
+}) {
+  const headers = new Headers(response.headers ?? {});
+  const textContent = response.text ?? JSON.stringify(response.body ?? {});
+  return vi.fn().mockResolvedValue({
+    ok: response.ok,
+    status: response.status,
+    statusText: response.statusText ?? (response.ok ? "OK" : "Error"),
+    headers,
+    text: () => Promise.resolve(textContent),
+    json: () => Promise.resolve(response.body),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// GitHubClient constructor / URL normalisation
+// ---------------------------------------------------------------------------
+
+describe("GitHubClient URL normalisation", () => {
+  it("strips trailing slashes from apiBase", () => {
+    const c = new GitHubClient("https://api.github.com///", "tok");
+    expect(c.baseUrl).toBe("https://api.github.com");
+  });
+
+  it("strips a single trailing slash", () => {
+    const c = new GitHubClient("https://github.example.com/api/v3/", "tok");
+    expect(c.baseUrl).toBe("https://github.example.com/api/v3");
+  });
+
+  it("preserves a URL with no trailing slash", () => {
+    const c = new GitHubClient("https://api.github.com", "tok");
+    expect(c.baseUrl).toBe("https://api.github.com");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Token in Bearer auth header
+// ---------------------------------------------------------------------------
+
+describe("GitHubClient authentication", () => {
+  it("sends the token as a Bearer header", async () => {
+    const fetch = mockFetch({ ok: true, status: 200, body: {} });
+    const c = new GitHubClient("https://api.github.com", "my-secret-token", {}, fetch as any);
+    await c.getRateLimit();
+    const opts: RequestInit = fetch.mock.calls[0][1];
+    expect((opts.headers as Record<string, string>)?.["Authorization"]).toBe(
+      "Bearer my-secret-token",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Token redaction in error messages
+// ---------------------------------------------------------------------------
+
+describe("GitHubClient token redaction", () => {
+  it("does not expose the token in fetch error messages", async () => {
+    const token = "ghp_super_secret_1234567890";
+    const fetch = vi.fn().mockRejectedValue(new Error(`Auth failed with ${token}`));
+    const c = new GitHubClient("https://api.github.com", token, {}, fetch as any);
+
+    await expect(c.getRateLimit()).rejects.toThrow(/\[REDACTED\]/);
+    await expect(c.getRateLimit()).rejects.not.toThrow(token);
+  });
+
+  it("does not expose the token in HTTP error body", async () => {
+    const token = "ghp_another_secret_xyz";
+    const fetch = mockFetch({
+      ok: false,
+      status: 401,
+      text: `{"message":"Bad credentials: ${token}"}`,
+    });
+    const c = new GitHubClient("https://api.github.com", token, {}, fetch as any);
+
+    await expect(c.getRateLimit()).rejects.toThrow(/\[REDACTED\]/);
+    await expect(c.getRateLimit()).rejects.not.toThrow(token);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rate limit handling
+// ---------------------------------------------------------------------------
+
+describe("GitHubClient rate limit handling", () => {
+  it("returns a successful response even when x-ratelimit-remaining is 0", async () => {
+    // The last request in a quota window still succeeds — only the NEXT
+    // request is rejected by GitHub. Discarding a 200 here loses data.
+    const fetch = mockFetch({
+      ok: true,
+      status: 200,
+      body: { rate: { limit: 5000, remaining: 0, reset: 1 } },
+      headers: { "x-ratelimit-remaining": "0" },
+    });
+    const c = new GitHubClient("https://api.github.com", "tok", {}, fetch as any);
+    await expect(c.getRateLimit()).resolves.toEqual({
+      rate: { limit: 5000, remaining: 0, reset: 1 },
+    });
+  });
+
+  it("throws a rate-limit error on 403 with x-ratelimit-remaining 0", async () => {
+    const fetch = mockFetch({
+      ok: false,
+      status: 403,
+      headers: { "x-ratelimit-remaining": "0", "retry-after": "30" },
+      text: "API rate limit exceeded",
+    });
+    const c = new GitHubClient("https://api.github.com", "tok", {}, fetch as any);
+    await expect(c.getRateLimit()).rejects.toThrow(/rate limit/i);
+  });
+
+  it("treats a 403 with remaining quota as a permission error, not rate limiting", async () => {
+    const fetch = mockFetch({
+      ok: false,
+      status: 403,
+      headers: { "x-ratelimit-remaining": "4999" },
+      text: "Resource not accessible by personal access token",
+    });
+    const c = new GitHubClient("https://api.github.com", "tok", {}, fetch as any);
+    await expect(c.getRateLimit()).rejects.toThrow(/403/);
+    await expect(c.getRateLimit()).rejects.toThrow(/not accessible/i);
+  });
+
+  it("throws a descriptive error on 429 status", async () => {
+    const fetch = mockFetch({
+      ok: false,
+      status: 429,
+      headers: { "retry-after": "60" },
+      text: "Too Many Requests",
+    });
+    const c = new GitHubClient("https://api.github.com", "tok", {}, fetch as any);
+    await expect(c.getRateLimit()).rejects.toThrow(/rate limit/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Allow-list enforcement
+// ---------------------------------------------------------------------------
+
+describe("checkAllowList", () => {
+  beforeEach(() => {
+    delete process.env.GITHUB_REPOSITORY_ALLOWLIST;
+  });
+
+  it("requires an allow-list", () => {
+    expect(() => checkAllowList("anyorg", "anyrepo")).toThrow(/GITHUB_REPOSITORY_ALLOWLIST/);
+  });
+
+  it("rejects an empty allow-list", () => {
+    process.env.GITHUB_REPOSITORY_ALLOWLIST = "  ";
+    expect(() => checkAllowList("anyorg", "anyrepo")).toThrow(/GITHUB_REPOSITORY_ALLOWLIST/);
+  });
+
+  it("allows an exact owner/repo match", () => {
+    process.env.GITHUB_REPOSITORY_ALLOWLIST = "bcgov/example-repo";
+    expect(() => checkAllowList("bcgov", "example-repo")).not.toThrow();
+  });
+
+  it("rejects a repo not in the allow-list", () => {
+    process.env.GITHUB_REPOSITORY_ALLOWLIST = "bcgov/example-repo";
+    expect(() => checkAllowList("bcgov", "other-repo")).toThrow(/GITHUB_REPOSITORY_ALLOWLIST/);
+  });
+
+  it("supports wildcard org/* patterns", () => {
+    process.env.GITHUB_REPOSITORY_ALLOWLIST = "bcgov/*";
+    expect(() => checkAllowList("bcgov", "any-repo")).not.toThrow();
+    expect(() => checkAllowList("otherorg", "any-repo")).toThrow(/GITHUB_REPOSITORY_ALLOWLIST/);
+  });
+
+  it("allows multiple entries separated by commas", () => {
+    process.env.GITHUB_REPOSITORY_ALLOWLIST = "org-a/repo-1, org-b/*";
+    expect(() => checkAllowList("org-a", "repo-1")).not.toThrow();
+    expect(() => checkAllowList("org-b", "anything")).not.toThrow();
+    expect(() => checkAllowList("org-a", "repo-2")).toThrow(/GITHUB_REPOSITORY_ALLOWLIST/);
+  });
+
+  it("is case-insensitive", () => {
+    process.env.GITHUB_REPOSITORY_ALLOWLIST = "BCGov/Example-Repo";
+    expect(() => checkAllowList("bcgov", "example-repo")).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateOwnerRepo
+// ---------------------------------------------------------------------------
+
+describe("validateOwnerRepo", () => {
+  it("accepts valid owner and repo names", () => {
+    expect(() => validateOwnerRepo("bcgov", "my-repo")).not.toThrow();
+    expect(() => validateOwnerRepo("My-Org", "repo_123")).not.toThrow();
+    expect(() => validateOwnerRepo("org", "repo.name")).not.toThrow();
+  });
+
+  describe("GitHub configuration validation", () => {
+    it("requires an HTTPS API base without embedded credentials", () => {
+      expect(normalizeApiBaseUrl("https://github.example.com/api/v3/")).toBe(
+        "https://github.example.com/api/v3",
+      );
+      expect(() => normalizeApiBaseUrl("http://github.example.com/api/v3")).toThrow(/HTTPS/);
+      expect(() => normalizeApiBaseUrl("https://user:pass@github.example.com/api/v3")).toThrow(
+        /credentials/,
+      );
+    });
+
+    it("restricts org operations to matching allow-list entries", () => {
+      process.env.GITHUB_REPOSITORY_ALLOWLIST = "bcgov/*,other/specific";
+      expect(() => checkOrgAllowList("bcgov")).not.toThrow();
+      expect(() => checkOrgAllowList("other")).not.toThrow();
+      expect(() => checkOrgAllowList("blocked")).toThrow(/GITHUB_REPOSITORY_ALLOWLIST/);
+    });
+  });
+
+  it("rejects owner with special characters", () => {
+    expect(() => validateOwnerRepo("bad/owner", "repo")).toThrow(/Invalid owner/);
+    expect(() => validateOwnerRepo("owner;rm -rf", "repo")).toThrow(/Invalid owner/);
+  });
+
+  it("rejects repo with special characters", () => {
+    expect(() => validateOwnerRepo("org", "repo;evil")).toThrow(/Invalid repo/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// clampPerPage
+// ---------------------------------------------------------------------------
+
+describe("clampPerPage", () => {
+  it("clamps values above 100 to 100", () => {
+    expect(clampPerPage(200)).toBe(100);
+    expect(clampPerPage(9999)).toBe(100);
+  });
+
+  it("clamps values below 1 to 1", () => {
+    expect(clampPerPage(0)).toBe(1);
+    expect(clampPerPage(-5)).toBe(1);
+  });
+
+  it("passes through valid values unchanged", () => {
+    expect(clampPerPage(50)).toBe(50);
+    expect(clampPerPage(100)).toBe(100);
+    expect(clampPerPage(1)).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// per_page cap in API calls
+// ---------------------------------------------------------------------------
+
+describe("GitHubClient per_page capping", () => {
+  it("caps per_page to 100 on listCodeScanningAlerts", async () => {
+    const fetch = mockFetch({ ok: true, status: 200, body: [] });
+    const c = new GitHubClient("https://api.github.com", "tok", {}, fetch as any);
+    await c.listCodeScanningAlerts("org", "repo", { per_page: 999 });
+    const url: string = fetch.mock.calls[0][0];
+    expect(url).toMatch(/per_page=100/);
+  });
+
+  it("caps per_page to 100 on listSecretScanningAlerts", async () => {
+    const fetch = mockFetch({ ok: true, status: 200, body: [] });
+    const c = new GitHubClient("https://api.github.com", "tok", {}, fetch as any);
+    await c.listSecretScanningAlerts("org", "repo", { per_page: 500 });
+    const url: string = fetch.mock.calls[0][0];
+    expect(url).toMatch(/per_page=100/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Secret value redaction
+// ---------------------------------------------------------------------------
+
+describe("GitHubClient secret value redaction", () => {
+  it("strips the secret field from getSecretScanningAlert responses", async () => {
+    const rawBody = {
+      number: 1,
+      created_at: "2024-01-01T00:00:00Z",
+      url: "https://api.github.com/repos/org/repo/secret-scanning/alerts/1",
+      html_url: "https://github.com/org/repo/security/secret-scanning/1",
+      state: "open",
+      secret_type: "github_personal_access_token",
+      secret: "ghp_SUPERSECRETVALUE123",
+    };
+    const fetch = mockFetch({ ok: true, status: 200, body: rawBody });
+    const c = new GitHubClient("https://api.github.com", "tok", {}, fetch as any);
+    const result = await c.getSecretScanningAlert("org", "repo", 1);
+
+    expect((result as any).secret).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain("SUPERSECRETVALUE123");
+  });
+
+  it("strips the secret field from listSecretScanningAlerts responses", async () => {
+    const rawBody = [
+      {
+        number: 1,
+        created_at: "2024-01-01T00:00:00Z",
+        url: "https://api.github.com/repos/org/repo/secret-scanning/alerts/1",
+        html_url: "https://github.com/org/repo/security/secret-scanning/1",
+        state: "open",
+        secret_type: "aws_access_key_id",
+        secret: "AKIAIOSFODNN7EXAMPLE",
+      },
+    ];
+    const fetch = mockFetch({ ok: true, status: 200, body: rawBody });
+    const c = new GitHubClient("https://api.github.com", "tok", {}, fetch as any);
+    const results = await c.listSecretScanningAlerts("org", "repo");
+
+    expect((results[0] as any).secret).toBeUndefined();
+    expect(JSON.stringify(results)).not.toContain("AKIAIOSFODNN7EXAMPLE");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SARIF conversion
+// ---------------------------------------------------------------------------
+
+const sampleFinding: CanonicalFinding = {
+  finding_id: "raven/sqli/001",
+  rule_id: "RAVEN-SQLI-001",
+  title: "Possible SQL injection in user search query",
+  description: "User-controlled input is concatenated into a SQL query.",
+  severity: "high",
+  security_severity: 8.1,
+  confidence: "medium",
+  precision: "medium",
+  cwe: ["CWE-89"],
+  file: "src/api/users/search.ts",
+  start_line: 42,
+  end_line: 48,
+  evidence: "Sanitised evidence only.",
+  recommendation: "Use parameterised queries.",
+};
+
+describe("findingsToSarif", () => {
+  it("produces a SARIF 2.1.0 log", () => {
+    const sarif = findingsToSarif([sampleFinding], "TestTool", "bcgov/example");
+    expect(sarif.version).toBe("2.1.0");
+    expect(sarif.runs).toHaveLength(1);
+  });
+
+  it("uses the tool name in the driver", () => {
+    const sarif = findingsToSarif([sampleFinding], "RAVEN Agentic Security Review", "bcgov/example");
+    expect(sarif.runs[0].tool.driver.name).toBe("RAVEN Agentic Security Review");
+  });
+
+  it("converts one finding to one result", () => {
+    const sarif = findingsToSarif([sampleFinding], "tool", "bcgov/example");
+    expect(sarif.runs[0].results).toHaveLength(1);
+    const r = sarif.runs[0].results![0];
+    expect(r.ruleId).toBe("RAVEN-SQLI-001");
+    expect(r.level).toBe("error"); // high → error
+  });
+
+  it("deduplicates rules across findings with the same rule_id", () => {
+    const f2 = { ...sampleFinding, finding_id: "raven/sqli/002", start_line: 80 };
+    const sarif = findingsToSarif([sampleFinding, f2], "tool", "bcgov/example");
+    expect(sarif.runs[0].tool.driver.rules).toHaveLength(1);
+  });
+
+  it("maps severities to correct SARIF levels", () => {
+    const severityMap: Array<[CanonicalFinding["severity"], "error" | "warning" | "note"]> = [
+      ["critical", "error"],
+      ["high", "error"],
+      ["medium", "warning"],
+      ["low", "note"],
+      ["note", "note"],
+    ];
+    for (const [sev, expectedLevel] of severityMap) {
+      const f = { ...sampleFinding, severity: sev };
+      const sarif = findingsToSarif([f], "tool", "bcgov/example");
+      expect(sarif.runs[0].results![0].level).toBe(expectedLevel);
+    }
+  });
+
+  it("strips leading slashes from file paths", () => {
+    const f = { ...sampleFinding, file: "/src/api/users/search.ts" };
+    const sarif = findingsToSarif([f], "tool", "bcgov/example");
+    const uri = sarif.runs[0].results![0].locations![0].physicalLocation!.artifactLocation.uri;
+    expect(uri).not.toMatch(/^\//);
+    expect(uri).toBe("src/api/users/search.ts");
+  });
+
+  it("normalises Windows backslash paths to forward slashes", () => {
+    const f = { ...sampleFinding, file: "src\\api\\users\\search.ts" };
+    const sarif = findingsToSarif([f], "tool", "bcgov/example");
+    const uri = sarif.runs[0].results![0].locations![0].physicalLocation!.artifactLocation.uri;
+    expect(uri).toBe("src/api/users/search.ts");
+  });
+
+  it("includes a partialFingerprints entry", () => {
+    const sarif = findingsToSarif([sampleFinding], "tool", "bcgov/example");
+    const result = sarif.runs[0].results![0];
+    expect(result.partialFingerprints?.["primaryLocationLineHash/v1"]).toBeTruthy();
+    expect(typeof result.partialFingerprints?.["primaryLocationLineHash/v1"]).toBe("string");
+  });
+
+  it("includes checkout_uri in originalUriBaseIds when provided", () => {
+    const sarif = findingsToSarif(
+      [sampleFinding],
+      "tool",
+      "bcgov/example",
+      "file:///workspace/example",
+    );
+    expect(sarif.runs[0].originalUriBaseIds?.["SRCROOT"]?.uri).toBe(
+      "file:///workspace/example",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fingerprint stability
+// ---------------------------------------------------------------------------
+
+describe("computeFingerprint", () => {
+  it("is stable — same inputs produce the same fingerprint", () => {
+    const a = computeFingerprint("bcgov/example", "RAVEN-SQLI-001", "src/foo.ts", 42, "SQL injection");
+    const b = computeFingerprint("bcgov/example", "RAVEN-SQLI-001", "src/foo.ts", 42, "SQL injection");
+    expect(a).toBe(b);
+  });
+
+  it("differs when the file path changes", () => {
+    const a = computeFingerprint("bcgov/example", "RULE-1", "src/a.ts", 1, "msg");
+    const b = computeFingerprint("bcgov/example", "RULE-1", "src/b.ts", 1, "msg");
+    expect(a).not.toBe(b);
+  });
+
+  it("differs when the line changes", () => {
+    const a = computeFingerprint("bcgov/example", "RULE-1", "src/a.ts", 10, "msg");
+    const b = computeFingerprint("bcgov/example", "RULE-1", "src/a.ts", 11, "msg");
+    expect(a).not.toBe(b);
+  });
+
+  it("returns a 40-char hex string", () => {
+    const fp = computeFingerprint("bcgov/example", "RULE-1", "src/a.ts", 1, "msg");
+    expect(fp).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it("is case-insensitive on repo slug and rule_id", () => {
+    const a = computeFingerprint("BCGov/Example", "RULE-1", "src/a.ts", 1, "msg");
+    const b = computeFingerprint("bcgov/example", "rule-1", "src/a.ts", 1, "msg");
+    expect(a).toBe(b);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateSarif
+// ---------------------------------------------------------------------------
+
+describe("validateSarif", () => {
+  it("accepts a valid SARIF 2.1.0 log", () => {
+    const sarif = findingsToSarif([sampleFinding], "tool", "org/repo");
+    expect(() => validateSarif(sarif)).not.toThrow();
+  });
+
+  it("rejects SARIF with wrong version", () => {
+    const sarif = { ...findingsToSarif([sampleFinding], "tool", "org/repo"), version: "2.0.0" as "2.1.0" };
+    expect(() => validateSarif(sarif)).toThrow(/version/);
+  });
+
+  it("rejects SARIF with no runs", () => {
+    const sarif = findingsToSarif([sampleFinding], "tool", "org/repo");
+    const bad = { ...sarif, runs: [] };
+    expect(() => validateSarif(bad)).toThrow(/run/);
+  });
+
+  it("rejects a result with an absolute Unix path", () => {
+    const sarif = findingsToSarif([sampleFinding], "tool", "org/repo");
+    const badSarif = JSON.parse(JSON.stringify(sarif));
+    badSarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri =
+      "/Users/alice/projects/example/src/foo.ts";
+    expect(() => validateSarif(badSarif)).toThrow(/absolute/i);
+  });
+
+  it("rejects a result with a Windows absolute path", () => {
+    const sarif = findingsToSarif([sampleFinding], "tool", "org/repo");
+    const badSarif = JSON.parse(JSON.stringify(sarif));
+    badSarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri =
+      "C:\\Users\\alice\\projects\\example\\src\\foo.ts";
+    expect(() => validateSarif(badSarif)).toThrow(/absolute/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// encodeSarif
+// ---------------------------------------------------------------------------
+
+describe("encodeSarif", () => {
+  it("returns a non-empty base64 string", async () => {
+    const sarif = findingsToSarif([sampleFinding], "tool", "org/repo");
+    const encoded = await encodeSarif(sarif);
+    expect(typeof encoded).toBe("string");
+    expect(encoded.length).toBeGreaterThan(0);
+    // Should be valid base64
+    expect(() => Buffer.from(encoded, "base64")).not.toThrow();
+  });
+
+  it("produces gzip-compressed content (magic bytes after decode)", async () => {
+    const sarif = findingsToSarif([sampleFinding], "tool", "org/repo");
+    const encoded = await encodeSarif(sarif);
+    const decoded = Buffer.from(encoded, "base64");
+    // gzip magic bytes: 0x1f 0x8b
+    expect(decoded[0]).toBe(0x1f);
+    expect(decoded[1]).toBe(0x8b);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dependabot pagination (cursor-based endpoint)
+// ---------------------------------------------------------------------------
+
+describe("listDependabotAlerts pagination", () => {
+  it("never sends the page parameter — the endpoint rejects it with 400", async () => {
+    const fetch = mockFetch({ ok: true, status: 200, body: [] });
+    const c = new GitHubClient("https://api.github.com", "tok", {}, fetch as any);
+    await c.listDependabotAlerts("bcgov", "raven", { state: "open", page: 3, per_page: 50 });
+    const url = String(fetch.mock.calls[0][0]);
+    expect(url).toContain("per_page=50");
+    expect(url).toContain("state=open");
+    expect(url).not.toMatch(/[?&]page=/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bounded response reading
+// ---------------------------------------------------------------------------
+
+function streamOf(...parts: string[]): ReadableStream<Uint8Array> {
+  const enc = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      for (const p of parts) controller.enqueue(enc.encode(p));
+      controller.close();
+    },
+  });
+}
+
+function streamedResponse(opts: {
+  status: number;
+  ok: boolean;
+  parts: string[];
+  headers?: Record<string, string>;
+}) {
+  const headers = new Headers(opts.headers ?? {});
+  return vi.fn().mockResolvedValue({
+    ok: opts.ok,
+    status: opts.status,
+    statusText: opts.ok ? "OK" : "Error",
+    headers,
+    body: streamOf(...opts.parts),
+    text: () => Promise.resolve(opts.parts.join("")),
+    json: () => Promise.resolve(JSON.parse(opts.parts.join(""))),
+  });
+}
+
+describe("GitHubClient bounded body reading", () => {
+  it("aborts a streamed body that exceeds maxBodyBytes instead of buffering it", async () => {
+    const fetch = streamedResponse({ ok: true, status: 200, parts: ["x".repeat(64), "y".repeat(64)] });
+    const c = new GitHubClient("https://api.github.com", "tok", { maxBodyBytes: 100 }, fetch as any);
+    await expect(c.getRateLimit()).rejects.toThrow(/too large/i);
+  });
+
+  it("fails fast on a declared oversize content-length without reading the body", async () => {
+    const fetch = streamedResponse({
+      ok: true,
+      status: 200,
+      parts: ["irrelevant"],
+      headers: { "content-length": "999999999" },
+    });
+    const c = new GitHubClient("https://api.github.com", "tok", { maxBodyBytes: 100 }, fetch as any);
+    await expect(c.getRateLimit()).rejects.toThrow(/too large/i);
+  });
+
+  it("parses a streamed body under the cap", async () => {
+    const fetch = streamedResponse({ ok: true, status: 200, parts: ['{"rate":', '{"limit":1,"remaining":1,"reset":0}}'] });
+    const c = new GitHubClient("https://api.github.com", "tok", { maxBodyBytes: 1024 }, fetch as any);
+    await expect(c.getRateLimit()).resolves.toEqual({ rate: { limit: 1, remaining: 1, reset: 0 } });
+  });
+
+  it("truncates an oversize error body but preserves the HTTP status error", async () => {
+    const fetch = streamedResponse({ ok: false, status: 500, parts: ["e".repeat(4096)] });
+    const c = new GitHubClient("https://api.github.com", "tok", { maxBodyBytes: 128 }, fetch as any);
+    await expect(c.getRateLimit()).rejects.toThrow(/500/);
+    await expect(c.getRateLimit()).rejects.not.toThrow(/too large/i);
+  });
+
+  it("enforces the cap on the text() fallback when no body stream exists", async () => {
+    const fetch = mockFetch({ ok: true, status: 200, text: "z".repeat(200) });
+    const c = new GitHubClient("https://api.github.com", "tok", { maxBodyBytes: 100 }, fetch as any);
+    await expect(c.getRateLimit()).rejects.toThrow(/too large/i);
+  });
+});
+
+describe("GitHubClient bounded body reading — streaming proof", () => {
+  it("rejects an endless stream at the cap instead of buffering forever", async () => {
+    const enc = new TextEncoder();
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(enc.encode("data".repeat(256)));
+      },
+    });
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: new Headers(),
+      body: endless,
+      // text() would await the whole (endless) stream — a buffering
+      // implementation hangs here and the test times out.
+      text: () => new Promise(() => {}),
+      json: () => Promise.reject(new Error("unused")),
+    });
+    const c = new GitHubClient("https://api.github.com", "tok", { maxBodyBytes: 10_000 }, fetch as any);
+    await expect(c.getRateLimit()).rejects.toThrow(/too large/i);
+  }, 4000);
+});
