@@ -4,7 +4,7 @@
 // Usage:
 //   import { GitHubClient } from "@nrs/github-mcp/client";
 //
-export { GitHubClient } from "./github-client.js";
+export { GitHubClient, GitHubApiError } from "./github-client.js";
 export type {
   GitHubClientOptions,
 } from "./github-client.js";

@@ -7,7 +7,7 @@
   "types": "dist/index.d.ts",
   "exports": {
     ".": "./dist/index.js",
-    "./client": "./dist/github-client.js"
+    "./client": "./dist/exports.js"
   },
   "bin": { "raven-github-mcp": "dist/index.js" },
   "scripts": {
