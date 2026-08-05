@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # All 16 workspace packages share the root package-lock.json, so one npm
+  # entry covers the whole monorepo. Minor/patch bumps are grouped into a
+  # single weekly PR; majors open individually so breaking changes get
+  # individual review.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
