@@ -15,6 +15,7 @@ RAVEN gives your local LLM direct access to our Atlassian tools via [MCP (Model 
 | **Jira** | Search by JQL; read/create/update/comment/transition issues (Epic Link aware); log time; manage watchers, versions, and the sprint lifecycle; link issues |
 | **Confluence** | Search (CQL + filtered); navigate the space tree; read/create/update/delete/move pages as Markdown; manage attachments, labels, and comments |
 | **Bitbucket** | Browse/search code; review PRs end-to-end (diff, comment, approve, merge, decline); commit history and blame; tags; CI build status; create branches and PRs |
+| **SharePoint** | Search, browse, and read BC Gov SharePoint Online project documentation — sites, document libraries, files (Word/PDF/images), and site pages (read-only) |
 | **Azure DevOps** | Work items (WIQL), repos and branches, pull requests, and build pipelines on on-prem Azure DevOps Server |
 | **Assets (CMDB)** | Query the Jira Assets CMDB — apps, environments, tech stacks, people, org portfolios; object/schema introspection |
 | **Server Monitor** | Discover deployed apps; search Tomcat/Apache logs; compare versions; diff configs; JVM heap (read-only, over SSH) |
@@ -28,7 +29,7 @@ RAVEN gives your local LLM direct access to our Atlassian tools via [MCP (Model 
 | **Bug Classifier** | Cluster Jira bugs by shared root cause across projects |
 | **Jarvis** | Query the central Jarvis application inventory (dynamic proxy to a BC Gov API) |
 
-See **[`docs/TOOL_INVENTORY.md`](docs/TOOL_INVENTORY.md)** for the complete tool catalog, per-server counts, and the read/write split. The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share a single authentication session — log in once, use everywhere. Server Monitor, IMIS, Azure DevOps, Jarvis, Sonar, Jenkins, Artifactory, and RFC Buddy authenticate separately via credentials in `~/.raven/.env`.
+See **[`docs/TOOL_INVENTORY.md`](docs/TOOL_INVENTORY.md)** for the complete tool catalog, per-server counts, and the read/write split. The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share a single authentication session — log in once, use everywhere. Server Monitor, IMIS, Azure DevOps, Jarvis, Sonar, Jenkins, Artifactory, RFC Buddy, and SharePoint authenticate separately via credentials in `~/.raven/.env`.
 
 ### Autonomous Pipeline (`@nrs/pipeline`)
 
@@ -62,6 +63,23 @@ Confluence search results are scored and ranked by relevance (0-100) using:
 - **Title match** (10%) — bonus when query terms appear in the page title
 
 Results are grouped by age tier: Current (<1yr), Recent (1-3yr), Outdated (>3yr). The search tool instructs the LLM to always read the top pages via `read_pages` before summarizing — never just listing search results.
+
+### SharePoint
+
+Read-only access to BC Gov SharePoint Online for project documentation, design docs, requirements, and mock-ups stored in document libraries and site pages. All 8 tools are read-only, permission-trimmed to what the logged-in user can see:
+
+- `search_sharepoint` — keyword/KQL search across everything the user can see, ranked with hit-highlighted snippets
+- `list_sites` — find SharePoint sites by name or keyword
+- `get_site` — a site's metadata and its document libraries
+- `list_folder` — files and sub-folders of a document library folder
+- `get_file_info` — a single file's size, modified date, version, and URL
+- `read_document` — a file's content inline (`.docx` → markdown, `.pdf` → extracted text, plain text verbatim, images → rendered image)
+- `read_page` — a modern Site Pages article (`.aspx`) as markdown
+- `download_file` — save a file to the local protected download directory
+
+See [Configure Authentication](#2-configure-authentication) for the SharePoint login flow and env vars.
+
+**FOIPPA note:** inlined image content (diagrams, mock-ups, screenshots) returned by `read_document` may contain personal information visible to the AI and cannot be PI-scrubbed. Text-based results (search, document text, pages) go through the same PI scrubber as every other server.
 
 ## Prerequisites
 
@@ -177,6 +195,32 @@ ARTIFACTORY_PASSWORD=<your IDIR password>
 
 Create transfer directories only when needed and restrict them with `chmod 700`; upload source files must be regular files with mode `600`. Artifactory credentials are attached to requests only inside the local MCP process and sent only to the configured HTTPS endpoint.
 
+Optional SharePoint settings (dedicated cookie-based auth — separate from Atlassian Basic Auth and not shared with Jira/Confluence/Bitbucket):
+
+```env
+# SharePoint Online tenant to connect to
+SHAREPOINT_URL=https://<tenant>.sharepoint.com
+# Optional: default site path used when a tool call omits sitePath
+# SHAREPOINT_DEFAULT_SITE=/sites/MyProject
+# Optional: how long a cached session is trusted before re-auth (seconds; default 28800 = 8h)
+# SHAREPOINT_SESSION_TTL=28800
+# Optional: where download_file saves files (default ~/.raven/sharepoint-downloads)
+# RAVEN_SHAREPOINT_DOWNLOAD_DIR=~/.raven/sharepoint-downloads
+# Optional: reject download_file for files larger than this (bytes; default 536870912 = 512 MB)
+# RAVEN_SHAREPOINT_MAX_DOWNLOAD_BYTES=536870912
+# Optional: SPO rate-limit tuning (burst capacity / sustained requests-per-second)
+# RATE_LIMIT_SPO_BURST=10
+# RATE_LIMIT_SPO_RPS=4
+```
+
+Log in once with a browser flow that captures the SharePoint FedAuth/rtFa session cookies:
+
+```bash
+npx raven-auth --sharepoint
+```
+
+The session is cached and reused across tool calls until `SHAREPOINT_SESSION_TTL` expires, then it re-prompts. If you already hold valid cookie values (e.g. from another tool), you can skip the browser login entirely by setting `SPO_FEDAUTH` and `SPO_RTFA` directly in `~/.raven/.env` instead.
+
 When using Jira MCP tools, both `create_issue` and `update_issue` accept an optional `epicKey` parameter to set Epic Link.
 
 > **Where do I get the ATLASSIAN_BASE_URL?** This is an internal BWA (Basic Web Auth) hostname that bypasses SiteMinder. It is not published publicly. Ask the RAVEN maintainer or your team lead for the URL.
@@ -201,6 +245,10 @@ Copy this MCP configuration into your client (see [Choosing a Client](#choosing-
     "bitbucket": {
       "command": "node",
       "args": ["/path/to/raven/packages/bitbucket-mcp/dist/index.js"]
+    },
+    "sharepoint": {
+      "command": "node",
+      "args": ["/path/to/raven/packages/sharepoint-mcp/dist/index.js"]
     },
     "overview": {
       "command": "node",
@@ -396,7 +444,7 @@ RAVEN includes a `.mcp.json` file in the repo root that VS Code detects automati
 
 **Verify MCP servers are connected:**
 - Open the Command Palette (**⌘⇧P** / **Ctrl+Shift+P**) and run **MCP: List Servers**
-- All 12 servers should show as registered — click any to start/restart it
+- All servers in `.mcp.json` should show as registered — click any to start/restart it
 - In the Copilot Chat input bar, click the **tools icon** (🔧) to see which tools are available
 
 No manual MCP configuration needed — the `.mcp.json` in the project root handles everything. If you need to customize server paths, edit `.mcp.json` directly.
@@ -427,6 +475,11 @@ Create or edit the file at:
       "type": "stdio",
       "command": "node",
       "args": ["/path/to/raven/packages/bitbucket-mcp/dist/index.js"]
+    },
+    "sharepoint": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/path/to/raven/packages/sharepoint-mcp/dist/index.js"]
     },
     "overview": {
       "type": "stdio",
@@ -686,6 +739,7 @@ raven/                           ← RAVEN root (run npm commands here)
     jira-mcp/          Jira Data Center MCP server (search, issues, sprints, versions, watchers, worklogs, attachments, users)
     confluence-mcp/    Confluence Data Center MCP server (search/CQL, pages, hierarchy, attachments, labels, comments)
     bitbucket-mcp/     Bitbucket Data Center MCP server (code search, PR review, commits, blame, tags, build status)
+    sharepoint-mcp/    SharePoint Online MCP server (search, sites, libraries, files, pages — read-only)
     overview-mcp/      Cross-system project overview MCP server
     health-mcp/        Project health analysis MCP server
     server-mcp/        Server monitoring MCP server (SSH)

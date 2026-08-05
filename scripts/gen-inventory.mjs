@@ -10,6 +10,7 @@
 import "./gen-setup.mjs"; // MUST be first — sets placeholder host config before any server module loads
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { classify, render, spliceRegion } from "./gen-inventory.lib.mjs";
@@ -28,6 +29,7 @@ import { createOverviewServer } from "../packages/overview-mcp/dist/server.js";
 import { createBugClassifierServer } from "../packages/bug-classifier-mcp/dist/server.js";
 import { createRfcBuddyServer } from "../packages/rfcbuddy-mcp/dist/server.js";
 import { createArtifactoryServer } from "../packages/artifactory-mcp/dist/server.js";
+import { createSharePointServer } from "../packages/sharepoint-mcp/dist/server.js";
 
 const INVENTORY = fileURLToPath(new URL("../docs/TOOL_INVENTORY.md", import.meta.url));
 
@@ -47,6 +49,7 @@ const SERVERS = [
   { display: "Jenkins", pkg: "jenkins-mcp", mcpKey: "jenkins", group: "CI/CD", factory: createJenkinsServer },
   { display: "RFC Buddy", pkg: "rfcbuddy-mcp", mcpKey: "rfcbuddy", group: "RFC tracking & schedules", factory: createRfcBuddyServer },
   { display: "Artifactory", pkg: "artifactory-mcp", mcpKey: "artifactory", group: "Build and artifact infrastructure", factory: createArtifactoryServer },
+  { display: "SharePoint", pkg: "sharepoint-mcp", mcpKey: "sharepoint", group: "Microsoft 365", factory: createSharePointServer },
 ];
 
 async function listTools(factory) {
@@ -57,6 +60,14 @@ async function listTools(factory) {
     await Promise.all([server.connect(serverT), client.connect(clientT)]);
     const { tools } = await client.listTools();
     return tools;
+  } catch (err) {
+    // McpServer only wires the tools/list request handler inside tool(),
+    // so a freshly scaffolded server with no tools registered yet responds
+    // "Method not found" rather than an empty list. Treat that as zero tools.
+    if (err instanceof McpError && err.code === ErrorCode.MethodNotFound) {
+      return [];
+    }
+    throw err;
   } finally {
     await client.close().catch(() => {});
     await server.close().catch(() => {});

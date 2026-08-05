@@ -59,6 +59,10 @@
     "artifactory": {
       "command": "node",
       "args": ["./packages/artifactory-mcp/dist/index.js"]
+    },
+    "sharepoint": {
+      "command": "node",
+      "args": ["./packages/sharepoint-mcp/dist/index.js"]
     }
   }
 }
