@@ -1,4 +1,4 @@
-import pdfParse from "pdf-parse/lib/pdf-parse.js";
+import { PDFParse } from "pdf-parse";
 
 export type AttachmentKind = "image" | "text" | "pdf" | "other";
 
@@ -46,8 +46,16 @@ export function decodeUtf8(bytes: Uint8Array): string {
 
 /** Extract all text from a PDF's bytes. */
 export async function extractPdfText(bytes: Uint8Array): Promise<string> {
-  const result = await pdfParse(Buffer.from(bytes));
-  return result.text ?? "";
+  // Copy the bytes: pdf.js may transfer/detach the buffer it is given.
+  const parser = new PDFParse({ data: new Uint8Array(bytes) });
+  try {
+    // pageJoiner "\n" separates pages without v2's default
+    // "-- N of M --" boundary markers leaking into attachment text.
+    const result = await parser.getText({ pageJoiner: "\n" });
+    return result.text ?? "";
+  } finally {
+    await parser.destroy();
+  }
 }
 
 /**
