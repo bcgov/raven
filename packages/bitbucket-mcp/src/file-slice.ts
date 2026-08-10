@@ -43,6 +43,17 @@ export function sliceFileContent(
 ): SliceResult {
   const { startLine, endLine, maxChars } = opts;
 
+  if (
+    (startLine !== undefined && !Number.isInteger(startLine)) ||
+    (endLine !== undefined && !Number.isInteger(endLine))
+  ) {
+    return {
+      ok: false,
+      reason: "invalid-range",
+      message: `startLine and endLine must be integers (got startLine=${startLine}, endLine=${endLine}).`,
+    };
+  }
+
   if (startLine !== undefined && endLine !== undefined && startLine > endLine) {
     return {
       ok: false,
@@ -65,6 +76,13 @@ export function sliceFileContent(
   const first = startLine ?? 1;
 
   if (totalLines === 0) {
+    if (first > 1) {
+      return {
+        ok: false,
+        reason: "past-eof",
+        message: `No content starting at line ${first}. The file has only 0 lines.`,
+      };
+    }
     return {
       ok: true,
       text: "",

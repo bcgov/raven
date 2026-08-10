@@ -123,6 +123,27 @@ describe("sliceFileContent", () => {
     expect(r.nextStartLine).toBeUndefined();
   });
 
+  it("rejects startLine past EOF on an empty file", () => {
+    const r = sliceFileContent("", { startLine: 2, maxChars: 50_000 });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("expected failure");
+    expect(r.reason).toBe("past-eof");
+    expect(r.message).toContain("0 lines");
+  });
+
+  it("rejects fractional startLine or endLine", () => {
+    const a = sliceFileContent(makeLines(10), { startLine: 1.5, maxChars: 50_000 });
+    expect(a.ok).toBe(false);
+    if (a.ok) throw new Error("expected failure");
+    expect(a.reason).toBe("invalid-range");
+    expect(a.message).toContain("integer");
+
+    const b = sliceFileContent(makeLines(10), { endLine: 2.5, maxChars: 50_000 });
+    expect(b.ok).toBe(false);
+    if (b.ok) throw new Error("expected failure");
+    expect(b.reason).toBe("invalid-range");
+  });
+
   it("handles an empty file without erroring", () => {
     const r = sliceFileContent("", { maxChars: 50_000 });
     if (!r.ok) throw new Error(r.message);

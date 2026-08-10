@@ -221,11 +221,13 @@ IMPORTANT: Bitbucket project keys often differ from Jira keys. If a key returns 
         .describe("Branch or commit (defaults to default branch)"),
       startLine: z
         .number()
+        .int()
         .min(1)
         .optional()
         .describe("First line to return (1-based, inclusive). Defaults to 1."),
       endLine: z
         .number()
+        .int()
         .min(1)
         .optional()
         .describe("Last line to return (1-based, inclusive). Defaults to the end of the file."),
