@@ -44,7 +44,6 @@
     "vitest": "^4.1.8"
   },
   "dependencies": {
-    "oracledb": "^6.10.0",
-    "vscode-jsonrpc": "^8.2.1"
+    "oracledb": "^6.10.0"
   }
 }
