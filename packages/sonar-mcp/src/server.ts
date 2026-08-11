@@ -167,11 +167,12 @@ export function createSonarServer(): McpServer {
       projectDir: z.string().describe("Absolute path to the project working directory"),
       extraArgs:  z.array(z.string()).optional(),
       timeoutMs:  z.number().int().min(10_000).max(3_600_000).default(900_000),
-      useMsBuild: z.boolean().optional().describe("Use MSBuild sonar step sequence for C#/.NET projects (default: auto-detect .NET code)"),
-      runTests:   z.boolean().optional().describe("Run tests to calculate/report code coverage (default: auto-detect tests)")
+      useMsBuild: z.boolean().optional().describe("Use MSBuild sonar step sequence for C#/.NET projects (default: auto-detect .NET code)"),
+      runTests:   z.boolean().optional().describe("Run tests to calculate/report code coverage (default: auto-detect tests)"),
+      testsDir:   z.string().optional().describe("Absolute or project-relative tests directory (default: sibling ../tests when present)")
     },
     { readOnlyHint: false },
-    async ({ projectKey, branch, projectDir, extraArgs, timeoutMs, useMsBuild, runTests }) => {
+    async ({ projectKey, branch, projectDir, extraArgs, timeoutMs, useMsBuild, runTests, testsDir }) => {
       try {
         const props = getMergedSonarProps(projectDir);
 
@@ -198,6 +199,7 @@ export function createSonarServer(): McpServer {
           extraArgs, timeoutMs,
           useMsBuild,
           runTests,
+          testsDir,
         });
 
         const scrubOutput = (s: string) => pi.scrubText(s).split(token).join("[REDACTED]");
