@@ -212,21 +212,32 @@ export function getScannerPath(bin: string): string {
 
 function getTestsDir(projectDir: string, configuredTestsDir?: string): string | undefined {
   if (configuredTestsDir) {
-    return isAbsolute(configuredTestsDir)
+    const testsDir = isAbsolute(configuredTestsDir)
       ? configuredTestsDir
       : resolve(projectDir, configuredTestsDir);
+    if (!existsSync(testsDir)) {
+      throw new Error(`Configured tests directory does not exist: "${testsDir}"`);
+    }
+    return testsDir;
   }
 
   const siblingTestsDir = resolve(projectDir, "..", "tests");
   return existsSync(siblingTestsDir) ? siblingTestsDir : undefined;
 }
 
+function getRelativeTestsDir(projectDir: string, testsDir: string | undefined): string | undefined {
+  if (!testsDir) return undefined;
+  const relativeTestsDir = relative(projectDir, testsDir).replaceAll("\\", "/");
+  return relativeTestsDir && relativeTestsDir !== "." ? relativeTestsDir : undefined;
+}
+
 function getSonarTestReportsPath(projectDir: string, testsDir: string | undefined, fileName: string): string {
-  const relativeTestsDir = testsDir
-    ? relative(projectDir, testsDir).replaceAll("\\", "/")
-    : "";
-  const prefix = relativeTestsDir && relativeTestsDir !== "." ? `${relativeTestsDir}/` : "";
-  return `${prefix}**/TestResults/**/${fileName}`;
+  const reportPaths = [`**/TestResults/**/${fileName}`];
+  const relativeTestsDir = getRelativeTestsDir(projectDir, testsDir);
+  if (relativeTestsDir) {
+    reportPaths.unshift(`${relativeTestsDir}/**/TestResults/**/${fileName}`);
+  }
+  return reportPaths.join(",");
 }
 
 interface RunCommandResult {
@@ -268,6 +279,7 @@ function runCommand(
 export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
   const bin = opts.scannerBin ?? process.env.SONAR_SCANNER_BIN ?? "sonar-scanner";
   const isDotNet = opts.useMsBuild ?? hasDotNetCode(opts.projectDir);
+  const candidateTestsDir = getTestsDir(opts.projectDir, opts.testsDir);
 
   if (!isDotNet) {
     if (!isValidSonarScanner(bin)) {
@@ -282,7 +294,6 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
   const exclusions = opts.exclusions ?? props.exclusions;
   const cpdExclusions = opts.cpdExclusions ?? props.cpdExclusions;
   const coverageExclusions = opts.coverageExclusions ?? props.coverageExclusions;
-  const testsDir = getTestsDir(opts.projectDir, opts.testsDir);
 
   if (isDotNet) {
     // Check test bypass or actual existence of the MSBuild binary
@@ -319,7 +330,13 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
       }
     }
 
-    const shouldRunTests = opts.runTests ?? hasDotNetTests(testsDir ?? opts.projectDir);
+    const hasProjectTests = hasDotNetTests(opts.projectDir);
+    const hasCandidateTests = candidateTestsDir ? hasDotNetTests(candidateTestsDir) : false;
+    const testsDir =
+      hasCandidateTests || (opts.runTests === true && opts.testsDir !== undefined)
+        ? candidateTestsDir
+        : undefined;
+    const shouldRunTests = opts.runTests ?? (hasProjectTests || hasCandidateTests);
 
     const beginArgs: string[] = [
       "begin",
@@ -410,7 +427,7 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
       const testArgs = [
         "test",
         ...(testsDir ? [testsDir] : []),
-        "--no-build",
+        ...(testsDir ? [] : ["--no-build"]),
         "--collect:XPlat Code Coverage",
         "--logger",
         "trx",
@@ -456,7 +473,13 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
   }
 
   // Fallback to normal sonar-scanner
-  const runNodeTests = opts.runTests ?? hasNodeTests(testsDir ?? opts.projectDir);
+  const hasProjectTests = hasNodeTests(opts.projectDir);
+  const hasCandidateTests = candidateTestsDir ? hasNodeTests(candidateTestsDir) : false;
+  const testsDir =
+    hasCandidateTests || (opts.runTests === true && opts.testsDir !== undefined)
+      ? candidateTestsDir
+      : undefined;
+  const runNodeTests = opts.runTests ?? (hasProjectTests || hasCandidateTests);
 
   const args: string[] = [
     `-Dsonar.projectKey=${opts.projectKey}`,
@@ -469,11 +492,15 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
   if (coverageExclusions) args.push(`-Dsonar.coverage.exclusions=${coverageExclusions}`);
 
   if (runNodeTests) {
-    const relativeTestsDir = testsDir
-      ? relative(opts.projectDir, testsDir).replaceAll("\\", "/")
-      : "";
-    const prefix = relativeTestsDir && relativeTestsDir !== "." ? `${relativeTestsDir}/` : "";
-    args.push(`-Dsonar.javascript.lcov.reportPaths=${prefix}coverage/lcov.info,${prefix}**/coverage/lcov.info`);
+    const reportPaths = ["coverage/lcov.info", "**/coverage/lcov.info"];
+    const relativeTestsDir = getRelativeTestsDir(opts.projectDir, testsDir);
+    if (relativeTestsDir) {
+      reportPaths.unshift(`${relativeTestsDir}/coverage/lcov.info`);
+      if (!relativeTestsDir.startsWith("../")) {
+        reportPaths.unshift(`${relativeTestsDir}/**/coverage/lcov.info`);
+      }
+    }
+    args.push(`-Dsonar.javascript.lcov.reportPaths=${reportPaths.join(",")}`);
   }
 
   if (opts.extraArgs?.length)  args.push(...opts.extraArgs);
