@@ -473,6 +473,66 @@ describe("MSBuild/DotNet detection and execution tests", () => {
       const result = await scanPromise;
       expect(result.success).toBe(true);
     });
+
+    it("auto-detects a sibling tests directory for test execution and reports", async () => {
+      const spawnedChildren: MockChildProcess[] = [];
+      vi.mocked(spawn).mockImplementation(() => {
+        const child = new MockChildProcess();
+        spawnedChildren.push(child);
+        return child as any;
+      });
+      vi.mocked(existsSync).mockImplementation((path: any) => {
+        const normalizedPath = String(path).replaceAll("\\", "/");
+        return normalizedPath.endsWith("/tests") || normalizedPath.includes("SonarScanner.MSBuild.exe");
+      });
+      vi.mocked(readdirSync).mockImplementation((path: any) =>
+        String(path).replaceAll("\\", "/").endsWith("/tests")
+          ? ["MyApp.Tests.csproj"] as any
+          : [] as any,
+      );
+      vi.mocked(statSync).mockReturnValue({ isDirectory: () => false } as any);
+
+      const scanPromise = runScan({
+        projectKey: "dotnet-project",
+        branch: "main",
+        projectDir: "/tmp/copy/src",
+        serverUrl: "https://sonar.example.com",
+        token: "sonar-tok-456",
+        useMsBuild: true,
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnedChildren.length).toBe(1);
+      expect(spawn).toHaveBeenNthCalledWith(
+        1,
+        expect.stringContaining("SonarScanner.MSBuild.exe"),
+        expect.arrayContaining([
+          "/d:sonar.cs.opencover.reportsPaths=../tests/**/TestResults/**/coverage.opencover.xml",
+          "/d:sonar.cs.vstest.reportsPaths=../tests/**/TestResults/**/*.trx",
+        ]),
+        expect.any(Object),
+      );
+      spawnedChildren[0].emit("close", 0);
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      spawnedChildren[1].emit("close", 0);
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnedChildren.length).toBe(3);
+      expect(spawn).toHaveBeenNthCalledWith(
+        3,
+        "dotnet",
+        expect.arrayContaining(["test", expect.stringMatching(/tests$/)]),
+        expect.objectContaining({ cwd: "/tmp/copy/src" }),
+      );
+      spawnedChildren[2].emit("close", 0);
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      spawnedChildren[3].emit("close", 0);
+
+      const result = await scanPromise;
+      expect(result.success).toBe(true);
+    });
   });
 
   describe("runScan with Node.js/Fallback support", () => {
