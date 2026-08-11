@@ -407,6 +407,72 @@ describe("MSBuild/DotNet detection and execution tests", () => {
       // Verify that it only spawned step 1 and was not called again
       expect(spawn).toHaveBeenCalledTimes(1);
     });
+
+    it("uses an explicit sibling tests directory for test execution and reports", async () => {
+      const spawnedChildren: MockChildProcess[] = [];
+      vi.mocked(spawn).mockImplementation(() => {
+        const child = new MockChildProcess();
+        spawnedChildren.push(child);
+        return child as any;
+      });
+      vi.mocked(existsSync).mockImplementation((path: any) =>
+        String(path).includes("SonarScanner.MSBuild.exe"),
+      );
+
+      const scanPromise = runScan({
+        projectKey: "dotnet-project",
+        branch: "main",
+        projectDir: "/tmp/copy/src",
+        testsDir: "/tmp/copy/tests",
+        serverUrl: "https://sonar.example.com",
+        token: "sonar-tok-456",
+        useMsBuild: true,
+        runTests: true,
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnedChildren.length).toBe(1);
+      expect(spawn).toHaveBeenNthCalledWith(
+        1,
+        expect.stringContaining("SonarScanner.MSBuild.exe"),
+        expect.arrayContaining([
+          "/d:sonar.cs.opencover.reportsPaths=../tests/**/TestResults/**/coverage.opencover.xml",
+          "/d:sonar.cs.vstest.reportsPaths=../tests/**/TestResults/**/*.trx",
+        ]),
+        expect.any(Object),
+      );
+      spawnedChildren[0].emit("close", 0);
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnedChildren.length).toBe(2);
+      spawnedChildren[1].emit("close", 0);
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnedChildren.length).toBe(3);
+      expect(spawn).toHaveBeenNthCalledWith(
+        3,
+        "dotnet",
+        [
+          "test",
+          "/tmp/copy/tests",
+          "--no-build",
+          "--collect:XPlat Code Coverage",
+          "--logger",
+          "trx",
+          "--",
+          "DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover",
+        ],
+        expect.objectContaining({ cwd: "/tmp/copy/src" }),
+      );
+      spawnedChildren[2].emit("close", 0);
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnedChildren.length).toBe(4);
+      spawnedChildren[3].emit("close", 0);
+
+      const result = await scanPromise;
+      expect(result.success).toBe(true);
+    });
   });
 
   describe("runScan with Node.js/Fallback support", () => {
@@ -525,4 +591,3 @@ describe("MSBuild/DotNet detection and execution tests", () => {
     });
   });
 });
-
