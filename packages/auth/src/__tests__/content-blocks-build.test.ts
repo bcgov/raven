@@ -1,7 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
 
-vi.mock("pdf-parse/lib/pdf-parse.js", () => ({
-  default: vi.fn(async () => ({ text: "extracted pdf text", numpages: 1, info: {}, metadata: {}, version: "" })),
+vi.mock("pdf-parse", () => ({
+  PDFParse: class {
+    async getText(): Promise<{ text: string }> {
+      return { text: "extracted pdf text" };
+    }
+    async destroy(): Promise<void> {}
+  },
 }));
 
 import { extractPdfText, buildAttachmentContent } from "../content-blocks.js";
