@@ -44,6 +44,6 @@
     "vitest": "^4.1.8"
   },
   "dependencies": {
-    "oracledb": "^6.10.0"
+    "oracledb": "^7.0.1"
   }
 }
