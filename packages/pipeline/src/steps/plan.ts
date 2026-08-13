@@ -69,6 +69,12 @@ export async function plan(
   console.log(`[PLAN] Target classes: ${[...targetClasses].join(", ") || "(none)"}`);
   console.log(`[PLAN] Stack trace file hints: ${fileHints.length}`);
 
+  if (targetClasses.size === 0 && fileHints.length === 0 && ctx.ticketText) {
+    console.log("[PLAN] No stack-trace signals — using functional-bug path (keyword code search)");
+    const { planFunctional } = await import("./plan-functional.js");
+    return planFunctional(ctx, bitbucketClient);
+  }
+
   // --- Source finding strategy ---
   // 1. Try direct file paths from stack trace in the app repo
   // 2. Walk the app repo tree for matching class names
@@ -612,7 +618,7 @@ async function findFilesInRepo(
  * With Copilot Business models (Claude Sonnet = 200K tokens), we can send
  * much larger context. Limit to ~50K chars (~12K tokens) per file.
  */
-function extractRelevantCode(source: string, errorMessage: string): string {
+export function extractRelevantCode(source: string, errorMessage: string): string {
   const MAX_CHARS = 50_000;
   const lines = source.split("\n");
 
@@ -679,7 +685,7 @@ function extractRelevantCode(source: string, errorMessage: string): string {
  * AI models sometimes generate diffs with just the filename or partial path.
  * This maps them back to the full paths found by source discovery.
  */
-function fixPatchPaths(
+export function fixPatchPaths(
   patch: string,
   sourceFiles: Array<{ path: string; content: string; repo: string }>
 ): string {
@@ -708,7 +714,7 @@ function fixPatchPaths(
 }
 
 /** Parse AI response into JSON analysis + diff patch. */
-function parseAiPlanResponse(output: string): {
+export function parseAiPlanResponse(output: string): {
   analysis: Record<string, unknown> | null;
   patch: string | null;
 } {

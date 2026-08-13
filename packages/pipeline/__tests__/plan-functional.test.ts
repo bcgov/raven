@@ -10,7 +10,9 @@ import {
   understandTicket,
   gitGrepFiles,
   locateSourceFiles,
+  planFunctional,
 } from "../src/steps/plan-functional.js";
+import type { PipelineContext } from "../src/types.js";
 
 const TERMS = [
   { term: "Representative", kind: "label" as const, weight: 3 },
@@ -153,5 +155,62 @@ describe("gitGrepFiles / locateSourceFiles", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+const PLAN_JSON = '{"affectedFiles":["src/main/java/AgreementPartyBean.java"],"rootCause":"limit 40","proposedFix":"raise to 200 with test","patch":""}';
+const GOOD_PATCH =
+  "--- a/src/main/java/AgreementPartyBean.java\n+++ b/src/main/java/AgreementPartyBean.java\n@@ -1,1 +1,1 @@\n-a\n+b\n" +
+  "--- /dev/null\n+++ b/src/test/java/AgreementPartyBeanTest.java\n@@ -0,0 +1,1 @@\n+t";
+
+function makeCtx(): PipelineContext {
+  return {
+    server: "", app: "ARTS", component: "arts-arts-api", dryRun: true,
+    jiraProject: "ARTS", errors: [], ticketKey: "ARTS-220",
+    ticketText: "Expand character limit for Representative field",
+    isDuplicate: false,
+  } as unknown as PipelineContext;
+}
+
+function makeDeps(planResponse: string) {
+  return {
+    // First AI call = understand, second = plan.
+    ai: vi.fn()
+      .mockResolvedValueOnce(GOOD_UNDERSTANDING)
+      .mockResolvedValueOnce(planResponse),
+    ensureClone: vi.fn().mockReturnValue("/tmp/fake-repo"),
+    locate: vi.fn().mockReturnValue([
+      { path: "src/main/java/AgreementPartyBean.java", content: "class AgreementPartyBean { /* max 40 */ }" },
+    ]),
+  };
+}
+
+describe("planFunctional", () => {
+  it("produces a fix plan with a tests-included patch", async () => {
+    const ctx = makeCtx();
+    await planFunctional(ctx, {} as never, makeDeps(`${PLAN_JSON}\n\n${GOOD_PATCH}`) as never);
+    expect(ctx.fixPlan?.patch).toContain("AgreementPartyBeanTest.java");
+    expect(ctx.fixPlan?.proposedFix).toContain("raise to 200");
+  });
+
+  it("fails as declined on NO_PATCH responses", async () => {
+    const ctx = makeCtx();
+    const deps = makeDeps("NO_PATCH: the limit is a business decision");
+    await expect(planFunctional(ctx, {} as never, deps as never))
+      .rejects.toMatchObject({ category: "declined" });
+  });
+
+  it("discards a patch that has no tests", async () => {
+    const ctx = makeCtx();
+    const noTests = "--- a/src/main/java/AgreementPartyBean.java\n+++ b/src/main/java/AgreementPartyBean.java\n@@ -1,1 +1,1 @@\n-a\n+b";
+    await expect(planFunctional(ctx, {} as never, makeDeps(`${PLAN_JSON}\n\n${noTests}`) as never))
+      .rejects.toMatchObject({ category: "no-tests" });
+  });
+
+  it("discards a patch touching files that were never read", async () => {
+    const ctx = makeCtx();
+    const fabricated = "--- a/src/main/java/Invented.java\n+++ b/src/main/java/Invented.java\n@@ -1,1 +1,1 @@\n-a\n+b\n--- /dev/null\n+++ b/src/test/java/InventedTest.java\n@@ -0,0 +1,1 @@\n+t";
+    await expect(planFunctional(ctx, {} as never, makeDeps(`${PLAN_JSON}\n\n${fabricated}`) as never))
+      .rejects.toMatchObject({ category: "declined" });
   });
 });

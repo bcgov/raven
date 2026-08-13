@@ -20,7 +20,20 @@ vi.mock("../src/ai-client.js", () => ({
   ),
 }));
 
+vi.mock("../src/steps/plan-functional.js", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("../src/steps/plan-functional.js")>();
+  return { ...orig, planFunctional: vi.fn().mockResolvedValue(undefined) };
+});
+
+// Import plan.js (the dynamic importer of plan-functional.js) BEFORE
+// plan-functional.js itself. plan-functional.ts statically imports shared
+// helpers from plan.ts, so plan.ts ↔ plan-functional.ts form a module
+// cycle; loading plan-functional's mock factory first (via importOriginal)
+// pulls in the real, unmocked plan.js ahead of time and the dynamic
+// `import("./plan-functional.js")` inside plan() ends up resolving the
+// real module instead of the mock. Importing plan.js first avoids that.
 import { extractTargetClasses, validatePatchTargets, plan } from "../src/steps/plan.js";
+import { planFunctional } from "../src/steps/plan-functional.js";
 import { askAI } from "../src/ai-client.js";
 import type { PipelineContext } from "../src/types.js";
 
@@ -204,5 +217,17 @@ describe("plan() with no locatable source", () => {
       plan(ctx, failingClient as never),
     ).rejects.toThrow(/no source files/i);
     expect(vi.mocked(askAI)).not.toHaveBeenCalled();
+  });
+});
+
+describe("plan() functional delegation", () => {
+  it("delegates to planFunctional when there are no stack-trace signals and ticketText exists", async () => {
+    const ctx = {
+      app: "NOSUCHAPP4", component: "nosuchapp4-fake-api",
+      errors: [{ message: "Field truncates", stackTrace: "no trace here", occurrences: 1, dedupeKey: "k" }],
+      ticketKey: "TEST-9", ticketText: "Field truncates at 40 chars", dryRun: false, isDuplicate: false,
+    } as unknown as PipelineContext;
+    await plan(ctx, { readFile: vi.fn(), listFiles: vi.fn(), listRepos: vi.fn() } as never);
+    expect(vi.mocked(planFunctional)).toHaveBeenCalledOnce();
   });
 });

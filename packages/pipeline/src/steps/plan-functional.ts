@@ -1,7 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { BitbucketClient } from "@nrs/bitbucket-mcp/client";
+import type { PipelineContext } from "../types.js";
 import { askAI } from "../ai-client.js";
+import { ensureRepoClone } from "../repo-clone.js";
+import { parseAiPlanResponse, fixPatchPaths, validatePatchTargets, extractRelevantCode } from "./plan.js";
+import { startSpinner, stopSpinner } from "../spinner.js";
 
 export type FunctionalFailureCategory = "needs-input" | "vague" | "no-source" | "declined" | "no-tests";
 
@@ -138,4 +143,108 @@ export function locateSourceFiles(
     );
   }
   return files;
+}
+
+const FUNCTIONAL_PLAN_SYSTEM_PROMPT = `You are a senior Java developer fixing a FUNCTIONAL bug (wrong behavior, no exception).
+Given the buggy behavior, the expected behavior, and the relevant source files, respond in TWO sections:
+
+SECTION 1 — JSON analysis (single line):
+{"affectedFiles":["full/path/from/repo/root/File.java"],"rootCause":"explanation","proposedFix":"description","patch":""}
+
+SECTION 2 — Unified diff patch (after a blank line), applyable with git apply.
+File paths MUST match the paths shown in the source file headers.
+
+HARD REQUIREMENTS:
+- The patch MUST add or update at least one test that demonstrates the expected behavior.
+- Only modify files shown to you. New TEST files may be added.
+- If the fix requires a business decision, or the code cannot support the described behavior, respond with exactly: NO_PATCH: <one-line reason>`;
+
+export interface FunctionalPlanDeps {
+  ai?: typeof askAI;
+  ensureClone?: typeof ensureRepoClone;
+  locate?: typeof locateSourceFiles;
+}
+
+/** Populates ctx.fixPlan or throws FunctionalPlanError. */
+export async function planFunctional(
+  ctx: PipelineContext,
+  bitbucketClient: BitbucketClient,
+  deps: FunctionalPlanDeps = {},
+): Promise<void> {
+  const ai = deps.ai ?? askAI;
+  const ensureClone = deps.ensureClone ?? ensureRepoClone;
+  const locate = deps.locate ?? locateSourceFiles;
+
+  const project = ctx.bitbucketProject ?? ctx.app;
+  const repo = ctx.bitbucketRepo ?? ctx.component;
+
+  // Stage 1: UNDERSTAND (throws needs-input / vague)
+  startSpinner("AI analyzing ticket...");
+  let understanding: TicketUnderstanding;
+  try {
+    understanding = await understandTicket(ctx.ticketText!, ai);
+  } finally {
+    stopSpinner();
+  }
+  console.log(`[PLAN] Search terms: ${understanding.searchTerms.map((t) => t.term).join(", ")}`);
+
+  // Stage 2: LOCATE (throws no-source). Functional path is app-repo-only,
+  // so ctx.branch applies directly. Dry runs clone too — local disk only.
+  startSpinner(`Preparing clone of ${project}/${repo}...`);
+  let repoDir: string;
+  try {
+    repoDir = ensureClone(bitbucketClient, project, repo, ctx.branch);
+  } finally {
+    stopSpinner();
+  }
+  const located = locate(repoDir, understanding.searchTerms);
+  for (const f of located) console.log(`[PLAN] Located: ${f.path}`);
+
+  // Stage 3: PLAN (throws declined / no-tests)
+  const keywordContext = understanding.searchTerms.map((t) => t.term).join(" ");
+  const sourceFiles = located.map((f) => ({ path: f.path, content: f.content, repo, project }));
+  const sourceContext = sourceFiles
+    .map((sf) => `--- repo: ${sf.repo} path: ${sf.path} ---\n${extractRelevantCode(sf.content, keywordContext)}`)
+    .join("\n\n");
+  const prompt =
+    `Jira ticket: ${ctx.ticketKey}\n` +
+    `Component: ${ctx.component}\n` +
+    `Buggy behavior: ${understanding.buggyBehavior}\n` +
+    `Expected behavior: ${understanding.expectedBehavior}\n\n` +
+    `Relevant source files:\n${sourceContext}`;
+
+  startSpinner("AI generating functional fix plan...");
+  let aiResponse: string;
+  try {
+    aiResponse = await ai(prompt, FUNCTIONAL_PLAN_SYSTEM_PROMPT);
+  } finally {
+    stopSpinner();
+  }
+
+  const noPatch = aiResponse.match(/NO_PATCH:\s*(.+)/);
+  if (noPatch) {
+    throw new FunctionalPlanError("declined", `NO_PATCH — ${noPatch[1]!.trim()}`);
+  }
+
+  const { analysis, patch: rawPatch } = parseAiPlanResponse(aiResponse);
+  let fixedPatch = rawPatch ? fixPatchPaths(rawPatch, sourceFiles) : "";
+  if (!fixedPatch || !validatePatchTargets(fixedPatch, sourceFiles)) {
+    throw new FunctionalPlanError("declined", "generated patch modified files that were never read (fabrication guard)");
+  }
+  if (!patchIncludesTests(fixedPatch)) {
+    throw new FunctionalPlanError("no-tests", "plan discarded — no tests in patch");
+  }
+
+  ctx.fixPlan = {
+    affectedFiles: (analysis?.["affectedFiles"] as string[]) ?? sourceFiles.map((s) => s.path),
+    rootCause: (analysis?.["rootCause"] as string) ?? understanding.buggyBehavior,
+    proposedFix: (analysis?.["proposedFix"] as string) ?? understanding.expectedBehavior,
+    patch: fixedPatch,
+  };
+  console.log(`\n[PLAN] ── Functional Fix Plan ───────────────────`);
+  console.log(`[PLAN] Files affected: ${ctx.fixPlan.affectedFiles.join(", ")}`);
+  console.log(`[PLAN] Root cause:\n  ${ctx.fixPlan.rootCause}`);
+  console.log(`[PLAN] Proposed fix:\n  ${ctx.fixPlan.proposedFix}`);
+  console.log(`[PLAN] Patch (${fixedPatch.length} chars):\n${fixedPatch}`);
+  console.log(`[PLAN] ─────────────────────────────────────────────\n`);
 }
