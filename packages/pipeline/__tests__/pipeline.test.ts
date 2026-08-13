@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
 
 // ---------------------------------------------------------------------------
 // extractKeyword (triage.ts)
@@ -168,7 +169,13 @@ describe("selectErrorMatchingTicket", () => {
 // Prevents command injection in git commit messages.
 // ---------------------------------------------------------------------------
 
-import { shellEscape, inferRepoSlug, applyPatchByReplacement, missingNewFiles } from "../src/steps/implement.js";
+import {
+  shellEscape,
+  inferRepoSlug,
+  applyPatchByReplacement,
+  newFilePaths,
+  branchIsBasedOn,
+} from "../src/steps/implement.js";
 
 describe("shellEscape", () => {
   it("prevents command injection via single quote breakout", () => {
@@ -389,26 +396,16 @@ describe("applyPatchByReplacement", () => {
 });
 
 // ---------------------------------------------------------------------------
-// missingNewFiles (implement.ts)
-// The line-level fallback applier can't create files, so a partial apply can
-// silently drop a patch's new files — including mandated tests. This helper
-// detects that gap by diffing the patch's /dev/null-sourced new files
-// against what actually exists on disk.
+// newFilePaths (implement.ts)
+// The line-level fallback applier can't create files at all — so any patch
+// with a new-file hunk must reject the fallback outright, rather than only
+// rejecting when the declared-new path happens to be missing on disk (a
+// patch that declares an EXISTING file as new would otherwise slip through
+// with its hunk silently dropped).
 // ---------------------------------------------------------------------------
 
-describe("missingNewFiles", () => {
-  let testDir: string;
-
-  beforeEach(() => {
-    testDir = join(tmpdir(), `raven-test-missing-${Date.now()}`);
-    mkdirSync(testDir, { recursive: true });
-  });
-
-  afterEach(() => {
-    rmSync(testDir, { recursive: true, force: true });
-  });
-
-  it("returns the new-file path when the patch's new file is absent from disk", () => {
+describe("newFilePaths", () => {
+  it("returns the new-file path for a /dev/null -> b/<path> pair", () => {
     const patch = [
       "--- /dev/null",
       "+++ b/src/test/java/FooTest.java",
@@ -416,13 +413,12 @@ describe("missingNewFiles", () => {
       "+public class FooTest {}",
     ].join("\n");
 
-    expect(missingNewFiles(patch, testDir)).toEqual(["src/test/java/FooTest.java"]);
+    expect(newFilePaths(patch)).toEqual(["src/test/java/FooTest.java"]);
   });
 
-  it("returns an empty array when the new file already exists on disk", () => {
-    mkdirSync(join(testDir, "src/test/java"), { recursive: true });
-    writeFileSync(join(testDir, "src/test/java/FooTest.java"), "public class FooTest {}");
-
+  it("returns the new-file path even when that path already exists on disk", () => {
+    // No disk check — the fallback applier can never create files, so ANY
+    // new-file hunk disqualifies it, regardless of what's already there.
     const patch = [
       "--- /dev/null",
       "+++ b/src/test/java/FooTest.java",
@@ -430,10 +426,10 @@ describe("missingNewFiles", () => {
       "+public class FooTest {}",
     ].join("\n");
 
-    expect(missingNewFiles(patch, testDir)).toEqual([]);
+    expect(newFilePaths(patch)).toEqual(["src/test/java/FooTest.java"]);
   });
 
-  it("ignores modified-file hunks (--- a/) even when the target is missing", () => {
+  it("returns [] for a modify-only patch (--- a/)", () => {
     const patch = [
       "--- a/src/main/java/Foo.java",
       "+++ b/src/main/java/Foo.java",
@@ -442,7 +438,57 @@ describe("missingNewFiles", () => {
       "+b",
     ].join("\n");
 
-    expect(missingNewFiles(patch, testDir)).toEqual([]);
+    expect(newFilePaths(patch)).toEqual([]);
+  });
+
+  it("returns multiple new-file paths for a patch adding several files", () => {
+    const patch = [
+      "--- /dev/null",
+      "+++ b/src/test/java/FooTest.java",
+      "@@ -0,0 +1,1 @@",
+      "+t1",
+      "--- /dev/null",
+      "+++ b/.github/workflows/ci.yml",
+      "@@ -0,0 +1,1 @@",
+      "+name: ci",
+    ].join("\n");
+
+    expect(newFilePaths(patch)).toEqual(["src/test/java/FooTest.java", ".github/workflows/ci.yml"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// branchIsBasedOn (implement.ts)
+// A reused bugfix branch must actually descend from the requested base —
+// otherwise a --branch rerun could ship a stale default-branch fix into a
+// feature-branch PR.
+// ---------------------------------------------------------------------------
+
+describe("branchIsBasedOn", () => {
+  it("is true for a branch created from the base, false for one that diverged earlier", () => {
+    const dir = mkdtempSync(join(tmpdir(), "raven-branch-fixture-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: dir });
+      writeFileSync(join(dir, "a.txt"), "1");
+      execFileSync("git", ["add", "-A"], { cwd: dir });
+      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "c1"], { cwd: dir });
+      execFileSync("git", ["branch", "-m", "main"], { cwd: dir });
+
+      execFileSync("git", ["checkout", "-b", "based-on-main"], { cwd: dir, stdio: "pipe" });
+      writeFileSync(join(dir, "a.txt"), "2");
+      execFileSync("git", ["commit", "-aqm", "c2"], { cwd: dir });
+
+      execFileSync("git", ["checkout", "main"], { cwd: dir, stdio: "pipe" });
+      execFileSync("git", ["checkout", "--orphan", "diverged"], { cwd: dir, stdio: "pipe" });
+      writeFileSync(join(dir, "b.txt"), "x");
+      execFileSync("git", ["add", "-A"], { cwd: dir });
+      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "orphan c1"], { cwd: dir });
+
+      expect(branchIsBasedOn(dir, "main", "based-on-main")).toBe(true);
+      expect(branchIsBasedOn(dir, "main", "diverged")).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

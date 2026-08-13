@@ -11,6 +11,22 @@ import {
 } from "../repo-clone.js";
 
 /**
+ * Whether `base` is an ancestor of `branch` — i.e., `branch` was actually
+ * created from (or later merged) `base`. Used to detect a reused bugfix
+ * branch that descends from a different starting point than the one
+ * requested for the current run (e.g., left over from a run without
+ * --branch, now rerun with a --branch pointing elsewhere).
+ */
+export function branchIsBasedOn(repoDir: string, base: string, branch: string): boolean {
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", base, branch], { cwd: repoDir, stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Step 4: IMPLEMENT — Clone repo, create branch, apply fix, run tests, commit.
  */
 export async function implement(
@@ -56,40 +72,60 @@ export async function implement(
   ctx.branchName = `bugfix/${ticketLower}-${description}`;
 
   // Check if branch already exists (from a previous run)
+  let branchExisted = true;
   try {
     execFileSync("git", ["rev-parse", "--verify", ctx.branchName], { cwd: repoDir, stdio: "pipe" });
-    console.log(`[IMPLEMENT] Branch ${ctx.branchName} already exists — reusing`);
-    execFileSync("git", ["checkout", ctx.branchName], { cwd: repoDir, stdio: "pipe" });
-    // Check if the fix is already applied
-    const status = execFileSync("git", ["status", "--porcelain"], { cwd: repoDir, encoding: "utf-8" }).trim();
-    if (status === "") {
-      const lastMsg = execFileSync("git", ["log", "--oneline", "-1"], { cwd: repoDir, encoding: "utf-8" }).trim();
-      console.log(`[IMPLEMENT] Branch already has commit: ${lastMsg}`);
-      ctx.commitHash = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoDir, encoding: "utf-8" }).trim();
-      ctx.repoPath = repoDir;
-      if (ctx.skipTests) {
-        console.log("[IMPLEMENT] Skipping tests (--skip-tests)");
-        ctx.testsPass = true;
-      } else {
-        console.log("[IMPLEMENT] Running tests on existing branch...");
-        ctx.testsPass = runTests(repoDir);
-      }
-      return;
-    }
-    // Branch exists but is dirty — likely a previous run was interrupted
-    // between patch application and commit. Reset working tree (and any
-    // staged changes) before applying the new patch, otherwise the new
-    // diff would land on top of leftover edits and produce a corrupt or
-    // duplicated fix. The CLONE_BASE guard above is the safety net that
-    // ensures this destructive operation can never run outside the
-    // pipeline-managed clone directory.
-    console.log(`[IMPLEMENT] Branch has uncommitted changes from a prior run — resetting to clean state`);
-    assertInsideCloneBase(repoDir);
-    execFileSync("git", ["reset", "--hard", "HEAD"], { cwd: repoDir, stdio: "pipe" });
-    execFileSync("git", ["clean", "-fd"], { cwd: repoDir, stdio: "pipe" });
   } catch {
+    branchExisted = false;
+  }
+
+  if (!branchExisted) {
     console.log(`[IMPLEMENT] Creating branch: ${ctx.branchName}`);
     execFileSync("git", ["checkout", "-b", ctx.branchName], { cwd: repoDir, stdio: "pipe" });
+  } else {
+    // A branch left over from a previous run must actually descend from
+    // the base we're planning against THIS run — a --branch rerun could
+    // otherwise reuse (and later PR) a branch created from the default
+    // branch, shipping a stale fix into a feature-branch PR. ensureRepoClone
+    // already left the base ref checked out, so HEAD is the base right now.
+    const baseRef = sourceBranch ?? detectDefaultBranch(repoDir);
+    if (!branchIsBasedOn(repoDir, baseRef, ctx.branchName)) {
+      console.log(`[IMPLEMENT] Existing branch ${ctx.branchName} is not based on ${baseRef} — recreating`);
+      assertInsideCloneBase(repoDir);
+      execFileSync("git", ["branch", "-D", ctx.branchName], { cwd: repoDir, stdio: "pipe" });
+      execFileSync("git", ["checkout", "-b", ctx.branchName], { cwd: repoDir, stdio: "pipe" });
+      // Fall through to patch application below — NOT the reuse path.
+    } else {
+      console.log(`[IMPLEMENT] Branch ${ctx.branchName} already exists — reusing`);
+      execFileSync("git", ["checkout", ctx.branchName], { cwd: repoDir, stdio: "pipe" });
+      // Check if the fix is already applied
+      const status = execFileSync("git", ["status", "--porcelain"], { cwd: repoDir, encoding: "utf-8" }).trim();
+      if (status === "") {
+        const lastMsg = execFileSync("git", ["log", "--oneline", "-1"], { cwd: repoDir, encoding: "utf-8" }).trim();
+        console.log(`[IMPLEMENT] Branch already has commit: ${lastMsg}`);
+        ctx.commitHash = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoDir, encoding: "utf-8" }).trim();
+        ctx.repoPath = repoDir;
+        if (ctx.skipTests) {
+          console.log("[IMPLEMENT] Skipping tests (--skip-tests)");
+          ctx.testsPass = true;
+        } else {
+          console.log("[IMPLEMENT] Running tests on existing branch...");
+          ctx.testsPass = runTests(repoDir);
+        }
+        return;
+      }
+      // Branch exists but is dirty — likely a previous run was interrupted
+      // between patch application and commit. Reset working tree (and any
+      // staged changes) before applying the new patch, otherwise the new
+      // diff would land on top of leftover edits and produce a corrupt or
+      // duplicated fix. The CLONE_BASE guard above is the safety net that
+      // ensures this destructive operation can never run outside the
+      // pipeline-managed clone directory.
+      console.log(`[IMPLEMENT] Branch has uncommitted changes from a prior run — resetting to clean state`);
+      assertInsideCloneBase(repoDir);
+      execFileSync("git", ["reset", "--hard", "HEAD"], { cwd: repoDir, stdio: "pipe" });
+      execFileSync("git", ["clean", "-fd"], { cwd: repoDir, stdio: "pipe" });
+    }
   }
 
   // Apply patch — try git apply first, fall back to line-level replacement
@@ -127,14 +163,23 @@ export async function implement(
     if (!patchApplied) throw new Error("Could not apply patch");
 
     if (usedFallbackApplier) {
-      const missing = missingNewFiles(ctx.fixPlan.patch, repoDir);
-      if (missing.length > 0) {
-        console.log(`[IMPLEMENT] Fallback apply dropped new file(s): ${missing.join(", ")}`);
-        throw new Error("Patch fallback could not create new files");
+      const created = newFilePaths(ctx.fixPlan.patch);
+      if (created.length > 0) {
+        console.log(`[IMPLEMENT] Fallback applier cannot create new files, but the patch adds: ${created.join(", ")}`);
+        throw new Error("Patch fallback cannot create new files");
       }
     }
   } catch (error) {
     console.log(`[IMPLEMENT] Patch failed to apply: ${(error as Error).message}`);
+    // Reset before switching branches — a partial git-apply or the
+    // line-level fallback applier can leave edits in the working tree even
+    // though patchApplied never became true (e.g. the new-file guard above
+    // throws after the fallback already wrote files). Checking out the
+    // base branch WITHOUT resetting first would carry those uncommitted
+    // edits onto it, contaminating the base for later runs.
+    assertInsideCloneBase(repoDir);
+    execFileSync("git", ["reset", "--hard", "HEAD"], { cwd: repoDir, stdio: "pipe" });
+    execFileSync("git", ["clean", "-fd"], { cwd: repoDir, stdio: "pipe" });
     const defBranch = sourceBranch ?? detectDefaultBranch(repoDir);
     execFileSync("git", ["checkout", defBranch], { cwd: repoDir, stdio: "pipe" });
     if (ctx.branchName) {
@@ -305,24 +350,25 @@ export function shellEscape(s: string): string {
 }
 
 /**
- * Paths a patch creates (source side /dev/null) that are missing on disk.
- * The line-level fallback applier cannot create files, so a partial apply
- * can silently drop a patch's new files — the mandated tests included.
+ * Paths a patch creates (source side /dev/null). No disk check — the
+ * line-level fallback applier cannot create files under ANY circumstance,
+ * so the mere presence of a new-file hunk disqualifies the fallback. A
+ * disk-existence check would let a patch that declares an EXISTING file as
+ * new (e.g., `--- /dev/null` -> `+++ b/existing/FooTest.java`) slip
+ * through with its hunk silently dropped by the fallback, while the
+ * mandatory-test rule still sees the file present on disk and passes.
  */
-export function missingNewFiles(patch: string, repoDir: string): string[] {
-  const missing: string[] = [];
+export function newFilePaths(patch: string): string[] {
+  const created: string[] = [];
   const lines = patch.split("\n");
   for (let i = 0; i < lines.length; i++) {
     if (!/^---\s+\/dev\/null\s*$/.test(lines[i]!)) continue;
     const next = lines[i + 1];
     const match = next?.match(/^\+\+\+\s+b\/(.+)$/);
     if (!match) continue;
-    const newPath = match[1]!.trim();
-    if (!existsSync(join(repoDir, newPath))) {
-      missing.push(newPath);
-    }
+    created.push(match[1]!.trim());
   }
-  return missing;
+  return created;
 }
 
 /**
