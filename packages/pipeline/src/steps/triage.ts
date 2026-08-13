@@ -2,6 +2,7 @@ import type { JiraClient } from "@nrs/jira-mcp/client";
 import { askAI } from "../ai-client.js";
 import { startSpinner, stopSpinner } from "../spinner.js";
 import type { ErrorInfo, PipelineContext, TriageResult } from "../types.js";
+import { markProcessed, scopedKey } from "../processed-errors.js";
 
 const TRIAGE_SYSTEM_PROMPT = `You are a senior Java developer triaging production errors for BC Government applications.
 Analyze the error and provide a JSON response with these fields:
@@ -90,6 +91,10 @@ export async function triage(
             `AI analysis: ${triageResult.rootCause}`
         );
         console.log(`[TRIAGE] Added comment to ${existing.key}`);
+        markProcessed(
+          scopedKey(ctx.server, ctx.app, ctx.component, currentError.dedupeKey),
+          existing.key
+        );
       }
 
       if (errIdx < ctx.errors.length - 1) {
@@ -184,6 +189,10 @@ export async function triage(
   stopSpinner();
   ctx.ticketKey = issueResponse.key;
   console.log(`[TRIAGE] Created ticket: ${ctx.ticketKey}`);
+  markProcessed(
+    scopedKey(ctx.server, ctx.app, ctx.component, topError.dedupeKey),
+    ctx.ticketKey
+  );
 }
 
 /**

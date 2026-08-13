@@ -7,6 +7,7 @@ import { BitbucketClient } from "@nrs/bitbucket-mcp/client";
 
 import type { CliArgs, PipelineContext, PipelineResult } from "./types.js";
 import { applyPipelineScrubDefault } from "./scrub-default.js";
+import { filterByCooldown, DEFAULT_COOLDOWN_HOURS } from "./processed-errors.js";
 import { setModel, stopAI } from "./ai-client.js";
 import { loadRunState, saveRunState, createRunState, type RunState } from "./run-state.js";
 import { detect } from "./steps/detect.js";
@@ -163,6 +164,25 @@ export async function runPipeline(args: CliArgs, processedDedupeKeys?: Set<strin
       ctx.errors = ctx.errors.filter((e) => !ctx.processedDedupeKeys!.has(e.dedupeKey));
       if (before !== ctx.errors.length) {
         console.log(`[DETECT] Filtered ${before - ctx.errors.length} already-processed error(s), ${ctx.errors.length} remaining`);
+      }
+    }
+
+    // Persistent cross-run cooldown: scheduled fresh runs must not re-triage
+    // (and re-comment on) the same error signature every interval. Skipped in
+    // --ticket mode, where the operator explicitly targets a known error.
+    if (!args.existingTicket && ctx.errors.length > 0) {
+      const cooldownHours = args.cooldownHours ?? DEFAULT_COOLDOWN_HOURS;
+      const { kept, skipped } = filterByCooldown(ctx.errors, {
+        server: ctx.server,
+        app: ctx.app,
+        component: ctx.component,
+        cooldownHours,
+      });
+      if (skipped.length > 0) {
+        ctx.errors = kept;
+        console.log(
+          `[DETECT] Skipped ${skipped.length} error(s) in triage cooldown (<${cooldownHours}h since last triage; --cooldown-hours 0 to disable)`
+        );
       }
     }
 

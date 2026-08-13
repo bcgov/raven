@@ -27,6 +27,9 @@ Options:
   --branch               Source branch to plan against and target the PR at
                          (default: repo default branch; use when the deployed
                          build comes from a feature/release branch)
+  --cooldown-hours <N>   Don't re-triage an error signature seen within the
+                         last N hours (default: 168; 0 disables). Keeps
+                         scheduled runs from re-commenting on known errors.
   --resume               Resume the last run for this app/component
   --fresh                Ignore saved state, start from scratch
   --skip-tests           Skip test execution (when tests need unavailable infrastructure)
@@ -82,6 +85,7 @@ function parseCliArgs(): CliArgs | null {
         "jira-project": { type: "string" },
         "bitbucket-repo": { type: "string" },
         branch: { type: "string" },
+        "cooldown-hours": { type: "string" },
         resume: { type: "boolean", default: false },
         fresh: { type: "boolean", default: false },
         "skip-tests": { type: "boolean", default: false },
@@ -134,6 +138,7 @@ function parseCliArgs(): CliArgs | null {
       bitbucketProject: values["bitbucket-project"],
       bitbucketRepo: values["bitbucket-repo"],
       branch: values["branch"],
+      cooldownHours: values["cooldown-hours"] ? parseIntFlag("cooldown-hours", values["cooldown-hours"]) : undefined,
       model: values.model,
       resume: values.resume ?? false,
       fresh: values.fresh ?? false,

@@ -94,6 +94,8 @@ export interface CliArgs {
   bitbucketRepo?: string;
   /** Source branch to plan against and target the PR at. Defaults to the repo's default branch. */
   branch?: string;
+  /** Hours before a previously triaged error signature is re-processed (0 disables). */
+  cooldownHours?: number;
   jiraProject?: string;
   model?: string;
   /** Resume the last run for this app/component. */

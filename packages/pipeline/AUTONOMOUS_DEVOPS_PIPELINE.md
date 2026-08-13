@@ -70,6 +70,7 @@ AI-analyzes the top error and checks Jira for duplicates.
 - Sends the stack trace to the Copilot SDK for root cause analysis (severity, summary, suggested ticket title)
 - Searches Jira for existing tickets matching the error (last 90 days, open status)
 - If duplicate found: adds a "seen again" comment to the existing ticket, tries the next error
+- Every live triage action (ticket created or seen-again comment) is recorded in `~/.raven/processed-errors.json`, keyed by server/app/component + error signature; errors seen within the cooldown window (default 168h, `--cooldown-hours`, 0 disables) are skipped at DETECT so scheduled fresh runs don't re-comment on known errors
 - If all errors are duplicates: stops the pipeline (nothing new to fix)
 - If new error found: checks for resolved historical tickets (regression detection)
 - Creates a new Jira Bug ticket with: error details, root cause analysis, stack trace, severity, `raven-pipeline` + `auto-detected` labels
