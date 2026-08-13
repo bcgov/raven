@@ -82,6 +82,8 @@ raven-pipeline --server <server> --app <APP> --component <component> [options]
 |------|-------------|
 | `--jira-query <JQL>` | Process existing Jira tickets instead of scanning logs. `--server` is not required. |
 
+**Scope your JQL to the project's actual defect types.** Projects vary: some file everything as `Bug`, others split across `Bug`, `Defect`, and `Problem`. A query like `issuetype = Bug` silently misses the rest — check the project's type scheme first (e.g. `issuetype in (Bug, Defect, Problem)`).
+
 Tickets without stack traces are planned via the functional-bug path
 (keyword code search). The end-of-run summary categorizes every ticket:
 `planned`, `needs-input` (blocked on a business decision), `vague`,
