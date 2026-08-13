@@ -395,7 +395,11 @@ export async function runJiraBacklog(args: CliArgs): Promise<void> {
 
   console.log(`\n[RAVEN] Jira backlog mode: ${args.jiraQuery}`);
 
-  const searchResults = await jiraClient.searchIssues(args.jiraQuery!, 20);
+  // 100 is a deliberate per-run bound (each ticket costs AI calls), but it
+  // must never be a SILENT one — a survey that quietly drops tickets reads
+  // as a complete census when it isn't.
+  const BACKLOG_MAX_TICKETS = 100;
+  const searchResults = await jiraClient.searchIssues(args.jiraQuery!, BACKLOG_MAX_TICKETS);
   const tickets = searchResults.issues;
 
   if (tickets.length === 0) {
@@ -404,6 +408,12 @@ export async function runJiraBacklog(args: CliArgs): Promise<void> {
   }
 
   console.log(`[RAVEN] Found ${tickets.length} ticket(s) to process.\n`);
+  if (searchResults.total > tickets.length) {
+    console.warn(
+      `[RAVEN] WARNING: query matched ${searchResults.total} ticket(s) but only the first ` +
+      `${tickets.length} will be processed this run — narrow the JQL or run again for the rest.`
+    );
+  }
 
   const outcomes = new Map<string, string[]>(); // category → ["ARTS-220: reason", ...]
   const note = (category: string, line: string) => {
