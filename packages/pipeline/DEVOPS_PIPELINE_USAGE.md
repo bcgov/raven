@@ -82,6 +82,12 @@ raven-pipeline --server <server> --app <APP> --component <component> [options]
 |------|-------------|
 | `--jira-query <JQL>` | Process existing Jira tickets instead of scanning logs. `--server` is not required. |
 
+Tickets without stack traces are planned via the functional-bug path
+(keyword code search). The end-of-run summary categorizes every ticket:
+`planned`, `needs-input` (blocked on a business decision), `vague`,
+`no-source`, `declined`, or `no-tests`. Functional fixes always include
+tests in the patch — a plan without tests is discarded.
+
 ---
 
 ## Example Commands

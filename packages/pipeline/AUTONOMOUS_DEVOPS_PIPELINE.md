@@ -91,6 +91,15 @@ Locates source code in Bitbucket and generates a fix plan with AI.
 - Reads matching source files and sends them + the stack trace to AI for fix planning
 - AI returns: root cause, proposed fix, affected files, and a unified diff patch
 
+**Functional-bug path** (automatic): when a ticket yields zero stack-trace
+signals, PLAN switches to keyword-based location — an AI call extracts
+weighted domain terms (UI labels, entity nouns) from the full ticket text,
+the app repo is cloned/updated locally (honoring `--branch`) and searched
+with `git grep`, and the top-ranked source files feed a functional planning
+prompt. Guardrails: tickets needing business input or too vague to plan
+fail with a categorized reason; the patch may only touch files actually
+read; every functional patch must include tests or it is discarded.
+
 **Output**: `ctx.fixPlan` (with `.patch` in unified diff format)
 
 ### Step 4: IMPLEMENT

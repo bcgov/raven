@@ -17,6 +17,7 @@ import { implement } from "./steps/implement.js";
 import { createPr } from "./steps/create-pr.js";
 import { validate } from "./steps/validate.js";
 import { extractFromTicket } from "./steps/extract-from-ticket.js";
+import { FunctionalPlanError } from "./steps/plan-functional.js";
 
 /**
  * Run the full 6-step autonomous DevOps pipeline.
@@ -391,6 +392,11 @@ export async function runJiraBacklog(args: CliArgs): Promise<void> {
 
   let processed = 0;
   let failed = 0;
+  const outcomes = new Map<string, string[]>(); // category → ["ARTS-220: reason", ...]
+  const note = (category: string, line: string) => {
+    if (!outcomes.has(category)) outcomes.set(category, []);
+    outcomes.get(category)!.push(line);
+  };
 
   for (let i = 0; i < tickets.length; i++) {
     const ticket = tickets[i]!;
@@ -450,13 +456,21 @@ export async function runJiraBacklog(args: CliArgs): Promise<void> {
 
       validate(ctx);
       processed++;
-    } catch (error) {
-      console.error(`[RAVEN] Failed on ${ticket.key}: ${(error as Error).message}`);
+      note("planned", ticket.key);
+    } catch (e) {
       failed++;
+      const category = e instanceof FunctionalPlanError ? e.category : "error";
+      note(category, `${ticket.key}: ${(e as Error).message}`);
+      console.log(`[RAVEN] ${category === "error" ? "Failed on" : "Skipped"} ${ticket.key}: ${(e as Error).message}`);
     }
   }
 
-  console.log(`\n[RAVEN] Jira backlog complete: ${processed} processed, ${failed} failed out of ${tickets.length} tickets.`);
+  console.log(`\n[RAVEN] Jira backlog complete: ${processed} planned, ${failed} not planned, of ${tickets.length} ticket(s).`);
+  for (const [category, lines] of outcomes) {
+    if (category === "planned") continue;
+    console.log(`[RAVEN]   ${category} (${lines.length}):`);
+    for (const line of lines) console.log(`[RAVEN]     ${line}`);
+  }
   await stopAI();
 }
 
