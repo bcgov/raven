@@ -178,7 +178,7 @@ export async function understandTicket(
     searchTerms,
     buggyBehavior: typeof raw["buggyBehavior"] === "string" ? raw["buggyBehavior"] : "",
     expectedBehavior: typeof raw["expectedBehavior"] === "string" ? raw["expectedBehavior"] : "",
-    confidence: confidence as "high" | "medium",
+    confidence: confidence as "high" | "medium" | "low",
     missingInfo,
   };
 }

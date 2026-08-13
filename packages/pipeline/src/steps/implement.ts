@@ -11,18 +11,33 @@ import {
 } from "../repo-clone.js";
 
 /**
- * Whether `base` is an ancestor of `branch` — i.e., `branch` was actually
- * created from (or later merged) `base`. Used to detect a reused bugfix
- * branch that descends from a different starting point than the one
- * requested for the current run (e.g., left over from a run without
- * --branch, now rerun with a --branch pointing elsewhere).
+ * Record the base a branch was created against, in git config under
+ * `branch.<name>.raven-base`. Read back on later runs (`recordedBranchBase`)
+ * to decide whether a reused branch matches THIS run's requested base.
+ *
+ * Deliberately NOT `git merge-base --is-ancestor <base> <branch>`: that
+ * asks "is base's CURRENT tip an ancestor of branch", and ensureRepoClone
+ * pulls the base fresh every run — so once any unrelated commit lands on
+ * the base after the branch was cut, every earlier-cut branch looks
+ * "wrongly based" and gets destructively recreated on an ordinary retry
+ * (and later fails to push non-fast-forward against an open PR). Recording
+ * the base string at creation time and comparing it verbatim on reuse is
+ * immune to the base ref's tip moving between runs.
  */
-export function branchIsBasedOn(repoDir: string, base: string, branch: string): boolean {
+export function recordBranchBase(repoDir: string, branch: string, base: string): void {
+  execFileSync("git", ["config", `branch.${branch}.raven-base`, base], { cwd: repoDir, stdio: "pipe" });
+}
+
+/** Read back the base recorded for `branch`, or undefined if never recorded. */
+export function recordedBranchBase(repoDir: string, branch: string): string | undefined {
   try {
-    execFileSync("git", ["merge-base", "--is-ancestor", base, branch], { cwd: repoDir, stdio: "pipe" });
-    return true;
+    const out = execFileSync("git", ["config", "--get", `branch.${branch}.raven-base`], {
+      cwd: repoDir, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    return out || undefined;
   } catch {
-    return false;
+    // `git config --get` exits 1 when the key is unset — not an error.
+    return undefined;
   }
 }
 
@@ -71,6 +86,11 @@ export async function implement(
     .replace(/-$/, "");
   ctx.branchName = `bugfix/${ticketLower}-${description}`;
 
+  // The base we're planning against THIS run. Computed now, while
+  // ensureRepoClone's checkout still has it checked out — before any
+  // branch switching below.
+  const baseRef = sourceBranch ?? detectDefaultBranch(repoDir);
+
   // Check if branch already exists (from a previous run)
   let branchExisted = true;
   try {
@@ -82,18 +102,24 @@ export async function implement(
   if (!branchExisted) {
     console.log(`[IMPLEMENT] Creating branch: ${ctx.branchName}`);
     execFileSync("git", ["checkout", "-b", ctx.branchName], { cwd: repoDir, stdio: "pipe" });
+    recordBranchBase(repoDir, ctx.branchName, baseRef);
   } else {
-    // A branch left over from a previous run must actually descend from
-    // the base we're planning against THIS run — a --branch rerun could
-    // otherwise reuse (and later PR) a branch created from the default
-    // branch, shipping a stale fix into a feature-branch PR. ensureRepoClone
-    // already left the base ref checked out, so HEAD is the base right now.
-    const baseRef = sourceBranch ?? detectDefaultBranch(repoDir);
-    if (!branchIsBasedOn(repoDir, baseRef, ctx.branchName)) {
-      console.log(`[IMPLEMENT] Existing branch ${ctx.branchName} is not based on ${baseRef} — recreating`);
+    // A branch left over from a previous run is only safe to reuse when it
+    // was created against the SAME requested base as this run — otherwise
+    // a --branch rerun could reuse (and later PR) a branch created from
+    // the default branch, shipping a stale fix into a feature-branch PR.
+    // Compared against the RECORDED base, not the base ref's live tip: see
+    // recordBranchBase's doc comment for why an ancestry check is wrong.
+    const recordedBase = recordedBranchBase(repoDir, ctx.branchName);
+    if (recordedBase !== baseRef) {
+      console.log(
+        `[IMPLEMENT] Existing branch ${ctx.branchName} was based on ${recordedBase ?? "unknown"}, ` +
+        `requested base is ${baseRef} — recreating`,
+      );
       assertInsideCloneBase(repoDir);
       execFileSync("git", ["branch", "-D", ctx.branchName], { cwd: repoDir, stdio: "pipe" });
       execFileSync("git", ["checkout", "-b", ctx.branchName], { cwd: repoDir, stdio: "pipe" });
+      recordBranchBase(repoDir, ctx.branchName, baseRef);
       // Fall through to patch application below — NOT the reuse path.
     } else {
       console.log(`[IMPLEMENT] Branch ${ctx.branchName} already exists — reusing`);

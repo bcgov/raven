@@ -174,7 +174,8 @@ import {
   inferRepoSlug,
   applyPatchByReplacement,
   newFilePaths,
-  branchIsBasedOn,
+  recordBranchBase,
+  recordedBranchBase,
 } from "../src/steps/implement.js";
 
 describe("shellEscape", () => {
@@ -458,34 +459,69 @@ describe("newFilePaths", () => {
 });
 
 // ---------------------------------------------------------------------------
-// branchIsBasedOn (implement.ts)
-// A reused bugfix branch must actually descend from the requested base —
-// otherwise a --branch rerun could ship a stale default-branch fix into a
-// feature-branch PR.
+// recordBranchBase / recordedBranchBase (implement.ts)
+// A reused bugfix branch is only safe to reuse when it was created against
+// the SAME requested base as the current run. This is decided by comparing
+// a base string recorded at branch-creation time against what's requested
+// now — NOT by asking git whether the base ref's CURRENT tip is an ancestor
+// of the branch (that check is wrong: ensureRepoClone pulls the base every
+// run, so an unrelated commit landing on the base after the branch was cut
+// would make a healthy, same-base branch look "wrongly based" and get
+// destructively recreated on an ordinary retry).
 // ---------------------------------------------------------------------------
 
-describe("branchIsBasedOn", () => {
-  it("is true for a branch created from the base, false for one that diverged earlier", () => {
-    const dir = mkdtempSync(join(tmpdir(), "raven-branch-fixture-"));
+function makeBranchBaseFixture(): string {
+  const dir = mkdtempSync(join(tmpdir(), "raven-branchbase-fixture-"));
+  execFileSync("git", ["init", "-q"], { cwd: dir });
+  writeFileSync(join(dir, "a.txt"), "1");
+  execFileSync("git", ["add", "-A"], { cwd: dir });
+  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "c1"], { cwd: dir });
+  execFileSync("git", ["branch", "-m", "main"], { cwd: dir });
+  return dir;
+}
+
+describe("recordBranchBase / recordedBranchBase", () => {
+  it("round-trips the recorded base for a branch", () => {
+    const dir = makeBranchBaseFixture();
     try {
-      execFileSync("git", ["init", "-q"], { cwd: dir });
-      writeFileSync(join(dir, "a.txt"), "1");
-      execFileSync("git", ["add", "-A"], { cwd: dir });
-      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "c1"], { cwd: dir });
-      execFileSync("git", ["branch", "-m", "main"], { cwd: dir });
+      execFileSync("git", ["checkout", "-b", "bugfix/x"], { cwd: dir, stdio: "pipe" });
+      recordBranchBase(dir, "bugfix/x", "main");
+      expect(recordedBranchBase(dir, "bugfix/x")).toBe("main");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
-      execFileSync("git", ["checkout", "-b", "based-on-main"], { cwd: dir, stdio: "pipe" });
-      writeFileSync(join(dir, "a.txt"), "2");
-      execFileSync("git", ["commit", "-aqm", "c2"], { cwd: dir });
+  it("returns undefined for a branch whose base was never recorded", () => {
+    const dir = makeBranchBaseFixture();
+    try {
+      execFileSync("git", ["checkout", "-b", "bugfix/unrecorded"], { cwd: dir, stdio: "pipe" });
+      expect(recordedBranchBase(dir, "bugfix/unrecorded")).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
+  it("a same-base retry still matches after an unrelated commit lands on the base (regression: the old ancestry check would have flagged this as a mismatch)", () => {
+    const dir = makeBranchBaseFixture();
+    try {
+      execFileSync("git", ["checkout", "-b", "bugfix/x"], { cwd: dir, stdio: "pipe" });
+      recordBranchBase(dir, "bugfix/x", "main");
+
+      // An unrelated commit lands on main AFTER the branch was cut. Under
+      // `git merge-base --is-ancestor main bugfix/x`, main's NEW tip is no
+      // longer an ancestor of bugfix/x's unchanged tip, so that check would
+      // now report "not based on main" for a perfectly healthy branch.
       execFileSync("git", ["checkout", "main"], { cwd: dir, stdio: "pipe" });
-      execFileSync("git", ["checkout", "--orphan", "diverged"], { cwd: dir, stdio: "pipe" });
-      writeFileSync(join(dir, "b.txt"), "x");
+      writeFileSync(join(dir, "b.txt"), "2");
       execFileSync("git", ["add", "-A"], { cwd: dir });
-      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "orphan c1"], { cwd: dir });
+      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "c2 unrelated"], { cwd: dir });
 
-      expect(branchIsBasedOn(dir, "main", "based-on-main")).toBe(true);
-      expect(branchIsBasedOn(dir, "main", "diverged")).toBe(false);
+      const recorded = recordedBranchBase(dir, "bugfix/x");
+      // Same requested base on a retry: match.
+      expect(recorded === "main").toBe(true);
+      // A genuinely different requested base: mismatch.
+      expect(recorded === "feature/x").toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
