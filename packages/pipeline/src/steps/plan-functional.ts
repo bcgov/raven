@@ -94,7 +94,7 @@ export function nonTestNewFiles(
   });
 }
 
-const UNDERSTAND_SYSTEM_PROMPT = `You are analyzing a Jira bug ticket that has NO error stack trace, to prepare a code search.
+const UNDERSTAND_SYSTEM_PROMPT = `You are analyzing a Jira ticket that has NO error stack trace, to prepare a code search. Issue types are unreliable — the ticket may describe a bug, a small improvement, or a concrete UI change; judge it by content. "buggyBehavior" means the CURRENT behavior being changed; "expectedBehavior" means the DESIRED behavior.
 Respond with ONLY a single-line JSON object:
 {"searchTerms":[{"term":"...","kind":"label|entity|identifier","weight":1-3}],"buggyBehavior":"...","expectedBehavior":"...","confidence":"high|medium|low","missingInfo":["..."]}
 
@@ -235,8 +235,8 @@ export function locateSourceFiles(
   return files;
 }
 
-const FUNCTIONAL_PLAN_SYSTEM_PROMPT = `You are a senior Java developer fixing a FUNCTIONAL bug (wrong behavior, no exception).
-Given the buggy behavior, the expected behavior, and the relevant source files, respond in TWO sections:
+const FUNCTIONAL_PLAN_SYSTEM_PROMPT = `You are a senior Java developer making a FUNCTIONAL change (a bug fix or a small, concretely-specified improvement — no exception involved).
+Given the current behavior, the desired behavior, and the relevant source files, respond in TWO sections:
 
 SECTION 1 — JSON analysis (single line):
 {"affectedFiles":["full/path/from/repo/root/File.java"],"rootCause":"explanation","proposedFix":"description","patch":""}
