@@ -1,8 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   rankCandidateFiles,
   patchIncludesTests,
   FunctionalPlanError,
+  understandTicket,
 } from "../src/steps/plan-functional.js";
 
 const TERMS = [
@@ -54,5 +55,50 @@ describe("FunctionalPlanError", () => {
     const e = new FunctionalPlanError("needs-input", "what should the limit be?");
     expect(e.category).toBe("needs-input");
     expect(e).toBeInstanceOf(Error);
+  });
+});
+
+const GOOD_UNDERSTANDING = JSON.stringify({
+  searchTerms: [{ term: "Representative", kind: "label", weight: 3 }],
+  buggyBehavior: "field truncates at 40 chars",
+  expectedBehavior: "field allows 200 chars",
+  confidence: "high",
+  missingInfo: [],
+});
+
+describe("understandTicket", () => {
+  it("parses a confident analysis into a TicketUnderstanding", async () => {
+    const ai = vi.fn().mockResolvedValue(GOOD_UNDERSTANDING);
+    const u = await understandTicket("ARTS-220 text", ai as never);
+    expect(u.searchTerms[0]?.term).toBe("Representative");
+    expect(u.confidence).toBe("high");
+  });
+
+  it("fails with needs-input when missingInfo is non-empty", async () => {
+    const ai = vi.fn().mockResolvedValue(JSON.stringify({
+      searchTerms: [], buggyBehavior: "", expectedBehavior: "",
+      confidence: "high", missingInfo: ["what should the new limit be?"],
+    }));
+    await expect(understandTicket("t", ai as never)).rejects.toMatchObject({ category: "needs-input" });
+  });
+
+  it("fails with vague on low confidence", async () => {
+    const ai = vi.fn().mockResolvedValue(JSON.stringify({
+      searchTerms: [{ term: "x", kind: "label", weight: 1 }],
+      buggyBehavior: "?", expectedBehavior: "?", confidence: "low", missingInfo: [],
+    }));
+    await expect(understandTicket("t", ai as never)).rejects.toMatchObject({ category: "vague" });
+  });
+
+  it("fails with vague when the response is not parseable JSON", async () => {
+    const ai = vi.fn().mockResolvedValue("I think this ticket is about a field");
+    await expect(understandTicket("t", ai as never)).rejects.toMatchObject({ category: "vague" });
+  });
+
+  it("fails with vague when no search terms are produced", async () => {
+    const ai = vi.fn().mockResolvedValue(JSON.stringify({
+      searchTerms: [], buggyBehavior: "b", expectedBehavior: "e", confidence: "high", missingInfo: [],
+    }));
+    await expect(understandTicket("t", ai as never)).rejects.toMatchObject({ category: "vague" });
   });
 });
