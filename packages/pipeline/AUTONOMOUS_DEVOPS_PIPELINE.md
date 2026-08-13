@@ -31,10 +31,10 @@ The pipeline is implemented as `@nrs/pipeline`, a standalone CLI (`raven-pipelin
 All AI calls go through `ai-client.ts`, which wraps the `@github/copilot-sdk`:
 
 - **Authentication**: Uses the developer's GitHub Copilot license (via `gh` CLI auth)
-- **Default model**: `claude-sonnet-4.6` (configurable via `--model`)
+- **Default model**: `claude-sonnet-5` (configurable via `--model`)
 - **PI scrubbing**: All prompts are scrubbed for personal information (names, emails, IDIRs, SINs) via `@nrs/auth` PiScrubber before being sent to the API — FOIPPA compliance. The pipeline pins `RAVEN_SCRUB_PI=true` in its own process unconditionally: neither a global `RAVEN_SCRUB_PI=false` in `~/.raven/.env` (still honored by other RAVEN tools) nor a shell variable can disable scrubbing for pipeline runs
 - **Session lifecycle**: Each AI call creates a fresh Copilot session with no built-in tools (text-only responses), then destroys it
-- **Timeout**: 120 seconds per AI call
+- **Timeout**: 120 seconds per AI call by default; tune with `RAVEN_AI_TIMEOUT_MS` (clamped to 60–600s) — some functional-bug planning calls legitimately need longer generation time
 
 ### Internal Dependencies
 

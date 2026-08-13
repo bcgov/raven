@@ -53,7 +53,7 @@ raven-pipeline --server <server> --app <APP> --component <component> [options]
 | `--bitbucket-repo` | Bitbucket repo slug (if non-standard) | inferred from component |
 | `--branch` | Source branch to plan against and target the PR at — use when the deployed build comes from a feature/release branch rather than the repo default | repo default branch |
 | `--cooldown-hours` | Don't re-triage an error signature seen within the last N hours (0 disables; max 720, since the store prunes entries after 30 days). Prevents scheduled runs from re-commenting on known errors; per-target state files in `~/.raven/processed-errors/` | `168` |
-| `--model` | AI model to use | `claude-sonnet-4.6` |
+| `--model` | AI model to use | `claude-sonnet-5` |
 
 ### Pipeline Control
 
@@ -273,7 +273,7 @@ Additional steps after dry run:
 ### Key Talking Points
 
 - End-to-end automation: one command goes from production error to pull request
-- Uses GitHub Copilot SDK with `claude-sonnet-4.6` for AI analysis
+- Uses GitHub Copilot SDK with `claude-sonnet-5` for AI analysis
 - All data scrubbed for PI (FOIPPA compliance) before reaching the LLM
 - Human still approves PRs — AI assists, doesn't replace
 - Works with our existing Bitbucket + Jira + Jenkins infrastructure

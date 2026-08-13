@@ -37,7 +37,7 @@ Options:
   --fresh                Ignore saved state, start from scratch
   --skip-tests           Skip test execution (when tests need unavailable infrastructure)
   --verbose              Enable verbose logging
-  --model                AI model to use (default: claude-sonnet-4.6)
+  --model                AI model to use (default: claude-sonnet-5)
   --help                 Show this help message
 
 Watch mode (continuous):
