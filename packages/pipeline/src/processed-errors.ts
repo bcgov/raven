@@ -27,6 +27,13 @@ export const DEFAULT_COOLDOWN_HOURS = 168;
 /** Entries older than this are dropped on save to keep the store small. */
 const PRUNE_AFTER_DAYS = 30;
 
+/**
+ * Upper bound for --cooldown-hours, enforced at the CLI: cooldowns beyond
+ * the prune window would be silently shortened as soon as any later save
+ * dropped their entries.
+ */
+export const MAX_COOLDOWN_HOURS = PRUNE_AFTER_DAYS * 24;
+
 export function defaultStorePath(): string {
   return join(homedir(), ".raven", "processed-errors.json");
 }

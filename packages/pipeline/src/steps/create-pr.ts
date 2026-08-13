@@ -107,9 +107,11 @@ export async function createPr(
     `### Test Status\n${testStatus}\n\n` +
     `---\n_Created by RAVEN Autonomous Pipeline_`;
 
-  // PR targets the requested source branch when given (the fix was based on
-  // it), otherwise the default branch detected from the local clone.
-  const defaultBranch = ctx.branch ?? detectDefaultBranch(ctx.repoPath!);
+  // PR targets the requested source branch when the fix stayed in the app
+  // repo. A rerouted fix (ctx.sourceRepo/-Project set) was based on the
+  // other repo's default branch, so target that instead.
+  const appRepoBranch = ctx.sourceRepo || ctx.sourceProject ? undefined : ctx.branch;
+  const defaultBranch = appRepoBranch ?? detectDefaultBranch(ctx.repoPath!);
 
   // Cap the PR title at 200 chars. AI-generated `suggestedTitle` can run
   // long; some Bitbucket installs reject very long titles outright, and

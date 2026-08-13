@@ -66,6 +66,11 @@ export async function implement(
   // Use the repo where the fix was found (may differ from the app repo)
   const project = ctx.sourceProject ?? ctx.bitbucketProject ?? ctx.app;
   const repo = ctx.sourceRepo ?? ctx.bitbucketRepo ?? ctx.component;
+  // ctx.branch belongs to the app repository. When PLAN rerouted the fix to
+  // a dependency/sibling repo (ctx.sourceRepo/-Project set), that repo was
+  // searched on its default branch — applying the app's branch name there
+  // would fail, or base the fix on an unrelated same-named branch.
+  const sourceBranch = ctx.sourceRepo || ctx.sourceProject ? undefined : ctx.branch;
   const repoDir = join(CLONE_BASE, project, repo);
   console.log(`[IMPLEMENT] Target repo: ${project}/${repo}`);
 
@@ -104,15 +109,15 @@ export async function implement(
     });
     // Base the fix on the requested source branch (validated at CLI parse)
     // rather than the clone's default branch.
-    if (ctx.branch) {
-      console.log(`[IMPLEMENT] Checking out source branch: ${ctx.branch}`);
-      execFileSync("git", ["checkout", ctx.branch], { cwd: repoDir, stdio: "pipe", timeout: 60_000 });
+    if (sourceBranch) {
+      console.log(`[IMPLEMENT] Checking out source branch: ${sourceBranch}`);
+      execFileSync("git", ["checkout", sourceBranch], { cwd: repoDir, stdio: "pipe", timeout: 60_000 });
     }
   } else {
     console.log(`[IMPLEMENT] Updating existing clone at ${repoDir}`);
     // Update the base branch: the requested source branch if given,
     // otherwise the default branch (main or master).
-    const baseBranch = ctx.branch ?? detectDefaultBranch(repoDir);
+    const baseBranch = sourceBranch ?? detectDefaultBranch(repoDir);
     execFileSync("git", ["fetch", "origin"], { cwd: repoDir, stdio: "pipe", timeout: 60_000 });
     execFileSync("git", ["checkout", baseBranch], { cwd: repoDir, stdio: "pipe", timeout: 60_000 });
     execFileSync("git", ["pull", "origin", baseBranch], { cwd: repoDir, stdio: "pipe", timeout: 60_000 });
@@ -193,7 +198,7 @@ export async function implement(
     if (!patchApplied) throw new Error("Could not apply patch");
   } catch (error) {
     console.log(`[IMPLEMENT] Patch failed to apply: ${(error as Error).message}`);
-    const defBranch = ctx.branch ?? detectDefaultBranch(repoDir);
+    const defBranch = sourceBranch ?? detectDefaultBranch(repoDir);
     execFileSync("git", ["checkout", defBranch], { cwd: repoDir, stdio: "pipe" });
     if (ctx.branchName) {
       execFileSync("git", ["branch", "-D", ctx.branchName], { cwd: repoDir, stdio: "pipe" });

@@ -141,7 +141,10 @@ export async function plan(
   if (unfoundClasses.size > 0) {
     console.log(`[PLAN] Source not in app repo — checking dependencies...`);
     startSpinner("Reading pom.xml for dependencies...");
-    const depRepos = await findDependencyRepos(bitbucketClient, project, repo);
+    // POMs are read from the app repo, so honor ctx.branch — a feature
+    // branch can declare different internal dependencies than the default.
+    // The dependency repos themselves are still searched on their defaults.
+    const depRepos = await findDependencyRepos(bitbucketClient, project, repo, ctx.branch);
     stopSpinner();
     console.log(`[PLAN] Found ${depRepos.length} dependency repo(s) to search`);
 
@@ -484,7 +487,8 @@ function isLibraryRepo(slug: string): boolean {
 async function findDependencyRepos(
   client: BitbucketClient,
   project: string,
-  repo: string
+  repo: string,
+  at?: string
 ): Promise<string[]> {
   const depRepos: string[] = [];
 
@@ -494,7 +498,7 @@ async function findDependencyRepos(
   // Also check for Maven modules — read root pom to find <modules>
   let rootPom = "";
   try {
-    rootPom = await client.readFile(project, repo, "pom.xml");
+    rootPom = await client.readFile(project, repo, "pom.xml", at);
   } catch {
     return depRepos;
   }
@@ -510,7 +514,7 @@ async function findDependencyRepos(
   const allPomContent = [rootPom];
   for (const pomPath of pomPaths.slice(1)) {
     try {
-      const content = await client.readFile(project, repo, pomPath);
+      const content = await client.readFile(project, repo, pomPath, at);
       allPomContent.push(content);
     } catch { /* skip */ }
   }

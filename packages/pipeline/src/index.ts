@@ -3,6 +3,8 @@
 import { parseArgs } from "node:util";
 import type { CliArgs } from "./types.js";
 import { runPipeline, runPipelineWatch, runJiraBacklog } from "./orchestrator.js";
+import { isValidBranchName } from "./branch-validation.js";
+import { MAX_COOLDOWN_HOURS } from "./processed-errors.js";
 
 function printUsage(): void {
   console.log(`
@@ -28,7 +30,8 @@ Options:
                          (default: repo default branch; use when the deployed
                          build comes from a feature/release branch)
   --cooldown-hours <N>   Don't re-triage an error signature seen within the
-                         last N hours (default: 168; 0 disables). Keeps
+                         last N hours (default: 168; 0 disables; max 720 —
+                         the store prunes entries after 30 days). Keeps
                          scheduled runs from re-commenting on known errors.
   --resume               Resume the last run for this app/component
   --fresh                Ignore saved state, start from scratch
@@ -118,10 +121,19 @@ function parseCliArgs(): CliArgs | null {
       printUsage();
       process.exit(1);
     }
-    // Branch names reach git checkout argv — reject anything that could be
-    // parsed as an option or is obviously not a ref name.
-    if (values.branch !== undefined && !/^[\w][\w./-]*$/.test(values.branch)) {
-      console.error(`Error: --branch must be a valid branch name (got "${values.branch}").\n`);
+    if (values.branch !== undefined && !isValidBranchName(values.branch)) {
+      console.error(`Error: --branch is not a valid git branch name (got "${values.branch}").\n`);
+      printUsage();
+      process.exit(1);
+    }
+    const cooldownHours = values["cooldown-hours"]
+      ? parseIntFlag("cooldown-hours", values["cooldown-hours"])
+      : undefined;
+    if (cooldownHours !== undefined && (cooldownHours < 0 || cooldownHours > MAX_COOLDOWN_HOURS)) {
+      console.error(
+        `Error: --cooldown-hours must be between 0 and ${MAX_COOLDOWN_HOURS} ` +
+        `(the processed-error store prunes entries after 30 days).\n`
+      );
       printUsage();
       process.exit(1);
     }
@@ -138,7 +150,7 @@ function parseCliArgs(): CliArgs | null {
       bitbucketProject: values["bitbucket-project"],
       bitbucketRepo: values["bitbucket-repo"],
       branch: values["branch"],
-      cooldownHours: values["cooldown-hours"] ? parseIntFlag("cooldown-hours", values["cooldown-hours"]) : undefined,
+      cooldownHours,
       model: values.model,
       resume: values.resume ?? false,
       fresh: values.fresh ?? false,

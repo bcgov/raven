@@ -145,6 +145,38 @@ describe("plan() with --branch", () => {
   });
 });
 
+describe("plan() dependency discovery with --branch", () => {
+  it("reads the app repo's pom.xml at the requested branch", async () => {
+    const BRANCH = "feature/DMS-310";
+    const pomReads: Array<{ path: string; at?: string }> = [];
+    const client = {
+      readFile: vi
+        .fn()
+        .mockImplementation((_p: string, _r: string, path: string, at?: string) => {
+          if (path.endsWith("pom.xml")) pomReads.push({ path, at });
+          return Promise.reject(new Error("404"));
+        }),
+      listFiles: vi.fn().mockResolvedValue([]),
+      listRepos: vi.fn().mockRejectedValue(new Error("404")),
+    };
+    const ctx = {
+      app: "NOSUCHAPP3",
+      component: "nosuchapp3-fake-api",
+      branch: BRANCH,
+      errors: [
+        { message: TEST01_MESSAGE, stackTrace: TEST01_STACK, occurrences: 1, dedupeKey: "k" },
+      ],
+      ticketKey: "TEST-3",
+      dryRun: false,
+      isDuplicate: false,
+    } as unknown as PipelineContext;
+
+    await expect(plan(ctx, client as never)).rejects.toThrow(/no source files/i);
+    expect(pomReads.length).toBeGreaterThan(0);
+    expect(pomReads.every((r) => r.at === BRANCH)).toBe(true);
+  });
+});
+
 describe("plan() with no locatable source", () => {
   it("fails instead of asking the AI to fabricate a patch", async () => {
     const failingClient = {

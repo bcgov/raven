@@ -19,7 +19,17 @@ import {
   filterByCooldown,
   scopedKey,
   DEFAULT_COOLDOWN_HOURS,
+  MAX_COOLDOWN_HOURS,
 } from "../src/processed-errors.js";
+
+// The CLI caps --cooldown-hours at MAX_COOLDOWN_HOURS because save() prunes
+// entries after 30 days — a longer cooldown would be silently shortened.
+describe("cooldown bounds", () => {
+  it("keeps the default cooldown within the prune window", () => {
+    expect(DEFAULT_COOLDOWN_HOURS).toBeLessThanOrEqual(MAX_COOLDOWN_HOURS);
+    expect(MAX_COOLDOWN_HOURS).toBe(720);
+  });
+});
 
 const HOUR = 3600_000;
 
