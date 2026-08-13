@@ -1,3 +1,6 @@
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { askAI } from "../ai-client.js";
 
 export type FunctionalFailureCategory = "needs-input" | "vague" | "no-source" | "declined" | "no-tests";
@@ -90,4 +93,49 @@ export async function understandTicket(
     throw new FunctionalPlanError("vague", "no usable search terms could be extracted from the ticket");
   }
   return parsed;
+}
+
+/** git grep -i -l per term; returns path → matched terms. Missing/binary-only matches are fine (empty map). */
+export function gitGrepFiles(repoDir: string, terms: SearchTerm[]): Map<string, Set<string>> {
+  const hits = new Map<string, Set<string>>();
+  for (const t of terms) {
+    let out = "";
+    try {
+      // -I skips binary files; git grep exits 1 on zero matches — not an error.
+      out = execFileSync("git", ["grep", "-i", "-l", "-I", "-e", t.term], {
+        cwd: repoDir, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch {
+      continue;
+    }
+    for (const file of out.split("\n").map((l) => l.trim()).filter(Boolean)) {
+      if (!hits.has(file)) hits.set(file, new Set());
+      hits.get(file)!.add(t.term);
+    }
+  }
+  return hits;
+}
+
+export interface LocatedFile { path: string; content: string; }
+
+/** Rank hits, read top files from disk. Throws FunctionalPlanError("no-source") when nothing matches. */
+export function locateSourceFiles(
+  repoDir: string,
+  terms: SearchTerm[],
+  search: typeof gitGrepFiles = gitGrepFiles,
+): LocatedFile[] {
+  const ranked = rankCandidateFiles(search(repoDir, terms), terms);
+  const files: LocatedFile[] = [];
+  for (const path of ranked) {
+    try {
+      files.push({ path, content: readFileSync(join(repoDir, path), "utf-8") });
+    } catch { /* file listed but unreadable — skip */ }
+  }
+  if (files.length === 0) {
+    throw new FunctionalPlanError(
+      "no-source",
+      `no matching source found for [${terms.map((t) => t.term).join(", ")}]`,
+    );
+  }
+  return files;
 }

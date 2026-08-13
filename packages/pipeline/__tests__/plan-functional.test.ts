@@ -1,9 +1,15 @@
 import { describe, it, expect, vi } from "vitest";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
 import {
   rankCandidateFiles,
   patchIncludesTests,
   FunctionalPlanError,
   understandTicket,
+  gitGrepFiles,
+  locateSourceFiles,
 } from "../src/steps/plan-functional.js";
 
 const TERMS = [
@@ -100,5 +106,52 @@ describe("understandTicket", () => {
       searchTerms: [], buggyBehavior: "b", expectedBehavior: "e", confidence: "high", missingInfo: [],
     }));
     await expect(understandTicket("t", ai as never)).rejects.toMatchObject({ category: "vague" });
+  });
+});
+
+function makeRepo(): string {
+  const dir = mkdtempSync(join(tmpdir(), "raven-fnrepo-"));
+  execFileSync("git", ["init", "-q"], { cwd: dir });
+  mkdirSync(join(dir, "src/main/java"), { recursive: true });
+  writeFileSync(join(dir, "src/main/java/AgreementPartyBean.java"),
+    'public class AgreementPartyBean { String representative; /* max 40 */ }');
+  writeFileSync(join(dir, "README.md"), "representative notes");
+  execFileSync("git", ["add", "-A"], { cwd: dir });
+  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], { cwd: dir });
+  return dir;
+}
+
+describe("gitGrepFiles / locateSourceFiles", () => {
+  it("finds files containing terms, case-insensitively", () => {
+    const dir = makeRepo();
+    try {
+      const hits = gitGrepFiles(dir, [{ term: "Representative", kind: "label", weight: 3 }]);
+      expect([...hits.keys()]).toContain("src/main/java/AgreementPartyBean.java");
+      expect(hits.get("src/main/java/AgreementPartyBean.java")).toContain("Representative");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("locateSourceFiles reads ranked source files and skips non-source hits", () => {
+    const dir = makeRepo();
+    try {
+      const files = locateSourceFiles(dir, [{ term: "Representative", kind: "label", weight: 3 }]);
+      expect(files).toHaveLength(1);
+      expect(files[0]?.path).toBe("src/main/java/AgreementPartyBean.java");
+      expect(files[0]?.content).toContain("max 40");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("throws no-source when nothing matches", () => {
+    const dir = makeRepo();
+    try {
+      expect(() => locateSourceFiles(dir, [{ term: "Zebra", kind: "entity", weight: 3 }]))
+        .toThrowError(expect.objectContaining({ category: "no-source" }));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
