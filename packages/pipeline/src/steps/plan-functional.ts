@@ -29,13 +29,15 @@ export interface SearchTerm {
 
 const SOURCE_EXTENSIONS = /\.(java|xhtml|jsp|jsx?|tsx?|properties|xml)$/i;
 const MAX_CANDIDATE_FILES = 5;
+/** Score penalty applied to test files so they don't crowd out main-code candidates. */
+const TEST_FILE_PENALTY = 2;
 
 export function rankCandidateFiles(
   fileHits: Map<string, Set<string>>,
   terms: SearchTerm[],
 ): string[] {
   const weightOf = new Map(terms.map((t) => [t.term.toLowerCase(), t.weight]));
-  const scored: Array<{ file: string; score: number }> = [];
+  const scored: Array<{ file: string; score: number; isTest: boolean }> = [];
   for (const [file, matched] of fileHits) {
     if (!SOURCE_EXTENSIONS.test(file)) continue;
     let score = 0;
@@ -45,10 +47,25 @@ export function rankCandidateFiles(
       if (baseName.includes(term.toLowerCase())) score += 2;
     }
     if (file.includes("src/main")) score += 1;
-    scored.push({ file, score });
+    const isTest = TEST_PATH.test(file) || TEST_FILE.test(file);
+    if (isTest) score -= TEST_FILE_PENALTY;
+    scored.push({ file, score, isTest });
   }
   scored.sort((a, b) => b.score - a.score || a.file.localeCompare(b.file));
-  return scored.slice(0, MAX_CANDIDATE_FILES).map((s) => s.file);
+
+  // At most one test file may occupy a candidate slot — large integration-test
+  // files otherwise crowd out the main-code files the fix actually belongs in.
+  const result: string[] = [];
+  let testFileTaken = false;
+  for (const s of scored) {
+    if (result.length >= MAX_CANDIDATE_FILES) break;
+    if (s.isTest) {
+      if (testFileTaken) continue;
+      testFileTaken = true;
+    }
+    result.push(s.file);
+  }
+  return result;
 }
 
 const TEST_PATH = /(^|\/)(test|tests)\//i;
@@ -159,6 +176,17 @@ HARD REQUIREMENTS:
 - Only modify files shown to you. New TEST files may be added.
 - If the fix requires a business decision, or the code cannot support the described behavior, respond with exactly: NO_PATCH: <one-line reason>`;
 
+/**
+ * Cap a single file's contribution to the Stage-3 prompt. `extractRelevantCode`
+ * still allows up to 50K chars per file — across 5 candidates that produced
+ * ~200K-char prompts that reliably timed out the AI call. Append a truncation
+ * marker when capped so it's visible in logs and to the model.
+ */
+export function capFileContext(content: string, maxChars = 12_000): string {
+  if (content.length <= maxChars) return content;
+  return `${content.slice(0, maxChars)}\n// ... (truncated)`;
+}
+
 export interface FunctionalPlanDeps {
   ai?: typeof askAI;
   ensureClone?: typeof ensureRepoClone;
@@ -204,8 +232,9 @@ export async function planFunctional(
   const keywordContext = understanding.searchTerms.map((t) => t.term).join(" ");
   const sourceFiles = located.map((f) => ({ path: f.path, content: f.content, repo, project }));
   const sourceContext = sourceFiles
-    .map((sf) => `--- repo: ${sf.repo} path: ${sf.path} ---\n${extractRelevantCode(sf.content, keywordContext)}`)
+    .map((sf) => `--- repo: ${sf.repo} path: ${sf.path} ---\n${capFileContext(extractRelevantCode(sf.content, keywordContext))}`)
     .join("\n\n");
+  console.log(`[PLAN] Source context: ${sourceContext.length} chars across ${sourceFiles.length} file(s)`);
   const prompt =
     `Jira ticket: ${ctx.ticketKey}\n` +
     `Component: ${ctx.component}\n` +
@@ -216,7 +245,16 @@ export async function planFunctional(
   startSpinner("AI generating functional fix plan...");
   let aiResponse: string;
   try {
-    aiResponse = await ai(prompt, FUNCTIONAL_PLAN_SYSTEM_PROMPT);
+    try {
+      aiResponse = await ai(prompt, FUNCTIONAL_PLAN_SYSTEM_PROMPT);
+    } catch (err) {
+      if (err instanceof Error && /timed out/i.test(err.message)) {
+        console.log("[PLAN] AI timed out — retrying once");
+        aiResponse = await ai(prompt, FUNCTIONAL_PLAN_SYSTEM_PROMPT);
+      } else {
+        throw err;
+      }
+    }
   } finally {
     stopSpinner();
   }

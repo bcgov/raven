@@ -11,6 +11,7 @@ import {
   gitGrepFiles,
   locateSourceFiles,
   planFunctional,
+  capFileContext,
 } from "../src/steps/plan-functional.js";
 import type { PipelineContext } from "../src/types.js";
 
@@ -40,6 +41,39 @@ describe("rankCandidateFiles", () => {
   it("returns empty for no hits", () => {
     expect(rankCandidateFiles(new Map(), TERMS)).toEqual([]);
   });
+
+  it("down-ranks a test file with more term hits so it still ranks after a main file", () => {
+    // Score without penalty: main = 3 (Alpha weight) + 1 (src/main boost) = 4.
+    //                         test = 3 + 2 (Alpha + Beta weight) = 5, penalty -2 = 3.
+    // So the test file has MORE term hits (2 vs 1) and a higher pre-penalty
+    // score (5 vs 4), but the penalty flips the final order (3 < 4).
+    const terms = [
+      { term: "Alpha", kind: "label" as const, weight: 3 },
+      { term: "Beta", kind: "entity" as const, weight: 2 },
+    ];
+    const hits = new Map<string, Set<string>>([
+      ["src/main/java/ca/bc/gov/nrs/arts/Handler.java", new Set(["Alpha"])],
+      ["src/test/java/ca/bc/gov/nrs/arts/BigIntegrationTest.java", new Set(["Alpha", "Beta"])],
+    ]);
+    const ranked = rankCandidateFiles(hits, terms);
+    expect(ranked).toEqual([
+      "src/main/java/ca/bc/gov/nrs/arts/Handler.java",
+      "src/test/java/ca/bc/gov/nrs/arts/BigIntegrationTest.java",
+    ]);
+  });
+
+  it("allows at most one test file among the candidates", () => {
+    const hits = new Map<string, Set<string>>([
+      ["src/main/java/Foo.java", new Set(["Representative"])],
+      ["src/main/java/Bar.java", new Set(["AgreementParty"])],
+      ["src/test/java/Foo1Test.java", new Set(["Representative"])],
+      ["src/test/java/Foo2Test.java", new Set(["Representative", "AgreementParty"])],
+      ["src/test/java/Foo3Test.java", new Set(["AgreementParty"])],
+    ]);
+    const ranked = rankCandidateFiles(hits, TERMS);
+    const testFiles = ranked.filter((f) => /(^|\/)tests?\//i.test(f) || /Test\.java$/.test(f));
+    expect(testFiles).toHaveLength(1);
+  });
 });
 
 describe("patchIncludesTests", () => {
@@ -55,6 +89,25 @@ describe("patchIncludesTests", () => {
   it("rejects a patch with no test files", () => {
     const patch = `--- a/src/main/java/Foo.java\n+++ b/src/main/java/Foo.java\n${body}`;
     expect(patchIncludesTests(patch)).toBe(false);
+  });
+});
+
+describe("capFileContext", () => {
+  it("passes content under the cap through unchanged", () => {
+    const content = "x".repeat(100);
+    expect(capFileContext(content, 12_000)).toBe(content);
+  });
+
+  it("slices content over the cap to exactly maxChars plus the truncation marker", () => {
+    const content = "y".repeat(20_000);
+    const result = capFileContext(content, 12_000);
+    expect(result).toBe("y".repeat(12_000) + "\n// ... (truncated)");
+  });
+
+  it("defaults the cap to 12,000 chars", () => {
+    const content = "z".repeat(15_000);
+    const result = capFileContext(content);
+    expect(result).toBe("z".repeat(12_000) + "\n// ... (truncated)");
   });
 });
 
@@ -212,5 +265,40 @@ describe("planFunctional", () => {
     const fabricated = "--- a/src/main/java/Invented.java\n+++ b/src/main/java/Invented.java\n@@ -1,1 +1,1 @@\n-a\n+b\n--- /dev/null\n+++ b/src/test/java/InventedTest.java\n@@ -0,0 +1,1 @@\n+t";
     await expect(planFunctional(ctx, {} as never, makeDeps(`${PLAN_JSON}\n\n${fabricated}`) as never))
       .rejects.toMatchObject({ category: "declined" });
+  });
+
+  it("retries once on a Stage-3 AI timeout and succeeds if the retry works", async () => {
+    const ctx = makeCtx();
+    const ai = vi.fn()
+      .mockResolvedValueOnce(GOOD_UNDERSTANDING) // Stage 1: understand
+      .mockRejectedValueOnce(new Error("AI response timed out after 120s")) // Stage 3: first attempt
+      .mockResolvedValueOnce(`${PLAN_JSON}\n\n${GOOD_PATCH}`); // Stage 3: retry
+    const deps = {
+      ai,
+      ensureClone: vi.fn().mockReturnValue("/tmp/fake-repo"),
+      locate: vi.fn().mockReturnValue([
+        { path: "src/main/java/AgreementPartyBean.java", content: "class AgreementPartyBean { /* max 40 */ }" },
+      ]),
+    };
+    await planFunctional(ctx, {} as never, deps as never);
+    expect(ctx.fixPlan?.patch).toContain("AgreementPartyBeanTest.java");
+    expect(ai).toHaveBeenCalledTimes(3);
+  });
+
+  it("propagates a non-timeout Stage-3 error without retrying", async () => {
+    const ctx = makeCtx();
+    const ai = vi.fn()
+      .mockResolvedValueOnce(GOOD_UNDERSTANDING) // Stage 1: understand
+      .mockRejectedValueOnce(new Error("500 Internal Server Error")); // Stage 3: fails, not a timeout
+    const deps = {
+      ai,
+      ensureClone: vi.fn().mockReturnValue("/tmp/fake-repo"),
+      locate: vi.fn().mockReturnValue([
+        { path: "src/main/java/AgreementPartyBean.java", content: "class AgreementPartyBean { /* max 40 */ }" },
+      ]),
+    };
+    await expect(planFunctional(ctx, {} as never, deps as never))
+      .rejects.toThrow("500 Internal Server Error");
+    expect(ai).toHaveBeenCalledTimes(2);
   });
 });
