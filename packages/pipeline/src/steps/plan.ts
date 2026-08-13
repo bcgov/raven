@@ -415,11 +415,14 @@ export function extractTargetClasses(message: string, stackTrace: string): Set<s
     classes.add(`${m[1]!}.java`);
   }
   // Logger class immediately followed by a line number, regardless of the
-  // columns before it (e.g., "ERROR  GlobalExceptionHandler:171 - ..."). Some
-  // log formats have no thread column, which the pattern above requires. The
-  // ":<line>" suffix distinguishes logger classes from stack-frame tokens
-  // like "Foo.java:42" (the token before that ':' is "java", lowercase).
-  const loggerLineMatches = fullText.matchAll(/\b([A-Z][\w$]*(?:Adapter|Handler|Impl|Service|Filter|Interceptor|Task|Subtask|Controller)):\d+\b/g);
+  // columns before it (e.g., "ERROR  GlobalExceptionHandler:171 - ...") and
+  // regardless of suffix (no Handler/Impl/Service/... whitelist — a class
+  // like "OrderProcessor" wouldn't otherwise match). The ":<line>" suffix
+  // distinguishes logger classes from stack-frame tokens like "Foo.java:42"
+  // (the token before that ':' is "java", all-lowercase). Requiring at
+  // least one lowercase letter in the token excludes ALL-CAPS noise like
+  // "HTTP:8080" or "ERROR:123" that isn't a class name.
+  const loggerLineMatches = fullText.matchAll(/\b([A-Z][\w$]*[a-z][\w$]*):\d+\b/g);
   for (const m of loggerLineMatches) {
     classes.add(`${m[1]!}.java`);
   }
@@ -451,21 +454,54 @@ export function extractTargetClasses(message: string, stackTrace: string): Set<s
 }
 
 /**
- * Every file a patch MODIFIES must be one we actually read from Bitbucket —
- * anything else is AI fabrication (path and content alike) and can never
- * apply downstream. Only '--- a/' pre-image paths are checked: '--- /dev/null'
- * (new files, e.g. added tests) is legitimate as long as the patch also
- * modifies at least one real file.
+ * Every file a patch MODIFIES or DELETES must be one we actually read from
+ * Bitbucket — anything else is AI fabrication (path and content alike) and
+ * can never apply downstream. Patches are parsed into `---`/`+++` pairs so
+ * a rename can't smuggle a fabricated postimage path past the preimage
+ * check: a modify pair's postimage must equal its preimage. New-file pairs
+ * (`--- /dev/null` → `+++ b/Y`) are allowed here — the functional path
+ * restricts them further via `nonTestNewFiles`. Every matched source entry
+ * must also share exactly one project+repo: IMPLEMENT clones a single
+ * repo, so a patch whose preimages resolve to source files from different
+ * repos can never be applied as a whole.
  */
 export function validatePatchTargets(
   patch: string,
-  sourceFiles: Array<{ path: string }>,
+  sourceFiles: Array<{ path: string; repo?: string; project?: string }>,
 ): boolean {
-  const targets = [...patch.matchAll(/^---\s+a\/(.+)$/gm)].map((m) => m[1]!.trim());
-  if (targets.length === 0) return false;
-  return targets.every((t) =>
-    sourceFiles.some((sf) => t.endsWith(sf.path) || sf.path.endsWith(t)),
-  );
+  const lines = patch.split("\n");
+  let matchedSource = false;
+  let repoKey: string | null = null;
+
+  for (let i = 0; i < lines.length; i++) {
+    const preMatch = lines[i]!.match(/^---\s+(?:a\/(.+)|\/dev\/null)$/);
+    if (!preMatch) continue;
+    const postMatch = lines[i + 1]?.match(/^\+\+\+\s+(?:b\/(.+)|\/dev\/null)$/);
+    if (!postMatch) continue;
+
+    const preimage = preMatch[1]?.trim() ?? null;
+    const postimage = postMatch[1]?.trim() ?? null;
+
+    if (preimage === null) {
+      // New-file pair (/dev/null -> b/Y) — unrestricted here.
+      continue;
+    }
+    if (postimage !== null && postimage !== preimage) {
+      // Modify pair whose postimage differs from its preimage — a rename,
+      // which could smuggle a fabricated path past the preimage check.
+      return false;
+    }
+    // Modify (a/X -> b/X) or deletion (a/X -> /dev/null): X must be a
+    // file we actually read.
+    const sf = sourceFiles.find((s) => preimage.endsWith(s.path) || s.path.endsWith(preimage));
+    if (!sf) return false;
+    matchedSource = true;
+    const key = `${sf.project ?? ""}/${sf.repo ?? ""}`;
+    if (repoKey === null) repoKey = key;
+    else if (repoKey !== key) return false;
+  }
+
+  return matchedSource;
 }
 
 /** Check if a class name is from the JDK standard library. */
@@ -616,13 +652,15 @@ async function findFilesInRepo(
 /**
  * Extract the most relevant portion of a source file for the AI prompt.
  * With Copilot Business models (Claude Sonnet = 200K tokens), we can send
- * much larger context. Limit to ~50K chars (~12K tokens) per file.
+ * much larger context. Defaults to ~50K chars (~12K tokens) per file; the
+ * functional planning path (Stage-3 prompt budget) passes a smaller cap so
+ * the keyword-region extraction below — not a later blind slice — is what
+ * decides which lines survive.
  */
-export function extractRelevantCode(source: string, errorMessage: string): string {
-  const MAX_CHARS = 50_000;
+export function extractRelevantCode(source: string, errorMessage: string, maxChars = 50_000): string {
   const lines = source.split("\n");
 
-  if (source.length <= MAX_CHARS) return source;
+  if (source.length <= maxChars) return source;
 
   // Extract keywords from the error message
   const msgWords = errorMessage
@@ -675,9 +713,9 @@ export function extractRelevantCode(source: string, errorMessage: string): strin
   }
 
   const result = parts.join("\n");
-  return result.length <= MAX_CHARS
+  return result.length <= maxChars
     ? result
-    : result.slice(0, MAX_CHARS) + "\n// ... (truncated)";
+    : result.slice(0, maxChars) + "\n// ... (truncated)";
 }
 
 /**

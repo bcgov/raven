@@ -181,6 +181,43 @@ describe("understandTicket", () => {
     }));
     await expect(understandTicket("t", ai as never)).rejects.toMatchObject({ category: "vague" });
   });
+
+  it("treats a non-array non-empty missingInfo string as a single-item list (needs-input)", async () => {
+    const ai = vi.fn().mockResolvedValue(JSON.stringify({
+      searchTerms: [{ term: "Representative", kind: "label", weight: 2 }],
+      buggyBehavior: "b", expectedBehavior: "e", confidence: "high",
+      missingInfo: "what should the new limit be?",
+    }));
+    await expect(understandTicket("t", ai as never)).rejects.toMatchObject({ category: "needs-input" });
+  });
+
+  it("fails with vague on an unrecognized confidence value", async () => {
+    const ai = vi.fn().mockResolvedValue(JSON.stringify({
+      searchTerms: [{ term: "Representative", kind: "label", weight: 2 }],
+      buggyBehavior: "b", expectedBehavior: "e", confidence: "banana", missingInfo: [],
+    }));
+    await expect(understandTicket("t", ai as never)).rejects.toMatchObject({ category: "vague" });
+  });
+
+  it("filters blank/short search terms but survives with the remaining valid one", async () => {
+    const ai = vi.fn().mockResolvedValue(JSON.stringify({
+      searchTerms: [{ term: "  " }, { term: "Representative" }],
+      buggyBehavior: "b", expectedBehavior: "e", confidence: "high", missingInfo: [],
+    }));
+    const u = await understandTicket("t", ai as never);
+    expect(u.searchTerms).toHaveLength(1);
+    expect(u.searchTerms[0]?.term).toBe("Representative");
+    expect(u.searchTerms[0]?.weight).toBe(1);
+    expect(u.searchTerms[0]?.kind).toBe("label");
+  });
+
+  it("fails with vague when all search terms are blank after filtering", async () => {
+    const ai = vi.fn().mockResolvedValue(JSON.stringify({
+      searchTerms: [{ term: "  " }, { term: "" }, { term: "x" }],
+      buggyBehavior: "b", expectedBehavior: "e", confidence: "high", missingInfo: [],
+    }));
+    await expect(understandTicket("t", ai as never)).rejects.toMatchObject({ category: "vague" });
+  });
 });
 
 function makeRepo(): string {
@@ -247,6 +284,12 @@ describe("gitGrepFiles / locateSourceFiles", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("throws (not an empty map) when git grep fails for a reason other than zero matches", () => {
+    expect(() =>
+      gitGrepFiles("/nonexistent-dir-xyz", [{ term: "Representative", kind: "label", weight: 3 }]),
+    ).toThrow(/git grep failed/);
   });
 });
 

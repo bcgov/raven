@@ -111,28 +111,76 @@ export interface TicketUnderstanding {
   missingInfo: string[];
 }
 
+const VALID_CONFIDENCE = new Set(["high", "medium", "low"]);
+const VALID_SEARCH_TERM_KINDS = new Set(["label", "entity", "identifier"]);
+
 export async function understandTicket(
   ticketText: string,
   ai: typeof askAI = askAI,
 ): Promise<TicketUnderstanding> {
   const response = await ai(`Jira ticket:\n\n${ticketText}`, UNDERSTAND_SYSTEM_PROMPT);
-  let parsed: TicketUnderstanding;
+  let raw: Record<string, unknown>;
   try {
     const jsonMatch = response.match(/\{[\s\S]*\}/);
-    parsed = JSON.parse(jsonMatch?.[0] ?? "") as TicketUnderstanding;
+    raw = JSON.parse(jsonMatch?.[0] ?? "") as Record<string, unknown>;
   } catch {
     throw new FunctionalPlanError("vague", "ticket analysis was not parseable — ticket too vague to plan safely");
   }
-  if (Array.isArray(parsed.missingInfo) && parsed.missingInfo.length > 0) {
-    throw new FunctionalPlanError("needs-input", `needs business input — ${parsed.missingInfo.join("; ")}`);
+
+  // missingInfo: the prompt asks for a string array, but a model can return
+  // a bare string. Treat a non-empty string as a single-item list (the
+  // needs-input gate below still fires); anything else non-array collapses
+  // to [] rather than silently bypassing the gate.
+  let missingInfo: string[];
+  if (Array.isArray(raw["missingInfo"])) {
+    missingInfo = (raw["missingInfo"] as unknown[]).filter((v): v is string => typeof v === "string");
+  } else if (typeof raw["missingInfo"] === "string" && raw["missingInfo"].length > 0) {
+    missingInfo = [raw["missingInfo"]];
+  } else {
+    missingInfo = [];
   }
-  if (parsed.confidence === "low") {
+  if (missingInfo.length > 0) {
+    throw new FunctionalPlanError("needs-input", `needs business input — ${missingInfo.join("; ")}`);
+  }
+
+  const confidence = raw["confidence"];
+  if (typeof confidence !== "string" || !VALID_CONFIDENCE.has(confidence)) {
+    throw new FunctionalPlanError("vague", "ticket analysis returned an unrecognized confidence value");
+  }
+  if (confidence === "low") {
     throw new FunctionalPlanError("vague", "ticket too vague to plan safely (low confidence)");
   }
-  if (!Array.isArray(parsed.searchTerms) || parsed.searchTerms.length === 0) {
+
+  // searchTerms: drop anything that isn't a non-blank string term (a blank
+  // or whitespace-only term would reach git grep as `-F -e ""`, which
+  // matches every file); normalize weight/kind so downstream ranking never
+  // sees malformed values.
+  const rawTerms = Array.isArray(raw["searchTerms"]) ? (raw["searchTerms"] as unknown[]) : [];
+  const searchTerms: SearchTerm[] = [];
+  for (const rt of rawTerms) {
+    if (typeof rt !== "object" || rt === null) continue;
+    const r = rt as Record<string, unknown>;
+    const term = r["term"];
+    if (typeof term !== "string" || term.trim().length < 2) continue;
+    const weight = typeof r["weight"] === "number" && r["weight"] >= 1 && r["weight"] <= 3
+      ? (r["weight"] as number)
+      : 1;
+    const kind = typeof r["kind"] === "string" && VALID_SEARCH_TERM_KINDS.has(r["kind"])
+      ? (r["kind"] as SearchTerm["kind"])
+      : "label";
+    searchTerms.push({ term: term.trim(), kind, weight });
+  }
+  if (searchTerms.length === 0) {
     throw new FunctionalPlanError("vague", "no usable search terms could be extracted from the ticket");
   }
-  return parsed;
+
+  return {
+    searchTerms,
+    buggyBehavior: typeof raw["buggyBehavior"] === "string" ? raw["buggyBehavior"] : "",
+    expectedBehavior: typeof raw["expectedBehavior"] === "string" ? raw["expectedBehavior"] : "",
+    confidence: confidence as "high" | "medium",
+    missingInfo,
+  };
 }
 
 /** git grep -i -l per term; returns path → matched terms. Missing/binary-only matches are fine (empty map). */
@@ -147,9 +195,13 @@ export function gitGrepFiles(repoDir: string, terms: SearchTerm[]): Map<string, 
       out = execFileSync("git", ["grep", "-i", "-l", "-I", "-F", "-e", t.term], {
         cwd: repoDir, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 15_000,
       });
-    } catch {
-      console.warn(`[PLAN] git grep failed for term "${t.term}" — skipping`);
-      continue;
+    } catch (e) {
+      // Exit status 1 means "zero matches" — normal, not an error. Any
+      // other failure (missing repo, timeout, ENOENT) is an operational
+      // problem and must not be silently treated as "no source found".
+      const status = (e as { status?: number | null }).status;
+      if (status === 1) continue;
+      throw new Error(`git grep failed for term "${t.term}": ${(e as Error).message}`);
     }
     for (const file of out.split("\n").map((l) => l.trim()).filter(Boolean)) {
       if (!hits.has(file)) hits.set(file, new Set());
@@ -253,7 +305,7 @@ export async function planFunctional(
   const keywordContext = understanding.searchTerms.map((t) => t.term).join(" ");
   const sourceFiles = located.map((f) => ({ path: f.path, content: f.content, repo, project }));
   const sourceContext = sourceFiles
-    .map((sf) => `--- repo: ${sf.repo} path: ${sf.path} ---\n${capFileContext(extractRelevantCode(sf.content, keywordContext))}`)
+    .map((sf) => `--- repo: ${sf.repo} path: ${sf.path} ---\n${capFileContext(extractRelevantCode(sf.content, keywordContext, 12_000))}`)
     .join("\n\n");
   console.log(`[PLAN] Source context: ${sourceContext.length} chars across ${sourceFiles.length} file(s)`);
   const prompt =

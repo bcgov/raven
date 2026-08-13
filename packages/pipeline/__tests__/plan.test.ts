@@ -32,7 +32,7 @@ vi.mock("../src/steps/plan-functional.js", async (importOriginal) => {
 // pulls in the real, unmocked plan.js ahead of time and the dynamic
 // `import("./plan-functional.js")` inside plan() ends up resolving the
 // real module instead of the mock. Importing plan.js first avoids that.
-import { extractTargetClasses, validatePatchTargets, plan } from "../src/steps/plan.js";
+import { extractTargetClasses, validatePatchTargets, extractRelevantCode, plan } from "../src/steps/plan.js";
 import { planFunctional } from "../src/steps/plan-functional.js";
 import { askAI } from "../src/ai-client.js";
 import type { PipelineContext } from "../src/types.js";
@@ -79,6 +79,17 @@ describe("extractTargetClasses", () => {
     );
     expect(classes.has("SomethingElseImpl.java")).toBe(false);
   });
+
+  it("extracts a Class:line token with no suffix whitelist match", () => {
+    const classes = extractTargetClasses("ERROR OrderProcessor:171 - boom", "");
+    expect(classes.has("OrderProcessor.java")).toBe(true);
+  });
+
+  it("does not extract ALL-CAPS tokens before a colon-line-number as classes", () => {
+    const classes = extractTargetClasses("HTTP:8080 ERROR:123", "");
+    expect(classes.has("HTTP.java")).toBe(false);
+    expect(classes.has("ERROR.java")).toBe(false);
+  });
 });
 
 describe("validatePatchTargets", () => {
@@ -105,6 +116,43 @@ describe("validatePatchTargets", () => {
   it("rejects any patch when no source files were read", () => {
     const patch = "--- a/Anything.java\n+++ b/Anything.java\n@@ -1,1 +1,1 @@\n-a\n+b";
     expect(validatePatchTargets(patch, [])).toBe(false);
+  });
+
+  it("rejects a modify pair whose postimage renames a read file to a fabricated path", () => {
+    const patch =
+      "--- a/nrs-dm-api/src/main/java/ca/bc/gov/nrs/dms/GlobalExceptionHandler.java\n" +
+      "+++ b/src/main/java/com/invented/Other.java\n" +
+      "@@ -1,1 +1,1 @@\n-a\n+b";
+    expect(validatePatchTargets(patch, sourceFiles)).toBe(false);
+  });
+
+  it("rejects a patch whose matched source files span more than one repo", () => {
+    const twoRepoSourceFiles = [
+      { path: "src/main/java/Foo.java", content: "", repo: "repo-a", project: "PROJ" },
+      { path: "src/main/java/Bar.java", content: "", repo: "repo-b", project: "PROJ" },
+    ];
+    const patch =
+      "--- a/src/main/java/Foo.java\n+++ b/src/main/java/Foo.java\n@@ -1,1 +1,1 @@\n-a\n+b\n" +
+      "--- a/src/main/java/Bar.java\n+++ b/src/main/java/Bar.java\n@@ -1,1 +1,1 @@\n-c\n+d";
+    expect(validatePatchTargets(patch, twoRepoSourceFiles)).toBe(false);
+  });
+
+  it("accepts a same-path modify pair plus a new test file", () => {
+    const patch =
+      "--- a/nrs-dm-api/src/main/java/ca/bc/gov/nrs/dms/GlobalExceptionHandler.java\n" +
+      "+++ b/nrs-dm-api/src/main/java/ca/bc/gov/nrs/dms/GlobalExceptionHandler.java\n" +
+      "@@ -1,1 +1,1 @@\n-a\n+b\n" +
+      "--- /dev/null\n+++ b/nrs-dm-api/src/test/java/ca/bc/gov/nrs/dms/GlobalExceptionHandlerTest.java\n" +
+      "@@ -0,0 +1,1 @@\n+t";
+    expect(validatePatchTargets(patch, sourceFiles)).toBe(true);
+  });
+
+  it("accepts a deletion pair (a/X -> /dev/null) for a known source file", () => {
+    const patch =
+      "--- a/nrs-dm-api/src/main/java/ca/bc/gov/nrs/dms/GlobalExceptionHandler.java\n" +
+      "+++ /dev/null\n" +
+      "@@ -1,1 +0,0 @@\n-a";
+    expect(validatePatchTargets(patch, sourceFiles)).toBe(true);
   });
 });
 
@@ -217,6 +265,23 @@ describe("plan() with no locatable source", () => {
       plan(ctx, failingClient as never),
     ).rejects.toThrow(/no source files/i);
     expect(vi.mocked(askAI)).not.toHaveBeenCalled();
+  });
+});
+
+describe("extractRelevantCode", () => {
+  it("honors a caller-supplied maxChars budget so a late keyword region isn't lost", () => {
+    // A file between 12K and 50K chars used to pass through the (hardcoded
+    // 50K) early-return check untouched, then get blindly sliced to the
+    // first 12K chars downstream — losing a keyword region near the end.
+    const fillerLine = "// filler line of source code padding out the file for the test\n";
+    const filler = fillerLine.repeat(300);
+    const source = filler + "// KEYWORD_LINE_MARKER appears only here\n";
+    expect(source.length).toBeGreaterThan(12_000);
+    expect(source.length).toBeLessThan(50_000);
+
+    const result = extractRelevantCode(source, "KEYWORD_LINE_MARKER context", 12_000);
+    expect(result).toContain("KEYWORD_LINE_MARKER");
+    expect(result.length).toBeLessThanOrEqual(12_000 + 200);
   });
 });
 
