@@ -60,6 +60,9 @@ export interface PipelineContext {
   ticketKey?: string;
   isDuplicate?: boolean;
   triageResult?: TriageResult;
+  /** Full ticket text (summary + description + comments) — set in Jira
+   *  backlog mode; its presence enables the functional-bug planning path. */
+  ticketText?: string;
 
   // Plan
   repoPath?: string;

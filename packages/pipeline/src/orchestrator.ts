@@ -400,7 +400,7 @@ export async function runJiraBacklog(args: CliArgs): Promise<void> {
 
     try {
       // Extract error info from ticket
-      const { errors, triageResult } = await extractFromTicket(ticket.key, jiraClient);
+      const { errors, triageResult, ticketText } = await extractFromTicket(ticket.key, jiraClient);
 
       // Build context for this ticket
       const ctx: PipelineContext = {
@@ -418,6 +418,7 @@ export async function runJiraBacklog(args: CliArgs): Promise<void> {
         ticketKey: ticket.key,
         isDuplicate: false,
         triageResult,
+        ticketText,
       };
 
       const maxStep = args.stopAfter ?? 6;
