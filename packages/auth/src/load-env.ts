@@ -64,22 +64,36 @@ export function loadEnvVar(
  * '#' preceded by whitespace is assumed to be an intentional comment.
  */
 export function findUnquotedHashKeys(content: string): string[] {
-  // dotenv's quoted-value alternatives: the opening delimiter must be closed
-  // (allowing backslash-escaped delimiters inside), or the value is unquoted.
-  const closedQuote: Record<string, RegExp> = {
-    '"': /^"(?:\\"|[^"])*"/,
-    "'": /^'(?:\\'|[^'])*'/,
-    "`": /^`(?:\\`|[^`])*`/,
+  // dotenv's quoted-value grammar: the opening delimiter must be closed
+  // (backslash-escaped delimiters allowed inside, newlines allowed for
+  // multiline values) and followed only by whitespace and an optional
+  // comment before the end of the line — otherwise dotenv backtracks and
+  // treats the whole value as unquoted.
+  const quotedValue: Record<string, RegExp> = {
+    '"': /^"(?:\\"|[^"])*"[ \t]*(?:#[^\n]*)?(?=\n|$)/,
+    "'": /^'(?:\\'|[^'])*'[ \t]*(?:#[^\n]*)?(?=\n|$)/,
+    "`": /^`(?:\\`|[^`])*`[ \t]*(?:#[^\n]*)?(?=\n|$)/,
   };
   const keys: string[] = [];
-  for (const line of content.split(/\r?\n/)) {
-    const m = line.match(/^\s*(?:export\s+)?([\w.-]+)\s*=\s*(.*)$/);
+  const lines = content.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i]!.match(/^\s*(?:export\s+)?([\w.-]+)\s*=(.*)$/);
     if (!m) continue;
-    const rawValue = m[2];
-    if (!rawValue) continue;
-    // A leading quote only protects the '#' when the delimiter actually
-    // closes; dotenv otherwise falls back to unquoted parsing and truncates.
-    if (closedQuote[rawValue[0]!]?.test(rawValue)) continue;
+    // Keep the raw (untrimmed) value so "KEY= #comment" reads as a comment
+    // separated by whitespace rather than a '#' glued to the '=' sign.
+    const rawValue = m[2]!;
+    const value = rawValue.trimStart();
+    if (!value) continue;
+    const re = quotedValue[value[0]!];
+    if (re) {
+      // Join with the following lines so a valid multiline quoted value is
+      // recognized; skip its continuation lines when it closes.
+      const closed = [value, ...lines.slice(i + 1)].join("\n").match(re);
+      if (closed) {
+        i += closed[0].split("\n").length - 1;
+        continue;
+      }
+    }
     if (/(^|\S)#/.test(rawValue)) keys.push(m[1]!);
   }
   return keys;

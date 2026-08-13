@@ -109,6 +109,26 @@ describe("findUnquotedHashKeys", () => {
     expect(findUnquotedHashKeys('PASSWORD="ok" # comment\n')).toEqual([]);
   });
 
+  it("does not flag an empty value followed by a comment", () => {
+    // dotenv parses this as PASSWORD="" — the '#' is separated by whitespace.
+    expect(findUnquotedHashKeys("PASSWORD= # not configured\n")).toEqual([]);
+  });
+
+  it("does not flag a multiline quoted value containing #", () => {
+    expect(findUnquotedHashKeys('TOKEN="part#one\npart-two"\n')).toEqual([]);
+  });
+
+  it("skips a multiline value's continuation lines but scans what follows", () => {
+    const content = 'TOKEN="line#1\nmid=x#y\nend"\nAFTER=ok#bad\n';
+    // mid=x#y is inside TOKEN's quoted value; AFTER really is truncated.
+    expect(findUnquotedHashKeys(content)).toEqual(["AFTER"]);
+  });
+
+  it("still flags an unclosed quote even when a later key is quoted", () => {
+    // dotenv truncates A to '"pa' here — the quote does not span into B.
+    expect(findUnquotedHashKeys('A="pa#ss\nB="ok"\n')).toEqual(["A"]);
+  });
+
   it("flags each affected key once across a multi-line file", () => {
     const content = [
       "A=ok",
