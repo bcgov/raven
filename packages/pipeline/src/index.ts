@@ -24,6 +24,9 @@ Options:
   --jira-project         Jira project key (default: same as --app)
   --bitbucket-project    Bitbucket project key (default: same as --app)
   --bitbucket-repo       Bitbucket repo slug (default: inferred from component)
+  --branch               Source branch to plan against and target the PR at
+                         (default: repo default branch; use when the deployed
+                         build comes from a feature/release branch)
   --resume               Resume the last run for this app/component
   --fresh                Ignore saved state, start from scratch
   --skip-tests           Skip test execution (when tests need unavailable infrastructure)
@@ -78,6 +81,7 @@ function parseCliArgs(): CliArgs | null {
         "bitbucket-project": { type: "string" },
         "jira-project": { type: "string" },
         "bitbucket-repo": { type: "string" },
+        branch: { type: "string" },
         resume: { type: "boolean", default: false },
         fresh: { type: "boolean", default: false },
         "skip-tests": { type: "boolean", default: false },
@@ -110,6 +114,13 @@ function parseCliArgs(): CliArgs | null {
       printUsage();
       process.exit(1);
     }
+    // Branch names reach git checkout argv — reject anything that could be
+    // parsed as an option or is obviously not a ref name.
+    if (values.branch !== undefined && !/^[\w][\w./-]*$/.test(values.branch)) {
+      console.error(`Error: --branch must be a valid branch name (got "${values.branch}").\n`);
+      printUsage();
+      process.exit(1);
+    }
 
     return {
       server: values.server,
@@ -122,6 +133,7 @@ function parseCliArgs(): CliArgs | null {
       jiraProject: values["jira-project"],
       bitbucketProject: values["bitbucket-project"],
       bitbucketRepo: values["bitbucket-repo"],
+      branch: values["branch"],
       model: values.model,
       resume: values.resume ?? false,
       fresh: values.fresh ?? false,

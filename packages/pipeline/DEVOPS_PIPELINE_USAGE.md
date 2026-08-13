@@ -51,6 +51,7 @@ raven-pipeline --server <server> --app <APP> --component <component> [options]
 | `--jira-project` | Jira project key (if different from `--app`) | same as `--app` |
 | `--bitbucket-project` | Bitbucket project key | `NRS` |
 | `--bitbucket-repo` | Bitbucket repo slug (if non-standard) | inferred from component |
+| `--branch` | Source branch to plan against and target the PR at — use when the deployed build comes from a feature/release branch rather than the repo default | repo default branch |
 | `--model` | AI model to use | `claude-sonnet-4.6` |
 
 ### Pipeline Control
@@ -201,6 +202,7 @@ In `--dry-run` mode, the pipeline stops after PLAN (step 3). No tickets, branche
 | `Tests failed` | Fix is applied but tests didn't pass. Branch is preserved for manual review — no PR is created. |
 | `Saved state exists for this app/component` notice | Informational — pipeline is starting fresh (saved state will be overwritten). Pass `--resume` to pick up where the previous run left off, or `--fresh` to silence the notice. To clear state entirely: `rm -f ~/.raven/runs/<APP>-<component>-*.json` |
 | Copilot SDK auth failure | Run `gh auth login` to refresh GitHub CLI authentication |
+| `PI scrubbing: DISABLED` warning | Only possible via an explicit `RAVEN_SCRUB_PI=false` in the shell for this invocation — the pipeline ignores a global `false` in `~/.raven/.env` and defaults scrubbing on. Unset the shell variable to re-enable. |
 
 ---
 

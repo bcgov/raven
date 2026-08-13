@@ -37,6 +37,8 @@ export interface PipelineContext {
   dryRun: boolean;
   bitbucketProject?: string;
   bitbucketRepo?: string;
+  /** Source branch to plan against and target the PR at (e.g., the feature branch a deployed SNAPSHOT is built from). Defaults to the repo's default branch. */
+  branch?: string;
 
   /** Jira project key (may differ from app name, e.g., SOS errors live in CWM project) */
   jiraProject: string;
@@ -90,6 +92,8 @@ export interface CliArgs {
   existingTicket?: string;
   bitbucketProject?: string;
   bitbucketRepo?: string;
+  /** Source branch to plan against and target the PR at. Defaults to the repo's default branch. */
+  branch?: string;
   jiraProject?: string;
   model?: string;
   /** Resume the last run for this app/component. */

@@ -84,9 +84,11 @@ export async function plan(
   let sourceFoundInProject = project;
 
   // Strategy 1: Direct file paths from stack trace
+  // ctx.branch applies to app-repo reads only (strategies 1, 2, 2b) —
+  // dependency and sibling repos won't have the app's feature branch.
   for (const hint of fileHints.slice(0, 5)) {
     try {
-      const content = await bitbucketClient.readFile(project, repo, hint);
+      const content = await bitbucketClient.readFile(project, repo, hint, ctx.branch);
       sourceFiles.push({ path: hint, content, repo, project });
       console.log(`[PLAN] Read: ${project}/${repo}/${hint}`);
     } catch {
@@ -100,13 +102,13 @@ export async function plan(
       (cls) => !sourceFiles.some((sf) => sf.path.endsWith(cls))
     ));
     if (remainingClasses.size > 0) {
-      console.log(`[PLAN] Searching ${project}/${repo} tree for: ${[...remainingClasses].join(", ")}`);
+      console.log(`[PLAN] Searching ${project}/${repo} tree for: ${[...remainingClasses].join(", ")}${ctx.branch ? ` (branch: ${ctx.branch})` : ""}`);
       startSpinner("Searching repo tree...");
-      const found = await findFilesInRepo(bitbucketClient, project, repo, remainingClasses);
+      const found = await findFilesInRepo(bitbucketClient, project, repo, remainingClasses, ctx.branch);
       stopSpinner();
       for (const filePath of found.slice(0, 3)) {
         try {
-          const content = await bitbucketClient.readFile(project, repo, filePath);
+          const content = await bitbucketClient.readFile(project, repo, filePath, ctx.branch);
           sourceFiles.push({ path: filePath, content, repo, project });
           console.log(`[PLAN] Found in app repo: ${filePath}`);
         } catch { /* skip */ }
@@ -121,10 +123,10 @@ export async function plan(
     ));
     if (still.size > 0) {
       console.log(`[PLAN] Also searching original repo: ${originalProject}/${originalRepo}`);
-      const found = await findFilesInRepo(bitbucketClient, originalProject, originalRepo, still);
+      const found = await findFilesInRepo(bitbucketClient, originalProject, originalRepo, still, ctx.branch);
       for (const filePath of found.slice(0, 3)) {
         try {
-          const content = await bitbucketClient.readFile(originalProject, originalRepo, filePath);
+          const content = await bitbucketClient.readFile(originalProject, originalRepo, filePath, ctx.branch);
           sourceFiles.push({ path: filePath, content, repo: originalRepo, project: originalProject });
           console.log(`[PLAN] Found in original repo: ${originalProject}/${originalRepo}/${filePath}`);
         } catch { /* skip */ }
@@ -281,6 +283,17 @@ export async function plan(
     }
   }
 
+  // Refuse to plan from imagination: with zero located source files the AI
+  // reliably fabricates plausible-looking paths and code (observed live:
+  // DMS-364 produced a patch for a package that doesn't exist). Failing here
+  // gives a clear, actionable error instead of a downstream patch failure.
+  if (sourceFiles.length === 0) {
+    throw new Error(
+      `No source files located in Bitbucket for ${[...targetClasses].join(", ") || "(no target classes extracted from the error)"} — ` +
+      `refusing to generate a fix plan without real source. Check --bitbucket-project/--bitbucket-repo.`
+    );
+  }
+
   // Build source context for AI (with truncation for token limits)
   // Format: "--- repo: <repo-name> path: <path-from-repo-root> ---"
   const sourceContext = sourceFiles.map((sf) => {
@@ -293,9 +306,7 @@ export async function plan(
     `Jira ticket: ${ctx.ticketKey}\n` +
     `Component: ${ctx.component}\n` +
     `Error (${topError.occurrences}x):\n${topError.stackTrace}\n\n` +
-    (sourceContext.length > 0
-      ? `Relevant source files:\n${sourceContext.join("\n\n")}`
-      : "No source files available — analyze based on the stack trace.");
+    `Relevant source files:\n${sourceContext.join("\n\n")}`;
 
   startSpinner("AI generating fix plan...");
   const aiResponse = await askAI(prompt, PLAN_SYSTEM_PROMPT);
@@ -305,7 +316,11 @@ export async function plan(
   const { analysis, patch: rawPatch } = parseAiPlanResponse(aiResponse);
 
   // Fix patch paths: ensure --- a/ and +++ b/ lines use the full path from source files
-  const fixedPatch = rawPatch ? fixPatchPaths(rawPatch, sourceFiles) : "";
+  let fixedPatch = rawPatch ? fixPatchPaths(rawPatch, sourceFiles) : "";
+  if (fixedPatch && !validatePatchTargets(fixedPatch, sourceFiles)) {
+    console.warn("[PLAN] Discarding patch — it modifies files that were never read from Bitbucket (fabrication guard)");
+    fixedPatch = "";
+  }
 
   if (analysis) {
     ctx.fixPlan = {
@@ -375,7 +390,7 @@ export async function plan(
  * Extract class names to search for from error message and stack trace.
  * Returns Java file names like "UUIDJAXBAdapter.java".
  */
-function extractTargetClasses(message: string, stackTrace: string): Set<string> {
+export function extractTargetClasses(message: string, stackTrace: string): Set<string> {
   const classes = new Set<string>();
   const fullText = `${message}\n${stackTrace}`;
 
@@ -388,6 +403,15 @@ function extractTargetClasses(message: string, stackTrace: string): Set<string> 
   // Log4j class column (e.g., "ERROR thread-1 UUIDJAXBAdapter:33")
   const log4jMatches = message.matchAll(/\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+\w+\s+\S+\s+([\w]+(?:Adapter|Handler|Impl|Service|Filter|Interceptor|Task|Subtask))\b/g);
   for (const m of log4jMatches) {
+    classes.add(`${m[1]!}.java`);
+  }
+  // Logger class immediately followed by a line number, regardless of the
+  // columns before it (e.g., "ERROR  GlobalExceptionHandler:171 - ..."). Some
+  // log formats have no thread column, which the pattern above requires. The
+  // ":<line>" suffix distinguishes logger classes from stack-frame tokens
+  // like "Foo.java:42" (the token before that ':' is "java", lowercase).
+  const loggerLineMatches = fullText.matchAll(/\b([A-Z][\w$]*(?:Adapter|Handler|Impl|Service|Filter|Interceptor|Task|Subtask|Controller)):\d+\b/g);
+  for (const m of loggerLineMatches) {
     classes.add(`${m[1]!}.java`);
   }
 
@@ -415,6 +439,24 @@ function extractTargetClasses(message: string, stackTrace: string): Set<string> 
   }
 
   return classes;
+}
+
+/**
+ * Every file a patch MODIFIES must be one we actually read from Bitbucket —
+ * anything else is AI fabrication (path and content alike) and can never
+ * apply downstream. Only '--- a/' pre-image paths are checked: '--- /dev/null'
+ * (new files, e.g. added tests) is legitimate as long as the patch also
+ * modifies at least one real file.
+ */
+export function validatePatchTargets(
+  patch: string,
+  sourceFiles: Array<{ path: string }>,
+): boolean {
+  const targets = [...patch.matchAll(/^---\s+a\/(.+)$/gm)].map((m) => m[1]!.trim());
+  if (targets.length === 0) return false;
+  return targets.every((t) =>
+    sourceFiles.some((sf) => t.endsWith(sf.path) || sf.path.endsWith(t)),
+  );
 }
 
 /** Check if a class name is from the JDK standard library. */
@@ -543,9 +585,10 @@ async function findFilesInRepo(
   project: string,
   repo: string,
   targetNames: Set<string>,
+  at?: string,
 ): Promise<string[]> {
   try {
-    const allFiles = await client.listFiles(project, repo);
+    const allFiles = await client.listFiles(project, repo, 5000, 50_000, at);
     const found: string[] = [];
     for (const filePath of allFiles) {
       const fileName = filePath.split("/").pop();

@@ -6,6 +6,7 @@ import { JiraClient } from "@nrs/jira-mcp/client";
 import { BitbucketClient } from "@nrs/bitbucket-mcp/client";
 
 import type { CliArgs, PipelineContext, PipelineResult } from "./types.js";
+import { applyPipelineScrubDefault } from "./scrub-default.js";
 import { setModel, stopAI } from "./ai-client.js";
 import { loadRunState, saveRunState, createRunState, type RunState } from "./run-state.js";
 import { detect } from "./steps/detect.js";
@@ -20,7 +21,10 @@ import { extractFromTicket } from "./steps/extract-from-ticket.js";
  * Run the full 6-step autonomous DevOps pipeline.
  */
 export async function runPipeline(args: CliArgs, processedDedupeKeys?: Set<string>): Promise<PipelineResult> {
-  // Bootstrap environment and auth
+  // Bootstrap environment and auth. Scrub default must be applied before
+  // loadEnv() so a global RAVEN_SCRUB_PI=false in ~/.raven/.env cannot
+  // disable scrubbing for pipeline runs (only an explicit shell var can).
+  applyPipelineScrubDefault();
   loadEnv();
 
   // Configure AI model
@@ -103,6 +107,7 @@ export async function runPipeline(args: CliArgs, processedDedupeKeys?: Set<strin
       jiraProject: args.jiraProject ?? args.app,
       bitbucketProject: args.bitbucketProject,
       bitbucketRepo: args.bitbucketRepo,
+      branch: args.branch,
       skipTests: args.skipTests,
       verbose: args.verbose,
       errors: [],
@@ -125,15 +130,16 @@ export async function runPipeline(args: CliArgs, processedDedupeKeys?: Set<strin
   console.log(`[RAVEN] Mode: ${flags}`);
 
   // PI scrubber visibility — every prompt that goes to the LLM passes
-  // through PiScrubber from @nrs/auth, but the default can be overridden
-  // by RAVEN_SCRUB_PI=false. Surface the actual state at run start so an
-  // operator can never accidentally ship raw PII to GitHub Copilot
-  // without realizing the scrubber is off.
+  // through PiScrubber from @nrs/auth. The pipeline forces scrubbing on
+  // regardless of ~/.raven/.env (see applyPipelineScrubDefault); only an
+  // explicit RAVEN_SCRUB_PI=false in the shell disables it. Surface the
+  // actual state at run start so an operator can never accidentally ship
+  // raw PII to GitHub Copilot without realizing the scrubber is off.
   const scrubEnabled = process.env["RAVEN_SCRUB_PI"] !== "false" && process.env["RAVEN_SCRUB_PI"] !== "0";
   if (scrubEnabled) {
     console.log(`[RAVEN] PI scrubbing: ENABLED (FOIPPA-compliant — PII stripped from all LLM prompts)`);
   } else {
-    console.warn(`[RAVEN] PI scrubbing: DISABLED — RAVEN_SCRUB_PI=${process.env["RAVEN_SCRUB_PI"]}. Raw ticket text and stack traces will be sent to the LLM. Confirm this is intentional.`);
+    console.warn(`[RAVEN] PI scrubbing: DISABLED by shell override (RAVEN_SCRUB_PI=${process.env["RAVEN_SCRUB_PI"]}). Raw ticket text and stack traces will be sent to the LLM. Confirm this is intentional.`);
   }
   console.log("");
 
@@ -346,6 +352,7 @@ export async function runPipelineWatch(args: CliArgs): Promise<void> {
  * for each one.
  */
 export async function runJiraBacklog(args: CliArgs): Promise<void> {
+  applyPipelineScrubDefault();
   loadEnv();
   if (args.model) setModel(args.model);
 
@@ -393,6 +400,7 @@ export async function runJiraBacklog(args: CliArgs): Promise<void> {
         jiraProject: args.jiraProject ?? args.app,
         bitbucketProject: args.bitbucketProject,
         bitbucketRepo: args.bitbucketRepo,
+      branch: args.branch,
         skipTests: args.skipTests,
         verbose: args.verbose,
         errors,
