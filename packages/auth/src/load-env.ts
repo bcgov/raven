@@ -40,14 +40,15 @@ export function loadEnv(): void {
  * wrap the whole value.
  *
  * Returns undefined when the variable is unset, empty, or the file is
- * missing/unreadable.
+ * missing/unreadable. An env var explicitly set to the empty string counts
+ * as deliberately cleared (mirroring dotenv's override:false) — the file
+ * value is NOT used in that case.
  */
 export function loadEnvVar(
   name: string,
   envPath = join(homedir(), ".raven", ".env"),
 ): string | undefined {
-  const fromEnv = process.env[name];
-  if (fromEnv) return fromEnv;
+  if (name in process.env) return process.env[name] || undefined;
   try {
     return parse(readFileSync(envPath, "utf-8"))[name] || undefined;
   } catch {
@@ -63,12 +64,22 @@ export function loadEnvVar(
  * '#' preceded by whitespace is assumed to be an intentional comment.
  */
 export function findUnquotedHashKeys(content: string): string[] {
+  // dotenv's quoted-value alternatives: the opening delimiter must be closed
+  // (allowing backslash-escaped delimiters inside), or the value is unquoted.
+  const closedQuote: Record<string, RegExp> = {
+    '"': /^"(?:\\"|[^"])*"/,
+    "'": /^'(?:\\'|[^'])*'/,
+    "`": /^`(?:\\`|[^`])*`/,
+  };
   const keys: string[] = [];
   for (const line of content.split(/\r?\n/)) {
     const m = line.match(/^\s*(?:export\s+)?([\w.-]+)\s*=\s*(.*)$/);
     if (!m) continue;
     const rawValue = m[2];
-    if (!rawValue || /^["'`]/.test(rawValue)) continue;
+    if (!rawValue) continue;
+    // A leading quote only protects the '#' when the delimiter actually
+    // closes; dotenv otherwise falls back to unquoted parsing and truncates.
+    if (closedQuote[rawValue[0]!]?.test(rawValue)) continue;
     if (/(^|\S)#/.test(rawValue)) keys.push(m[1]!);
   }
   return keys;

@@ -54,6 +54,14 @@ describe("loadEnvVar", () => {
     expect(loadEnvVar("RAVEN_TEST_VAR", path)).toBe("from-env");
   });
 
+  it("treats an explicitly empty process.env value as cleared, not unset", () => {
+    // Matches dotenv override:false — an existing (even empty) env var wins,
+    // so a deliberately cleared credential is not re-enabled from the file.
+    process.env["RAVEN_TEST_VAR"] = "";
+    const path = envFile("RAVEN_TEST_VAR=from-file\n");
+    expect(loadEnvVar("RAVEN_TEST_VAR", path)).toBeUndefined();
+  });
+
   it("returns undefined for a missing key", () => {
     const path = envFile("OTHER=value\n");
     expect(loadEnvVar("RAVEN_TEST_VAR", path)).toBeUndefined();
@@ -88,6 +96,17 @@ describe("findUnquotedHashKeys", () => {
 
   it("does not flag full-line comments or blank lines", () => {
     expect(findUnquotedHashKeys("# a comment\n\nKEY=value\n")).toEqual([]);
+  });
+
+  it("flags a value whose leading quote is never closed", () => {
+    // dotenv parses PASSWORD="pa#ss as the unquoted value '"pa' — truncated
+    // and keeping the literal quote — so it must be warned about.
+    expect(findUnquotedHashKeys('PASSWORD="pa#ss\n')).toEqual(["PASSWORD"]);
+    expect(findUnquotedHashKeys("PASSWORD='pa#ss\n")).toEqual(["PASSWORD"]);
+  });
+
+  it("does not flag a closed quoted value followed by an inline comment", () => {
+    expect(findUnquotedHashKeys('PASSWORD="ok" # comment\n')).toEqual([]);
   });
 
   it("flags each affected key once across a multi-line file", () => {
