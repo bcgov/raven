@@ -97,6 +97,21 @@ export async function runPipeline(args: CliArgs, processedDedupeKeys?: Set<strin
     ctx.verbose = args.verbose;
     if (args.existingTicket) ctx.existingTicket = args.existingTicket;
     if (args.forceNew) ctx.forceNew = args.forceNew;
+    // A saved fix plan (step 3+) was generated against a specific source
+    // branch — silently swapping ctx.branch on resume would reuse that
+    // plan's patch against a different branch's source. Applying --branch
+    // is safe before PLAN has run (step < 3); once a plan exists, refuse
+    // and point at --fresh instead of silently ignoring the flag.
+    if (args.branch !== undefined && args.branch !== ctx.branch) {
+      if (resumedFrom >= 3) {
+        console.error(
+          `[RAVEN] --branch ${args.branch} differs from the saved plan's branch (${ctx.branch ?? "default"}). ` +
+          `A saved fix plan is source-specific — re-run with --fresh to plan against the new branch.`
+        );
+        process.exit(1);
+      }
+      ctx.branch = args.branch;
+    }
     console.log(`\n[RAVEN] Resuming pipeline from step ${resumedFrom + 1}: ${ctx.app}/${ctx.component} on ${ctx.server}`);
   } else {
     ctx = {
@@ -390,8 +405,6 @@ export async function runJiraBacklog(args: CliArgs): Promise<void> {
 
   console.log(`[RAVEN] Found ${tickets.length} ticket(s) to process.\n`);
 
-  let processed = 0;
-  let failed = 0;
   const outcomes = new Map<string, string[]>(); // category → ["ARTS-220: reason", ...]
   const note = (category: string, line: string) => {
     if (!outcomes.has(category)) outcomes.set(category, []);
@@ -455,17 +468,21 @@ export async function runJiraBacklog(args: CliArgs): Promise<void> {
       }
 
       validate(ctx);
-      processed++;
-      note("planned", ticket.key);
+      // A ticket only counts as "planned" when PLAN actually produced a
+      // patch — e.g. --stop-after 2 (PLAN never ran) or a plan step that
+      // completed without a usable patch must not be counted as planned.
+      note(ctx.fixPlan?.patch ? "planned" : "no-plan", ticket.key);
     } catch (e) {
-      failed++;
       const category = e instanceof FunctionalPlanError ? e.category : "error";
       note(category, `${ticket.key}: ${(e as Error).message}`);
       console.log(`[RAVEN] ${category === "error" ? "Failed on" : "Skipped"} ${ticket.key}: ${(e as Error).message}`);
     }
   }
 
-  console.log(`\n[RAVEN] Jira backlog complete: ${processed} planned, ${failed} not planned, of ${tickets.length} ticket(s).`);
+  const plannedCount = outcomes.get("planned")?.length ?? 0;
+  console.log(
+    `\n[RAVEN] Jira backlog complete: ${plannedCount} planned, ${tickets.length - plannedCount} not planned, of ${tickets.length} ticket(s).`,
+  );
   for (const [category, lines] of outcomes) {
     if (category === "planned") continue;
     console.log(`[RAVEN]   ${category} (${lines.length}):`);

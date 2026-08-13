@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { tmpdir } from "node:os";
 
 // ---------------------------------------------------------------------------
@@ -41,7 +41,7 @@ describe("processed-errors store", () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "raven-processed-"));
-    path = join(dir, "test01__DMS__dms-document-api.json");
+    path = storePathFor("test01", "DMS", "dms-document-api", dir);
   });
 
   afterEach(() => {
@@ -62,6 +62,15 @@ describe("processed-errors store", () => {
     expect(p).not.toContain("..");
   });
 
+  it("does not collide when sanitization maps two different components to the same characters", () => {
+    // "comp/a" and "comp_a" both sanitize to "comp_a" — without a
+    // collision-breaking suffix they'd map to the same store file and
+    // silently share (and corrupt) each other's per-target isolation.
+    const a = storePathFor("s", "A", "comp/a", dir);
+    const b = storePathFor("s", "A", "comp_a", dir);
+    expect(a).not.toBe(b);
+  });
+
   it("round-trips mark and load with ticket key", () => {
     markProcessed("E::frame", "DMS-364", path);
     const store = loadProcessedErrors(path);
@@ -79,7 +88,7 @@ describe("processed-errors store", () => {
     markProcessed("k1", undefined, path);
     markProcessed("k2", "DMS-1", path);
     const files = readdirSync(dir);
-    expect(files).toEqual(["test01__DMS__dms-document-api.json"]);
+    expect(files).toEqual([basename(path)]);
     const store = loadProcessedErrors(path);
     expect(Object.keys(store).sort()).toEqual(["k1", "k2"]);
   });

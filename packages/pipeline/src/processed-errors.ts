@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 
@@ -41,7 +42,13 @@ export function defaultStoreDir(): string {
   return join(homedir(), ".raven", "processed-errors");
 }
 
-/** Per-target store file. Sanitized so target names can't escape the dir. */
+/**
+ * Per-target store file. Sanitized so target names can't escape the dir.
+ * A hash of the raw (unsanitized) tuple is appended so two different
+ * targets that sanitize to the same characters (e.g., "comp/a" and
+ * "comp_a" both become "comp_a") don't collide on one file and silently
+ * break per-target isolation.
+ */
 export function storePathFor(
   server: string,
   app: string,
@@ -49,7 +56,8 @@ export function storePathFor(
   baseDir = defaultStoreDir(),
 ): string {
   const safe = (s: string) => s.replace(/[^A-Za-z0-9_-]/g, "_");
-  return join(baseDir, `${safe(server)}__${safe(app)}__${safe(component)}.json`);
+  const digest = createHash("sha256").update(`${server} ${app} ${component}`).digest("hex").slice(0, 8);
+  return join(baseDir, `${safe(server)}__${safe(app)}__${safe(component)}__${digest}.json`);
 }
 
 export function loadProcessedErrors(path: string): ProcessedErrorStore {

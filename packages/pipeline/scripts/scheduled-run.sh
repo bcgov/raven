@@ -21,6 +21,10 @@
 #   - Runs a single fresh pipeline pass; the pipeline's persistent triage
 #     cooldown keeps repeat runs from re-commenting on known errors.
 #   - Appends to a dated log file per app.
+#   - Takes a per-target lock (mkdir-based) for the run's duration. launchd
+#     serializes same-label jobs natively, so this is a no-op there; it's
+#     what keeps cron (which does NOT serialize) and manual overlapping
+#     invocations from running the same target concurrently.
 
 set -euo pipefail
 
@@ -37,6 +41,24 @@ log() {
 : "${PIPELINE_SERVER:?PIPELINE_SERVER is required}"
 : "${PIPELINE_APP:?PIPELINE_APP is required}"
 : "${PIPELINE_COMPONENT:?PIPELINE_COMPONENT is required}"
+
+# Per-target lock: cron doesn't serialize overlapping invocations the way
+# launchd does, so two runs for the same target could otherwise clone/patch
+# the same working tree concurrently. mkdir is atomic, so this doubles as
+# the lock acquisition primitive.
+LOCK_DIR="$LOG_DIR/.lock-${PIPELINE_SERVER}-${PIPELINE_APP}-${PIPELINE_COMPONENT}"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  # Stale-lock guard: a crashed run leaves the dir behind. Locks older
+  # than 2 hours are reclaimed.
+  if [ -n "$(find "$LOCK_DIR" -maxdepth 0 -mmin +120 2>/dev/null)" ]; then
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+    mkdir "$LOCK_DIR" 2>/dev/null || { log "SKIP: could not acquire lock"; exit 0; }
+  else
+    log "SKIP: another run for this target is in progress (lock held)"
+    exit 0
+  fi
+fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
 
 # Pre-flight: reachability of the Atlassian base host (VPN check). Reads only
 # the URL variable from ~/.raven/.env — never secrets.

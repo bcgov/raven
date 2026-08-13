@@ -58,12 +58,21 @@ Examples:
 }
 
 /**
- * Parse a numeric CLI flag value; reject NaN. parseInt("abc", 10) returns
- * NaN and silently flowed through to the orchestrator before, where the
- * later `?? defaults` checks couldn't distinguish "user typed garbage"
- * from "user didn't pass the flag".
+ * Parse a numeric CLI flag value; reject anything that isn't a whole
+ * integer token. parseInt("abc", 10) returns NaN and silently flowed
+ * through to the orchestrator before, where the later `?? defaults` checks
+ * couldn't distinguish "user typed garbage" from "user didn't pass the
+ * flag" — but parseInt also silently accepts a partial match like
+ * "12hours" (parses as 12) or "1.5" (parses as 1), which Number.isFinite
+ * doesn't catch. Requiring the whole trimmed token to be digits closes
+ * that gap.
  */
 function parseIntFlag(name: string, raw: string): number {
+  if (!/^-?\d+$/.test(raw.trim())) {
+    console.error(`Error: --${name} must be an integer (got "${raw}").\n`);
+    printUsage();
+    process.exit(1);
+  }
   const n = parseInt(raw, 10);
   if (!Number.isFinite(n)) {
     console.error(`Error: --${name} must be an integer (got "${raw}").\n`);
