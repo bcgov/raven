@@ -1,50 +1,14 @@
 import { execSync, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
-import { homedir } from "node:os";
+import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { BitbucketClient } from "@nrs/bitbucket-mcp/client";
 import { startSpinner, stopSpinner } from "../spinner.js";
 import type { PipelineContext } from "../types.js";
-
-const CLONE_BASE = join(homedir(), ".raven", "repos");
-
-/**
- * Throw if `repoDir` is not inside CLONE_BASE. Defense-in-depth before any
- * destructive git command (`reset --hard`, `clean -fd`) — protects against
- * a future code path that ever feeds an absolute path computed elsewhere
- * (e.g., a relative ctx.repoPath leaking through) into a `cwd: repoDir`
- * call. Without this guard, a misconfigured run could `git reset --hard`
- * the operator's actual working tree.
- */
-function assertInsideCloneBase(repoDir: string): void {
-  const r = resolve(repoDir);
-  const base = resolve(CLONE_BASE);
-  if (r !== base && !r.startsWith(base + sep)) {
-    throw new Error(
-      `Refusing destructive git operation: repoDir "${repoDir}" is not under CLONE_BASE "${CLONE_BASE}"`,
-    );
-  }
-}
-
-/**
- * Assert a URL is an `https://` URL before passing it as a git argument.
- * Defends against second-order command injection through git's flag
- * parsing — even with execFileSync (no shell), git itself parses argv
- * and would interpret a positional arg starting with `--` as a flag.
- * The exploit is `git clone --upload-pack=evil-cmd`, which makes git
- * run `evil-cmd` on the remote side. Forcing `https://` rules out any
- * `--`-prefixed positional and any non-https scheme.
- *
- * Bitbucket clone URLs from `bitbucketClient.getCloneUrl()` are always
- * `https://...` in this codebase, so the assertion is a no-op in
- * normal use; it's here for static-analysis (CodeQL) data-flow proof
- * and defense-in-depth.
- */
-function assertHttpsUrl(url: string, label: string): void {
-  if (!url.startsWith("https://")) {
-    throw new Error(`Refusing git operation with non-https ${label} URL: ${url.slice(0, 60)}…`);
-  }
-}
+import {
+  ensureRepoClone,
+  detectDefaultBranch,
+  assertInsideCloneBase,
+} from "../repo-clone.js";
 
 /**
  * Step 4: IMPLEMENT — Clone repo, create branch, apply fix, run tests, commit.
@@ -71,57 +35,16 @@ export async function implement(
   // searched on its default branch — applying the app's branch name there
   // would fail, or base the fix on an unrelated same-named branch.
   const sourceBranch = ctx.sourceRepo || ctx.sourceProject ? undefined : ctx.branch;
-  const repoDir = join(CLONE_BASE, project, repo);
-  console.log(`[IMPLEMENT] Target repo: ${project}/${repo}`);
 
-  // Clone or update repo. Use execFileSync (argv form, no shell) for any
-  // call that includes user-derived strings: the auth URL contains the
-  // ATLASSIAN_PASSWORD, branch names come from triage AI output (sanitized
-  // but defense in depth), default branch comes from `git symbolic-ref`
-  // output. No shell metacharacters can affect interpretation when the
-  // arguments are passed as an array.
-  if (!existsSync(join(repoDir, ".git"))) {
-    console.log(`[IMPLEMENT] Cloning ${project}/${repo}...`);
-    const cloneUrl = bitbucketClient.getCloneUrl(project, repo);
-    const authUrl = buildAuthUrl(cloneUrl);
-    assertHttpsUrl(cloneUrl, "clone");
-    assertHttpsUrl(authUrl, "auth");
-    mkdirSync(join(CLONE_BASE, project), { recursive: true });
-    try {
-      startSpinner(`Cloning ${project}/${repo}...`);
-      // `--` terminates option parsing — defense-in-depth even though
-      // assertHttpsUrl already guarantees authUrl can't be parsed as a flag.
-      execFileSync("git", ["clone", "--", authUrl, repoDir], {
-        stdio: "pipe",
-        timeout: 120_000,
-      });
-      stopSpinner();
-    } catch (e) {
-      stopSpinner();
-      // Scrub credentials from error message before re-throwing
-      const msg = (e as Error).message.replace(/\/\/[^@]+@/g, "//***@");
-      throw new Error(`git clone failed for ${project}/${repo}: ${msg}`);
-    }
-    // Replace the stored origin URL with the non-auth version to avoid leaking credentials
-    execFileSync("git", ["remote", "set-url", "origin", cloneUrl], {
-      cwd: repoDir,
-      stdio: "pipe",
-    });
-    // Base the fix on the requested source branch (validated at CLI parse)
-    // rather than the clone's default branch.
-    if (sourceBranch) {
-      console.log(`[IMPLEMENT] Checking out source branch: ${sourceBranch}`);
-      execFileSync("git", ["checkout", sourceBranch], { cwd: repoDir, stdio: "pipe", timeout: 60_000 });
-    }
-  } else {
-    console.log(`[IMPLEMENT] Updating existing clone at ${repoDir}`);
-    // Update the base branch: the requested source branch if given,
-    // otherwise the default branch (main or master).
-    const baseBranch = sourceBranch ?? detectDefaultBranch(repoDir);
-    execFileSync("git", ["fetch", "origin"], { cwd: repoDir, stdio: "pipe", timeout: 60_000 });
-    execFileSync("git", ["checkout", baseBranch], { cwd: repoDir, stdio: "pipe", timeout: 60_000 });
-    execFileSync("git", ["pull", "origin", baseBranch], { cwd: repoDir, stdio: "pipe", timeout: 60_000 });
+  console.log(`[IMPLEMENT] Target repo: ${project}/${repo}`);
+  startSpinner(`Preparing clone of ${project}/${repo}...`);
+  let repoDir: string;
+  try {
+    repoDir = ensureRepoClone(bitbucketClient, project, repo, sourceBranch);
+  } finally {
+    stopSpinner();
   }
+  if (sourceBranch) console.log(`[IMPLEMENT] Base branch: ${sourceBranch}`);
 
   // Create branch
   const ticketLower = ctx.ticketKey.toLowerCase();
@@ -367,29 +290,6 @@ export function shellEscape(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
-/** Detect whether the repo's default branch is main or master. */
-function detectDefaultBranch(repoDir: string): string {
-  try {
-    const ref = execSync("git symbolic-ref refs/remotes/origin/HEAD", {
-      cwd: repoDir,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
-    return ref.replace("refs/remotes/origin/", "");
-  } catch {
-    // Fallback: check if main exists, otherwise master
-    try {
-      execSync("git rev-parse --verify origin/main", {
-        cwd: repoDir,
-        stdio: "pipe",
-      });
-      return "main";
-    } catch {
-      return "master";
-    }
-  }
-}
-
 /**
  * Apply a unified diff by parsing -/+ lines and doing text replacement on files.
  * More robust than git apply for AI-generated patches with whitespace issues.
@@ -624,28 +524,6 @@ function pickBestCandidate(candidates: number[], hunkLineHint: number): number {
     }
   }
   return best;
-}
-
-/**
- * Build an authenticated clone URL by embedding ATLASSIAN credentials.
- * The credentials are read from env vars set by loadEnv().
- */
-function buildAuthUrl(cloneUrl: string): string {
-  const email = process.env["ATLASSIAN_EMAIL"];
-  const password = process.env["ATLASSIAN_PASSWORD"];
-  if (!email || !password) return cloneUrl;
-
-  try {
-    const url = new URL(cloneUrl);
-    // URL.username / URL.password setters already percent-encode reserved
-    // characters. Pre-encoding here would double-encode an email username
-    // (e.g., user@example.com → user%2540example.com) and break git clone.
-    url.username = email;
-    url.password = password;
-    return url.toString();
-  } catch {
-    return cloneUrl;
-  }
 }
 
 export function inferRepoSlug(component: string): string {
