@@ -7,34 +7,15 @@
  */
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { loadEnvVar } from "@nrs/auth";
 import { logger } from "./logger.js";
 
 const execAsync = promisify(exec);
 
 const BIN_DIR =
   process.env["SERVER_TOOLS_BIN"] ?? join(homedir(), "bin");
-
-/**
- * Load a named variable from ~/.raven/.env.
- * Returns undefined if the file doesn't exist or the variable isn't found.
- */
-function loadEnvVar(name: string): string | undefined {
-  const fromEnv = process.env[name];
-  if (fromEnv) return fromEnv;
-
-  try {
-    const envPath = join(homedir(), ".raven", ".env");
-    const content = readFileSync(envPath, "utf-8");
-    const re = new RegExp(`^${name}=(.+)$`, "m");
-    const match = content.match(re);
-    return match?.[1]?.trim().replace(/^["']|["']$/g, "");
-  } catch {
-    return undefined;
-  }
-}
 
 /**
  * Load _A account password for SSH and sudo.

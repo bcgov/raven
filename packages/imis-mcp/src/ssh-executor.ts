@@ -1,10 +1,9 @@
 import { Client, type ConnectConfig } from "ssh2";
 import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { homedir, userInfo } from "node:os";
+import { userInfo } from "node:os";
 import { isIP } from "node:net";
 import type { SshResult } from "./types.js";
-import { wrapSshExecWithLimits, sshLimiterOpts } from "@nrs/auth";
+import { wrapSshExecWithLimits, sshLimiterOpts, loadEnvVar } from "@nrs/auth";
 
 /** Read-only command allowlist — matches server-common.sh plus rpm and mount. */
 const ALLOWED_COMMANDS = new Set([
@@ -54,22 +53,6 @@ export function sanitizePath(path: string): string {
     throw new Error("Path contains invalid characters");
   }
   return path;
-}
-
-/** Load a named variable from ~/.raven/.env (same logic as server-mcp). */
-function loadEnvVar(name: string): string | undefined {
-  const fromEnv = process.env[name];
-  if (fromEnv) return fromEnv;
-
-  try {
-    const envPath = join(homedir(), ".raven", ".env");
-    const content = readFileSync(envPath, "utf-8");
-    const re = new RegExp(`^${name}=(.+)$`, "m");
-    const match = content.match(re);
-    return match?.[1]?.trim().replace(/^["']|["']$/g, "");
-  } catch {
-    return undefined;
-  }
 }
 
 /** Shell-escape a single argument (wrap in single quotes). */

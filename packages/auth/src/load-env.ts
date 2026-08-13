@@ -1,7 +1,7 @@
-import { config } from "dotenv";
+import { config, parse } from "dotenv";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
 /**
@@ -24,11 +24,73 @@ export function loadEnv(): void {
   }
 
   // 2. Fall back to plain-text .env (values already set are NOT overwritten).
+  const envPath = join(homedir(), ".raven", ".env");
   config({
-    path: join(homedir(), ".raven", ".env"),
+    path: envPath,
     override: false, // don't clobber existing env vars
     quiet: true, // suppress stdout banner — required for MCP stdio transport
   });
+  warnUnquotedHashes(envPath);
+}
+
+/**
+ * Read a single variable with dotenv semantics: process.env wins, otherwise
+ * the value comes from the given .env file (default ~/.raven/.env). Quoted
+ * and unquoted values are both accepted; quotes are stripped only when they
+ * wrap the whole value.
+ *
+ * Returns undefined when the variable is unset, empty, or the file is
+ * missing/unreadable.
+ */
+export function loadEnvVar(
+  name: string,
+  envPath = join(homedir(), ".raven", ".env"),
+): string | undefined {
+  const fromEnv = process.env[name];
+  if (fromEnv) return fromEnv;
+  try {
+    return parse(readFileSync(envPath, "utf-8"))[name] || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Find keys whose unquoted value contains a '#' glued to surrounding text.
+ * dotenv treats an unquoted '#' as the start of an inline comment, so such
+ * values are silently truncated — a common cause of broken authentication
+ * when a password contains '#'. Values wrapped in quotes are safe, and a
+ * '#' preceded by whitespace is assumed to be an intentional comment.
+ */
+export function findUnquotedHashKeys(content: string): string[] {
+  const keys: string[] = [];
+  for (const line of content.split(/\r?\n/)) {
+    const m = line.match(/^\s*(?:export\s+)?([\w.-]+)\s*=\s*(.*)$/);
+    if (!m) continue;
+    const rawValue = m[2];
+    if (!rawValue || /^["'`]/.test(rawValue)) continue;
+    if (/(^|\S)#/.test(rawValue)) keys.push(m[1]!);
+  }
+  return keys;
+}
+
+/**
+ * Warn (on stderr — stdout is reserved for the MCP stdio transport) about
+ * values that dotenv will silently truncate at an unquoted '#'.
+ */
+function warnUnquotedHashes(envPath: string): void {
+  try {
+    const content = readFileSync(envPath, "utf-8");
+    for (const key of findUnquotedHashKeys(content)) {
+      console.error(
+        `[raven] Warning: the value of ${key} in ${envPath} contains an unquoted '#'. ` +
+          `Everything from the '#' on is treated as a comment and dropped, which can break authentication. ` +
+          `If the '#' is part of the value, wrap the whole value in double quotes.`,
+      );
+    }
+  } catch {
+    // File missing or unreadable — nothing to warn about.
+  }
 }
 
 /**

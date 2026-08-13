@@ -1,29 +1,14 @@
 import { Client, type ConnectConfig } from "ssh2";
 import type { Readable } from "node:stream";
 import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
 import { isIP } from "node:net";
 import type { ServerEntry } from "@nrs/auth";
-import { wrapSshExecWithLimits, sshLimiterOpts } from "@nrs/auth";
+import { wrapSshExecWithLimits, sshLimiterOpts, loadEnvVar } from "@nrs/auth";
 
 export interface SshResult {
   stdout: string;
   stderr: string;
   exitCode: number;
-}
-
-/** Load a named variable from ~/.raven/.env */
-function loadEnvVar(name: string): string | undefined {
-  const fromEnv = process.env[name];
-  if (fromEnv) return fromEnv;
-  try {
-    const content = readFileSync(join(homedir(), ".raven", ".env"), "utf-8");
-    const match = content.match(new RegExp(`^${name}=(.+)$`, "m"));
-    return match?.[1]?.trim().replace(/^["']|["']$/g, "");
-  } catch {
-    return undefined;
-  }
 }
 
 /** Shell-escape a single argument (wrap in single quotes). */
