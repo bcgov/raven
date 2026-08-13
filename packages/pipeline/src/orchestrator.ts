@@ -22,9 +22,8 @@ import { extractFromTicket } from "./steps/extract-from-ticket.js";
  * Run the full 6-step autonomous DevOps pipeline.
  */
 export async function runPipeline(args: CliArgs, processedDedupeKeys?: Set<string>): Promise<PipelineResult> {
-  // Bootstrap environment and auth. Scrub default must be applied before
-  // loadEnv() so a global RAVEN_SCRUB_PI=false in ~/.raven/.env cannot
-  // disable scrubbing for pipeline runs (only an explicit shell var can).
+  // Bootstrap environment and auth. Scrubbing is pinned on unconditionally
+  // for pipeline processes — no environment value can disable it (FOIPPA).
   applyPipelineScrubDefault();
   loadEnv();
 
@@ -130,18 +129,10 @@ export async function runPipeline(args: CliArgs, processedDedupeKeys?: Set<strin
   ].filter(Boolean).join(", ");
   console.log(`[RAVEN] Mode: ${flags}`);
 
-  // PI scrubber visibility — every prompt that goes to the LLM passes
-  // through PiScrubber from @nrs/auth. The pipeline forces scrubbing on
-  // regardless of ~/.raven/.env (see applyPipelineScrubDefault); only an
-  // explicit RAVEN_SCRUB_PI=false in the shell disables it. Surface the
-  // actual state at run start so an operator can never accidentally ship
-  // raw PII to GitHub Copilot without realizing the scrubber is off.
-  const scrubEnabled = process.env["RAVEN_SCRUB_PI"] !== "false" && process.env["RAVEN_SCRUB_PI"] !== "0";
-  if (scrubEnabled) {
-    console.log(`[RAVEN] PI scrubbing: ENABLED (FOIPPA-compliant — PII stripped from all LLM prompts)`);
-  } else {
-    console.warn(`[RAVEN] PI scrubbing: DISABLED by shell override (RAVEN_SCRUB_PI=${process.env["RAVEN_SCRUB_PI"]}). Raw ticket text and stack traces will be sent to the LLM. Confirm this is intentional.`);
-  }
+  // Every prompt that goes to the LLM passes through PiScrubber from
+  // @nrs/auth, and the pipeline pins RAVEN_SCRUB_PI=true unconditionally
+  // (see applyPipelineScrubDefault) — there is no opt-out (FOIPPA).
+  console.log(`[RAVEN] PI scrubbing: ENABLED (FOIPPA-compliant — PII stripped from all LLM prompts)`);
   console.log("");
 
   const verbose = args.verbose ?? false;

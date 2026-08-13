@@ -52,7 +52,7 @@ raven-pipeline --server <server> --app <APP> --component <component> [options]
 | `--bitbucket-project` | Bitbucket project key | `NRS` |
 | `--bitbucket-repo` | Bitbucket repo slug (if non-standard) | inferred from component |
 | `--branch` | Source branch to plan against and target the PR at — use when the deployed build comes from a feature/release branch rather than the repo default | repo default branch |
-| `--cooldown-hours` | Don't re-triage an error signature seen within the last N hours (0 disables; max 720, since the store prunes entries after 30 days). Prevents scheduled runs from re-commenting on known errors; state in `~/.raven/processed-errors.json` | `168` |
+| `--cooldown-hours` | Don't re-triage an error signature seen within the last N hours (0 disables; max 720, since the store prunes entries after 30 days). Prevents scheduled runs from re-commenting on known errors; per-target state files in `~/.raven/processed-errors/` | `168` |
 | `--model` | AI model to use | `claude-sonnet-4.6` |
 
 ### Pipeline Control
@@ -224,8 +224,8 @@ In `--dry-run` mode, the pipeline stops after PLAN (step 3). No tickets, branche
 | `Tests failed` | Fix is applied but tests didn't pass. Branch is preserved for manual review — no PR is created. |
 | `Saved state exists for this app/component` notice | Informational — pipeline is starting fresh (saved state will be overwritten). Pass `--resume` to pick up where the previous run left off, or `--fresh` to silence the notice. To clear state entirely: `rm -f ~/.raven/runs/<APP>-<component>-*.json` |
 | Copilot SDK auth failure | Run `gh auth login` to refresh GitHub CLI authentication |
-| `PI scrubbing: DISABLED` warning | Only possible via an explicit `RAVEN_SCRUB_PI=false` in the shell for this invocation — the pipeline ignores a global `false` in `~/.raven/.env` and defaults scrubbing on. Unset the shell variable to re-enable. |
-| Known error skipped / not re-detected | It's in the triage cooldown (`Skipped N error(s) in triage cooldown` in the log). Re-run with `--cooldown-hours 0`, or delete `~/.raven/processed-errors.json`. |
+| Need to disable PI scrubbing for a pipeline run | Not possible — the pipeline pins `RAVEN_SCRUB_PI=true` unconditionally (FOIPPA). The global variable in `~/.raven/.env` still controls other RAVEN tools. |
+| Known error skipped / not re-detected | It's in the triage cooldown (`Skipped N error(s) in triage cooldown` in the log). Re-run with `--cooldown-hours 0`, or delete the target's file under `~/.raven/processed-errors/`. |
 
 ---
 

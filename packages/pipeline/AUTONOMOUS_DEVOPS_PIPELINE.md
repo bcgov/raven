@@ -32,7 +32,7 @@ All AI calls go through `ai-client.ts`, which wraps the `@github/copilot-sdk`:
 
 - **Authentication**: Uses the developer's GitHub Copilot license (via `gh` CLI auth)
 - **Default model**: `claude-sonnet-4.6` (configurable via `--model`)
-- **PI scrubbing**: All prompts are scrubbed for personal information (names, emails, IDIRs, SINs) via `@nrs/auth` PiScrubber before being sent to the API — FOIPPA compliance. The pipeline forces `RAVEN_SCRUB_PI=true` in its own process before loading `~/.raven/.env`, so a global `RAVEN_SCRUB_PI=false` (used by other RAVEN tools) never disables scrubbing here; only an explicit `RAVEN_SCRUB_PI=false` in the shell for a single invocation does
+- **PI scrubbing**: All prompts are scrubbed for personal information (names, emails, IDIRs, SINs) via `@nrs/auth` PiScrubber before being sent to the API — FOIPPA compliance. The pipeline pins `RAVEN_SCRUB_PI=true` in its own process unconditionally: neither a global `RAVEN_SCRUB_PI=false` in `~/.raven/.env` (still honored by other RAVEN tools) nor a shell variable can disable scrubbing for pipeline runs
 - **Session lifecycle**: Each AI call creates a fresh Copilot session with no built-in tools (text-only responses), then destroys it
 - **Timeout**: 120 seconds per AI call
 
@@ -70,7 +70,7 @@ AI-analyzes the top error and checks Jira for duplicates.
 - Sends the stack trace to the Copilot SDK for root cause analysis (severity, summary, suggested ticket title)
 - Searches Jira for existing tickets matching the error (last 90 days, open status)
 - If duplicate found: adds a "seen again" comment to the existing ticket, tries the next error
-- Every live triage action (ticket created or seen-again comment) is recorded in `~/.raven/processed-errors.json`, keyed by server/app/component + error signature; errors seen within the cooldown window (default 168h, `--cooldown-hours`, 0 disables) are skipped at DETECT so scheduled fresh runs don't re-comment on known errors
+- Every live triage action (ticket created or seen-again comment) is recorded in a per-target store file under `~/.raven/processed-errors/` (one file per server/app/component, atomic writes — concurrent per-target scheduled jobs can't clobber each other); errors seen within the cooldown window (default 168h, `--cooldown-hours`, 0 disables) are skipped at DETECT so scheduled fresh runs don't re-comment on known errors
 - If all errors are duplicates: stops the pipeline (nothing new to fix)
 - If new error found: checks for resolved historical tickets (regression detection)
 - Creates a new Jira Bug ticket with: error details, root cause analysis, stack trace, severity, `raven-pipeline` + `auto-detected` labels

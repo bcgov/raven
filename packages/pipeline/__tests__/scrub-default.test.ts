@@ -2,9 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // applyPipelineScrubDefault (scrub-default.ts)
-// The pipeline must default PI scrubbing ON regardless of what ~/.raven/.env
-// says (loadEnv uses override:false, so a value already in process.env wins),
-// while an explicit shell override for a single invocation is still honored.
+// Pipeline prompts always go to an external LLM, so PI scrubbing is forced
+// unconditionally — there is no opt-out, not even an explicit shell
+// RAVEN_SCRUB_PI=false (FOIPPA). Other RAVEN tools still honor the global
+// variable; only this process pins it.
 // ---------------------------------------------------------------------------
 
 import { applyPipelineScrubDefault } from "../src/scrub-default.js";
@@ -32,16 +33,16 @@ describe("applyPipelineScrubDefault", () => {
     expect(process.env["RAVEN_SCRUB_PI"]).toBe("true");
   });
 
-  it("preserves an explicit shell opt-out of false", () => {
+  it("overrides an explicit false — there is no scrub opt-out", () => {
     process.env["RAVEN_SCRUB_PI"] = "false";
     applyPipelineScrubDefault();
-    expect(process.env["RAVEN_SCRUB_PI"]).toBe("false");
+    expect(process.env["RAVEN_SCRUB_PI"]).toBe("true");
   });
 
-  it("preserves an explicit shell opt-out of 0", () => {
+  it("overrides an explicit 0", () => {
     process.env["RAVEN_SCRUB_PI"] = "0";
     applyPipelineScrubDefault();
-    expect(process.env["RAVEN_SCRUB_PI"]).toBe("0");
+    expect(process.env["RAVEN_SCRUB_PI"]).toBe("true");
   });
 
   it("leaves an explicit true untouched", () => {

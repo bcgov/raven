@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -7,8 +7,10 @@ import { tmpdir } from "node:os";
 // processed-errors store (processed-errors.ts)
 // Scheduled fresh runs must not re-triage (and re-comment on) the same error
 // every interval: dedupe keys are persisted across runs with a cooldown.
-// Keys are scoped by server/app/component so a cooldown in one environment
-// never hides the same error surfacing in another.
+// Each server/app/component target gets its OWN store file — per-target
+// LaunchAgents run concurrently (launchd only serializes same-label jobs),
+// and a shared file's read-modify-write would let one target's save drop
+// another's fresh entry.
 // ---------------------------------------------------------------------------
 
 import {
@@ -17,10 +19,12 @@ import {
   markProcessed,
   isInCooldown,
   filterByCooldown,
-  scopedKey,
+  storePathFor,
   DEFAULT_COOLDOWN_HOURS,
   MAX_COOLDOWN_HOURS,
 } from "../src/processed-errors.js";
+
+const HOUR = 3600_000;
 
 // The CLI caps --cooldown-hours at MAX_COOLDOWN_HOURS because save() prunes
 // entries after 30 days — a longer cooldown would be silently shortened.
@@ -31,38 +35,53 @@ describe("cooldown bounds", () => {
   });
 });
 
-const HOUR = 3600_000;
-
 describe("processed-errors store", () => {
   let dir: string;
   let path: string;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "raven-processed-"));
-    path = join(dir, "processed-errors.json");
+    path = join(dir, "test01__DMS__dms-document-api.json");
   });
 
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("scopes keys by server, app, and component", () => {
-    expect(scopedKey("test01", "DMS", "dms-document-api", "E::frame")).not.toBe(
-      scopedKey("prod01", "DMS", "dms-document-api", "E::frame"),
-    );
+  it("gives each server/app/component target its own store file", () => {
+    const a = storePathFor("test01", "DMS", "dms-document-api", dir);
+    const b = storePathFor("prod01", "DMS", "dms-document-api", dir);
+    const c = storePathFor("test01", "SOS", "cwm-sos-api", dir);
+    expect(new Set([a, b, c]).size).toBe(3);
+    for (const p of [a, b, c]) expect(p.startsWith(dir)).toBe(true);
+  });
+
+  it("sanitizes unexpected characters out of store filenames", () => {
+    const p = storePathFor("srv", "APP", "comp/../oops", dir);
+    expect(p.startsWith(dir)).toBe(true);
+    expect(p).not.toContain("..");
   });
 
   it("round-trips mark and load with ticket key", () => {
-    markProcessed("k1", "DMS-364", path);
+    markProcessed("E::frame", "DMS-364", path);
     const store = loadProcessedErrors(path);
-    expect(store["k1"]?.ticketKey).toBe("DMS-364");
-    expect(Date.parse(store["k1"]!.lastSeen)).toBeGreaterThan(0);
+    expect(store["E::frame"]?.ticketKey).toBe("DMS-364");
+    expect(Date.parse(store["E::frame"]!.lastSeen)).toBeGreaterThan(0);
   });
 
   it("returns an empty store for a missing or corrupt file", () => {
     expect(loadProcessedErrors(path)).toEqual({});
     writeFileSync(path, "not json{");
     expect(loadProcessedErrors(path)).toEqual({});
+  });
+
+  it("writes atomically — no partial temp files left behind", () => {
+    markProcessed("k1", undefined, path);
+    markProcessed("k2", "DMS-1", path);
+    const files = readdirSync(dir);
+    expect(files).toEqual(["test01__DMS__dms-document-api.json"]);
+    const store = loadProcessedErrors(path);
+    expect(Object.keys(store).sort()).toEqual(["k1", "k2"]);
   });
 
   it("is in cooldown within the window and out of it after", () => {
@@ -80,6 +99,7 @@ describe("processed-errors store", () => {
 
   it("prunes entries older than 30 days on save", () => {
     const now = Date.now();
+    mkdirSync(dir, { recursive: true });
     saveProcessedErrors(
       {
         old: { lastSeen: new Date(now - 40 * 24 * HOUR).toISOString() },
@@ -92,14 +112,10 @@ describe("processed-errors store", () => {
     expect(store["fresh"]).toBeDefined();
   });
 
-  it("filterByCooldown splits kept and skipped by scoped key", () => {
+  it("filterByCooldown splits kept and skipped for the target's own store", () => {
     const now = Date.now();
     const target = { server: "test01", app: "DMS", component: "dms-document-api" };
-    const store = {
-      [scopedKey(target.server, target.app, target.component, "seen::frame")]: {
-        lastSeen: new Date(now - HOUR).toISOString(),
-      },
-    };
+    markProcessed("seen::frame", "DMS-364", storePathFor(target.server, target.app, target.component, dir));
     const errors = [
       { dedupeKey: "seen::frame", message: "known" },
       { dedupeKey: "new::frame", message: "new" },
@@ -107,26 +123,22 @@ describe("processed-errors store", () => {
     const { kept, skipped } = filterByCooldown(errors, {
       ...target,
       cooldownHours: DEFAULT_COOLDOWN_HOURS,
-      store,
+      baseDir: dir,
       now,
     });
     expect(kept.map((e) => e.message)).toEqual(["new"]);
     expect(skipped.map((e) => e.message)).toEqual(["known"]);
   });
 
-  it("filterByCooldown keeps everything when the same error is from another target", () => {
+  it("marks in one target never suppress the same signature in another target", () => {
     const now = Date.now();
-    const store = {
-      [scopedKey("test01", "DMS", "dms-document-api", "seen::frame")]: {
-        lastSeen: new Date(now - HOUR).toISOString(),
-      },
-    };
+    markProcessed("seen::frame", "DMS-364", storePathFor("test01", "DMS", "dms-document-api", dir));
     const { kept } = filterByCooldown([{ dedupeKey: "seen::frame" }], {
       server: "prod01",
       app: "DMS",
       component: "dms-document-api",
       cooldownHours: DEFAULT_COOLDOWN_HOURS,
-      store,
+      baseDir: dir,
       now,
     });
     expect(kept).toHaveLength(1);
