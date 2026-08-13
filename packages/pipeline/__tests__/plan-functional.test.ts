@@ -6,6 +6,7 @@ import { execFileSync } from "node:child_process";
 import {
   rankCandidateFiles,
   patchIncludesTests,
+  nonTestNewFiles,
   FunctionalPlanError,
   understandTicket,
   gitGrepFiles,
@@ -89,6 +90,24 @@ describe("patchIncludesTests", () => {
   it("rejects a patch with no test files", () => {
     const patch = `--- a/src/main/java/Foo.java\n+++ b/src/main/java/Foo.java\n${body}`;
     expect(patchIncludesTests(patch)).toBe(false);
+  });
+});
+
+describe("nonTestNewFiles", () => {
+  const sourceFiles = [{ path: "src/main/java/AgreementPartyBean.java" }];
+
+  it("returns [] for a patch modifying a read file and adding a test file", () => {
+    const patch =
+      "--- a/src/main/java/AgreementPartyBean.java\n+++ b/src/main/java/AgreementPartyBean.java\n@@ -1,1 +1,1 @@\n-a\n+b\n" +
+      "--- /dev/null\n+++ b/src/test/java/AgreementPartyBeanTest.java\n@@ -0,0 +1,1 @@\n+t";
+    expect(nonTestNewFiles(patch, sourceFiles)).toEqual([]);
+  });
+
+  it("returns the offending path for a patch adding a new non-test file", () => {
+    const patch =
+      "--- a/src/main/java/AgreementPartyBean.java\n+++ b/src/main/java/AgreementPartyBean.java\n@@ -1,1 +1,1 @@\n-a\n+b\n" +
+      "--- /dev/null\n+++ b/.github/workflows/ci.yml\n@@ -0,0 +1,1 @@\n+name: ci";
+    expect(nonTestNewFiles(patch, sourceFiles)).toEqual([".github/workflows/ci.yml"]);
   });
 });
 
@@ -188,6 +207,26 @@ describe("gitGrepFiles / locateSourceFiles", () => {
     }
   });
 
+  it("matches a term with regex metacharacters literally (fixed-string search)", () => {
+    const dir = makeRepo();
+    try {
+      mkdirSync(join(dir, "src/main/java"), { recursive: true });
+      writeFileSync(
+        join(dir, "src/main/java/RateInfo.java"),
+        'public class RateInfo { String label = "Rate [%]"; }',
+      );
+      execFileSync("git", ["add", "-A"], { cwd: dir });
+      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "add rate"], { cwd: dir });
+      // As a regex, "Rate [%]" would look for "Rate " followed by a single
+      // "%" character — it would NOT match the literal text "Rate [%]".
+      // With -F (fixed-string) the term is matched byte-for-byte.
+      const hits = gitGrepFiles(dir, [{ term: "Rate [%]", kind: "label", weight: 3 }]);
+      expect([...hits.keys()]).toContain("src/main/java/RateInfo.java");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("locateSourceFiles reads ranked source files and skips non-source hits", () => {
     const dir = makeRepo();
     try {
@@ -258,6 +297,16 @@ describe("planFunctional", () => {
     const noTests = "--- a/src/main/java/AgreementPartyBean.java\n+++ b/src/main/java/AgreementPartyBean.java\n@@ -1,1 +1,1 @@\n-a\n+b";
     await expect(planFunctional(ctx, {} as never, makeDeps(`${PLAN_JSON}\n\n${noTests}`) as never))
       .rejects.toMatchObject({ category: "no-tests" });
+  });
+
+  it("rejects a patch that adds a new non-test file alongside a legit test file (CI workflow smuggling guard)", async () => {
+    const ctx = makeCtx();
+    const smuggled =
+      "--- a/src/main/java/AgreementPartyBean.java\n+++ b/src/main/java/AgreementPartyBean.java\n@@ -1,1 +1,1 @@\n-a\n+b\n" +
+      "--- /dev/null\n+++ b/src/test/java/AgreementPartyBeanTest.java\n@@ -0,0 +1,1 @@\n+t\n" +
+      "--- /dev/null\n+++ b/.github/workflows/ci.yml\n@@ -0,0 +1,1 @@\n+name: ci";
+    await expect(planFunctional(ctx, {} as never, makeDeps(`${PLAN_JSON}\n\n${smuggled}`) as never))
+      .rejects.toMatchObject({ category: "declined" });
   });
 
   it("discards a patch touching files that were never read", async () => {

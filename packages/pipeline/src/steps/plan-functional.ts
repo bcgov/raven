@@ -76,6 +76,24 @@ export function patchIncludesTests(patch: string): boolean {
   return files.some((f) => TEST_PATH.test(f) || TEST_FILE.test(f));
 }
 
+/**
+ * Files a patch touches (`+++ b/<path>`) that are neither a source file
+ * shown to the AI nor a test file. The prompt asks for TEST files only when
+ * adding new files; this enforces that contract in code so a response can't
+ * smuggle an arbitrary new file (e.g., a CI workflow) into the PR.
+ */
+export function nonTestNewFiles(
+  patch: string,
+  sourceFiles: Array<{ path: string }>,
+): string[] {
+  const targets = [...patch.matchAll(/^\+\+\+\s+b\/(.+)$/gm)].map((m) => m[1]!.trim());
+  return targets.filter((t) => {
+    const isKnownSource = sourceFiles.some((sf) => t.endsWith(sf.path) || sf.path.endsWith(t));
+    const isTest = TEST_PATH.test(t) || TEST_FILE.test(t);
+    return !isKnownSource && !isTest;
+  });
+}
+
 const UNDERSTAND_SYSTEM_PROMPT = `You are analyzing a Jira bug ticket that has NO error stack trace, to prepare a code search.
 Respond with ONLY a single-line JSON object:
 {"searchTerms":[{"term":"...","kind":"label|entity|identifier","weight":1-3}],"buggyBehavior":"...","expectedBehavior":"...","confidence":"high|medium|low","missingInfo":["..."]}
@@ -123,11 +141,14 @@ export function gitGrepFiles(repoDir: string, terms: SearchTerm[]): Map<string, 
   for (const t of terms) {
     let out = "";
     try {
-      // -I skips binary files; git grep exits 1 on zero matches — not an error.
-      out = execFileSync("git", ["grep", "-i", "-l", "-I", "-e", t.term], {
-        cwd: repoDir, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"],
+      // -I skips binary files; -F treats the term as a literal fixed string
+      // (terms are plain labels/identifiers, not regexes); git grep exits 1
+      // on zero matches — not an error.
+      out = execFileSync("git", ["grep", "-i", "-l", "-I", "-F", "-e", t.term], {
+        cwd: repoDir, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 15_000,
       });
     } catch {
+      console.warn(`[PLAN] git grep failed for term "${t.term}" — skipping`);
       continue;
     }
     for (const file of out.split("\n").map((l) => l.trim()).filter(Boolean)) {
@@ -271,6 +292,13 @@ export async function planFunctional(
   }
   if (!patchIncludesTests(fixedPatch)) {
     throw new FunctionalPlanError("no-tests", "plan discarded — no tests in patch");
+  }
+  const offendingNewFiles = nonTestNewFiles(fixedPatch, sourceFiles);
+  if (offendingNewFiles.length > 0) {
+    throw new FunctionalPlanError(
+      "declined",
+      `patch adds non-test file not shown to the AI: ${offendingNewFiles.join(", ")}`,
+    );
   }
 
   ctx.fixPlan = {

@@ -168,7 +168,7 @@ describe("selectErrorMatchingTicket", () => {
 // Prevents command injection in git commit messages.
 // ---------------------------------------------------------------------------
 
-import { shellEscape, inferRepoSlug, applyPatchByReplacement } from "../src/steps/implement.js";
+import { shellEscape, inferRepoSlug, applyPatchByReplacement, missingNewFiles } from "../src/steps/implement.js";
 
 describe("shellEscape", () => {
   it("prevents command injection via single quote breakout", () => {
@@ -385,6 +385,64 @@ describe("applyPatchByReplacement", () => {
     expect(content).toContain("log.info(\"starting work\")");
     expect(content).toContain("validate()");
     expect(content).toContain("process()"); // rest of file preserved
+  });
+});
+
+// ---------------------------------------------------------------------------
+// missingNewFiles (implement.ts)
+// The line-level fallback applier can't create files, so a partial apply can
+// silently drop a patch's new files — including mandated tests. This helper
+// detects that gap by diffing the patch's /dev/null-sourced new files
+// against what actually exists on disk.
+// ---------------------------------------------------------------------------
+
+describe("missingNewFiles", () => {
+  let testDir: string;
+
+  beforeEach(() => {
+    testDir = join(tmpdir(), `raven-test-missing-${Date.now()}`);
+    mkdirSync(testDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it("returns the new-file path when the patch's new file is absent from disk", () => {
+    const patch = [
+      "--- /dev/null",
+      "+++ b/src/test/java/FooTest.java",
+      "@@ -0,0 +1,1 @@",
+      "+public class FooTest {}",
+    ].join("\n");
+
+    expect(missingNewFiles(patch, testDir)).toEqual(["src/test/java/FooTest.java"]);
+  });
+
+  it("returns an empty array when the new file already exists on disk", () => {
+    mkdirSync(join(testDir, "src/test/java"), { recursive: true });
+    writeFileSync(join(testDir, "src/test/java/FooTest.java"), "public class FooTest {}");
+
+    const patch = [
+      "--- /dev/null",
+      "+++ b/src/test/java/FooTest.java",
+      "@@ -0,0 +1,1 @@",
+      "+public class FooTest {}",
+    ].join("\n");
+
+    expect(missingNewFiles(patch, testDir)).toEqual([]);
+  });
+
+  it("ignores modified-file hunks (--- a/) even when the target is missing", () => {
+    const patch = [
+      "--- a/src/main/java/Foo.java",
+      "+++ b/src/main/java/Foo.java",
+      "@@ -1,1 +1,1 @@",
+      "-a",
+      "+b",
+    ].join("\n");
+
+    expect(missingNewFiles(patch, testDir)).toEqual([]);
   });
 });
 

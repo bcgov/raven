@@ -97,6 +97,7 @@ export async function implement(
   writeFileSync(patchPath, ctx.fixPlan.patch);
 
   let patchApplied = false;
+  let usedFallbackApplier = false;
   try {
     // Strategy 1: git apply (strict, then fuzzy). Pass extra args as
     // separate array elements (no shell). The literal flag strings are
@@ -112,13 +113,26 @@ export async function implement(
       } catch { /* try next */ }
     }
 
-    // Strategy 2: Parse the diff and apply changes as text replacements
+    // Strategy 2: Parse the diff and apply changes as text replacements.
+    // Unlike git apply, this parser cannot create new files (its parser
+    // only recognizes --- a/ headers), so a patch that both modifies an
+    // existing file and creates a new one (e.g., the mandated test file)
+    // can silently apply only the modification.
     if (!patchApplied) {
       console.log(`[IMPLEMENT] git apply failed — trying line-level replacement`);
       patchApplied = applyPatchByReplacement(repoDir, ctx.fixPlan.patch);
+      usedFallbackApplier = patchApplied;
     }
 
     if (!patchApplied) throw new Error("Could not apply patch");
+
+    if (usedFallbackApplier) {
+      const missing = missingNewFiles(ctx.fixPlan.patch, repoDir);
+      if (missing.length > 0) {
+        console.log(`[IMPLEMENT] Fallback apply dropped new file(s): ${missing.join(", ")}`);
+        throw new Error("Patch fallback could not create new files");
+      }
+    }
   } catch (error) {
     console.log(`[IMPLEMENT] Patch failed to apply: ${(error as Error).message}`);
     const defBranch = sourceBranch ?? detectDefaultBranch(repoDir);
@@ -288,6 +302,27 @@ function runTests(repoDir: string): boolean {
  */
 export function shellEscape(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+/**
+ * Paths a patch creates (source side /dev/null) that are missing on disk.
+ * The line-level fallback applier cannot create files, so a partial apply
+ * can silently drop a patch's new files — the mandated tests included.
+ */
+export function missingNewFiles(patch: string, repoDir: string): string[] {
+  const missing: string[] = [];
+  const lines = patch.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^---\s+\/dev\/null\s*$/.test(lines[i]!)) continue;
+    const next = lines[i + 1];
+    const match = next?.match(/^\+\+\+\s+b\/(.+)$/);
+    if (!match) continue;
+    const newPath = match[1]!.trim();
+    if (!existsSync(join(repoDir, newPath))) {
+      missing.push(newPath);
+    }
+  }
+  return missing;
 }
 
 /**
