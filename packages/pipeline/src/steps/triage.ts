@@ -2,6 +2,7 @@ import type { JiraClient } from "@nrs/jira-mcp/client";
 import { askAI } from "../ai-client.js";
 import { startSpinner, stopSpinner } from "../spinner.js";
 import type { ErrorInfo, PipelineContext, TriageResult } from "../types.js";
+import { createHash } from "node:crypto";
 import { markProcessed, storePathFor } from "../processed-errors.js";
 
 /**
@@ -15,6 +16,33 @@ import { markProcessed, storePathFor } from "../processed-errors.js";
  */
 export function buildDuplicateJql(project: string, keyword: string): string {
   return `project = ${project} AND text ~ "${keyword}" AND status NOT IN (Done, Closed, Resolved) ORDER BY created DESC`;
+}
+
+/**
+ * Stable label identifying the defect a pipeline-created ticket tracks.
+ *
+ * Keyword search alone cannot reliably find the pipeline's own earlier
+ * tickets: the keyword is derived from whatever the log line and stack trace
+ * looked like at the time, and that drifts between releases (a real miss:
+ * one run keyed on the logger class, an earlier ticket for the same defect
+ * recorded only the exception type). The fingerprint is derived from the
+ * error signature instead, so it survives that drift.
+ *
+ * Deliberately excludes the server: the cooldown store is per-environment
+ * (suppression windows are), but one defect seen in TEST and PROD is still
+ * one bug and belongs on one ticket.
+ */
+export function ticketFingerprint(app: string, component: string, dedupeKey: string): string {
+  const digest = createHash("sha256")
+    .update(`${app}|${component}|${dedupeKey}`)
+    .digest("hex")
+    .slice(0, 10);
+  return `raven-fp-${digest}`;
+}
+
+/** Exact-match duplicate search over the fingerprint label. */
+export function buildFingerprintJql(project: string, fingerprint: string): string {
+  return `project = ${project} AND labels = "${fingerprint}" AND status NOT IN (Done, Closed, Resolved) ORDER BY created DESC`;
 }
 
 const TRIAGE_SYSTEM_PROMPT = `You are a senior Java developer triaging production errors for BC Government applications.
@@ -73,15 +101,24 @@ export async function triage(
       console.log(`[TRIAGE] Root cause: ${triageResult.rootCause.slice(0, 200)}`);
     }
 
-    // Search for existing Jira tickets
+    // Search for existing Jira tickets. The fingerprint label is exact and
+    // survives log-text drift, so it is tried first; the keyword search then
+    // covers tickets raised by people (which carry no fingerprint).
     const keyword = extractKeyword(currentError.message, currentError.stackTrace);
-    const jql = buildDuplicateJql(ctx.jiraProject, keyword);
-    console.log(`[TRIAGE] Searching Jira: ${jql}`);
+    const fingerprint = ticketFingerprint(ctx.app, ctx.component, currentError.dedupeKey);
 
     let searchResults: { issues: Array<{ key: string; fields: { summary: string; status: { name: string }; created: string } }>; total: number };
     try {
       startSpinner("Searching Jira for duplicates...");
-      searchResults = await jiraClient.searchIssues(jql, 5);
+      console.log(`[TRIAGE] Searching Jira by fingerprint: ${fingerprint}`);
+      searchResults = await jiraClient.searchIssues(
+        buildFingerprintJql(ctx.jiraProject, fingerprint), 5
+      );
+      if (searchResults.issues.length === 0) {
+        const jql = buildDuplicateJql(ctx.jiraProject, keyword);
+        console.log(`[TRIAGE] No fingerprint match — searching by keyword: ${jql}`);
+        searchResults = await jiraClient.searchIssues(jql, 5);
+      }
       stopSpinner();
     } catch (e) {
       stopSpinner();
@@ -197,7 +234,11 @@ export async function triage(
       `_Created by RAVEN Autonomous Pipeline_`,
     issuetype: { name: "Bug" },
     priority: { name: severityToPriority(triageResult.severity) },
-    labels: ["raven-pipeline", "auto-detected"],
+    labels: [
+      "raven-pipeline",
+      "auto-detected",
+      ticketFingerprint(ctx.app, ctx.component, topError.dedupeKey),
+    ],
   });
 
   stopSpinner();
