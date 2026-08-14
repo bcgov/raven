@@ -1,0 +1,52 @@
+---
+version: 1
+product_information:
+  product_name: RAVEN
+  product_acronym: RAVEN
+  product_description: >-
+    Resource Analytics, Visibility & Enterprise Navigator. A local-first suite of
+    Model Context Protocol (MCP) servers connecting AI assistants to BC Gov
+    enterprise development tools, with personal information scrubbed before data
+    reaches the model.
+  product_status: active
+  ministry:
+    - Water, Land and Resource Stewardship
+    - Forests
+    - Environment and Climate Change Strategy
+    - Citizens' Services
+  program_area: Connected Services BC
+  business_capabilities_standard:
+    - Other
+  product_urls: []
+  api_specifications: []
+data_management_roles:
+  product_owner: James Gagan
+  data_custodian: James Gagan
+product_technology_information:
+  hosting_platforms:
+    - Other
+  hosting_platforms_custom: Local developer workstation; no server deployment
+  backend_languages_version:
+    - name: TypeScript
+      version: 7.0.2
+  backend_frameworks:
+    - name: Node.js
+      version: 20.16.0
+    - name: Express
+      version: 5.1.0
+  data_storage_platforms: []
+  ci_cd_tools:
+    - GitHub-Actions
+  # Listed explicitly as an empty array rather than omitted: the schema's
+  # conditional blocks match an absent key and then demand its *_custom partner.
+  spatial_mapping_technologies: []
+  other_tools: Model Context Protocol SDK, Vitest, SiteMinder SSO
+product_external_dependencies:
+  identity_authorization:
+    - IDIR
+  common_components: []
+  notification_standard:
+    - Custom-SMTP
+  other_dependencies: >-
+    Jira, Confluence, Bitbucket, Azure DevOps Server, Jenkins, Artifactory,
+    SonarQube, SharePoint Online, GitHub
