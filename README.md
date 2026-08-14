@@ -121,6 +121,8 @@ ATLASSIAN_PASSWORD=<your IDIR password>
 RAVEN_SCRUB_PI=true
 ```
 
+> **Special characters in values:** if a value contains `#` (or starts/ends with a quote character), wrap the whole value in double quotes — for example `ATLASSIAN_PASSWORD="p@ss#word"`. An unquoted `#` starts a comment and silently truncates the value, which breaks authentication. Quoted and unquoted values are both accepted everywhere.
+
 Optional Jira setting for Epic Link writes:
 
 ```env

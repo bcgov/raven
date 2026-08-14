@@ -1,7 +1,7 @@
-import { config } from "dotenv";
+import { config, parse } from "dotenv";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
 /**
@@ -24,11 +24,98 @@ export function loadEnv(): void {
   }
 
   // 2. Fall back to plain-text .env (values already set are NOT overwritten).
+  const envPath = join(homedir(), ".raven", ".env");
   config({
-    path: join(homedir(), ".raven", ".env"),
+    path: envPath,
     override: false, // don't clobber existing env vars
     quiet: true, // suppress stdout banner — required for MCP stdio transport
   });
+  warnUnquotedHashes(envPath);
+}
+
+/**
+ * Read a single variable with dotenv semantics: process.env wins, otherwise
+ * the value comes from the given .env file (default ~/.raven/.env). Quoted
+ * and unquoted values are both accepted; quotes are stripped only when they
+ * wrap the whole value.
+ *
+ * Returns undefined when the variable is unset, empty, or the file is
+ * missing/unreadable. An env var explicitly set to the empty string counts
+ * as deliberately cleared (mirroring dotenv's override:false) — the file
+ * value is NOT used in that case.
+ */
+export function loadEnvVar(
+  name: string,
+  envPath = join(homedir(), ".raven", ".env"),
+): string | undefined {
+  if (name in process.env) return process.env[name] || undefined;
+  try {
+    return parse(readFileSync(envPath, "utf-8"))[name] || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Find keys whose unquoted value contains a '#' glued to surrounding text.
+ * dotenv treats an unquoted '#' as the start of an inline comment, so such
+ * values are silently truncated — a common cause of broken authentication
+ * when a password contains '#'. Values wrapped in quotes are safe, and a
+ * '#' preceded by whitespace is assumed to be an intentional comment.
+ */
+export function findUnquotedHashKeys(content: string): string[] {
+  // dotenv's quoted-value grammar: the opening delimiter must be closed
+  // (backslash-escaped delimiters allowed inside, newlines allowed for
+  // multiline values) and followed only by whitespace and an optional
+  // comment before the end of the line — otherwise dotenv backtracks and
+  // treats the whole value as unquoted.
+  const quotedValue: Record<string, RegExp> = {
+    '"': /^"(?:\\"|[^"])*"[ \t]*(?:#[^\n]*)?(?=\n|$)/,
+    "'": /^'(?:\\'|[^'])*'[ \t]*(?:#[^\n]*)?(?=\n|$)/,
+    "`": /^`(?:\\`|[^`])*`[ \t]*(?:#[^\n]*)?(?=\n|$)/,
+  };
+  const keys: string[] = [];
+  const lines = content.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i]!.match(/^\s*(?:export\s+)?([\w.-]+)\s*=(.*)$/);
+    if (!m) continue;
+    // Keep the raw (untrimmed) value so "KEY= #comment" reads as a comment
+    // separated by whitespace rather than a '#' glued to the '=' sign.
+    const rawValue = m[2]!;
+    const value = rawValue.trimStart();
+    if (!value) continue;
+    const re = quotedValue[value[0]!];
+    if (re) {
+      // Join with the following lines so a valid multiline quoted value is
+      // recognized; skip its continuation lines when it closes.
+      const closed = [value, ...lines.slice(i + 1)].join("\n").match(re);
+      if (closed) {
+        i += closed[0].split("\n").length - 1;
+        continue;
+      }
+    }
+    if (/(^|\S)#/.test(rawValue)) keys.push(m[1]!);
+  }
+  return keys;
+}
+
+/**
+ * Warn (on stderr — stdout is reserved for the MCP stdio transport) about
+ * values that dotenv will silently truncate at an unquoted '#'.
+ */
+function warnUnquotedHashes(envPath: string): void {
+  try {
+    const content = readFileSync(envPath, "utf-8");
+    for (const key of findUnquotedHashKeys(content)) {
+      console.error(
+        `[raven] Warning: the value of ${key} in ${envPath} contains an unquoted '#'. ` +
+          `Everything from the '#' on is treated as a comment and dropped, which can break authentication. ` +
+          `If the '#' is part of the value, wrap the whole value in double quotes.`,
+      );
+    }
+  } catch {
+    // File missing or unreadable — nothing to warn about.
+  }
 }
 
 /**
