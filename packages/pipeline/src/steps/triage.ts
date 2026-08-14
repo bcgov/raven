@@ -4,6 +4,19 @@ import { startSpinner, stopSpinner } from "../spinner.js";
 import type { ErrorInfo, PipelineContext, TriageResult } from "../types.js";
 import { markProcessed, storePathFor } from "../processed-errors.js";
 
+/**
+ * JQL for "is this error already tracked?".
+ *
+ * Deliberately unbounded by age: the status filter already excludes resolved
+ * work, so an unresolved ticket describing the same error is a duplicate no
+ * matter when it was raised. A previous `created >= -90d` window meant a
+ * long-open ticket (e.g. one raised months earlier for an error still
+ * occurring in PROD) went unseen and would have been filed a second time.
+ */
+export function buildDuplicateJql(project: string, keyword: string): string {
+  return `project = ${project} AND text ~ "${keyword}" AND status NOT IN (Done, Closed, Resolved) ORDER BY created DESC`;
+}
+
 const TRIAGE_SYSTEM_PROMPT = `You are a senior Java developer triaging production errors for BC Government applications.
 Analyze the error and provide a JSON response with these fields:
 - summary: one-line description of the issue
@@ -62,7 +75,7 @@ export async function triage(
 
     // Search for existing Jira tickets
     const keyword = extractKeyword(currentError.message, currentError.stackTrace);
-    const jql = `project = ${ctx.jiraProject} AND text ~ "${keyword}" AND status NOT IN (Done, Closed, Resolved) AND created >= -90d ORDER BY created DESC`;
+    const jql = buildDuplicateJql(ctx.jiraProject, keyword);
     console.log(`[TRIAGE] Searching Jira: ${jql}`);
 
     let searchResults: { issues: Array<{ key: string; fields: { summary: string; status: { name: string }; created: string } }>; total: number };
