@@ -45,6 +45,26 @@ export function buildFingerprintJql(project: string, fingerprint: string): strin
   return `project = ${project} AND labels = "${fingerprint}" AND status NOT IN (Done, Closed, Resolved) ORDER BY created DESC`;
 }
 
+/**
+ * Decide what a search hit means.
+ *
+ * Only an exact fingerprint match suppresses ticket creation. A keyword hit
+ * is too weak to act on: `text ~ "SomeClass"` matches any open ticket whose
+ * description merely discusses that class, so treating it as a duplicate
+ * both comments on unrelated work and leaves the real error untracked
+ * (observed live — an error matched an open feature ticket about tiling).
+ * Keyword hits are surfaced on the new ticket as "possibly related" instead,
+ * leaving the judgement to a human.
+ */
+export function decideDuplicate(
+  matchedBy: "fingerprint" | "keyword" | null,
+  ticketKey: string | undefined,
+): { isDuplicate: boolean; relatedKey?: string } {
+  if (matchedBy === "fingerprint" && ticketKey) return { isDuplicate: true };
+  if (matchedBy === "keyword" && ticketKey) return { isDuplicate: false, relatedKey: ticketKey };
+  return { isDuplicate: false };
+}
+
 const TRIAGE_SYSTEM_PROMPT = `You are a senior Java developer triaging production errors for BC Government applications.
 Analyze the error and provide a JSON response with these fields:
 - summary: one-line description of the issue
@@ -71,6 +91,8 @@ export async function triage(
   const duplicatesFound: Array<{ errorIdx: number; ticketKey: string }> = [];
   let topError = ctx.errors[0]!;
   let triageResult: TriageResult | null = null;
+  /** Ticket a keyword search matched — surfaced for a human, never acted on. */
+  let relatedKey: string | undefined;
 
   for (let errIdx = 0; errIdx < ctx.errors.length; errIdx++) {
     const currentError = ctx.errors[errIdx]!;
@@ -108,16 +130,20 @@ export async function triage(
     const fingerprint = ticketFingerprint(ctx.app, ctx.component, currentError.dedupeKey);
 
     let searchResults: { issues: Array<{ key: string; fields: { summary: string; status: { name: string }; created: string } }>; total: number };
+    let matchedBy: "fingerprint" | "keyword" | null = null;
     try {
       startSpinner("Searching Jira for duplicates...");
       console.log(`[TRIAGE] Searching Jira by fingerprint: ${fingerprint}`);
       searchResults = await jiraClient.searchIssues(
         buildFingerprintJql(ctx.jiraProject, fingerprint), 5
       );
-      if (searchResults.issues.length === 0) {
+      if (searchResults.issues.length > 0) {
+        matchedBy = "fingerprint";
+      } else {
         const jql = buildDuplicateJql(ctx.jiraProject, keyword);
         console.log(`[TRIAGE] No fingerprint match — searching by keyword: ${jql}`);
         searchResults = await jiraClient.searchIssues(jql, 5);
+        if (searchResults.issues.length > 0) matchedBy = "keyword";
       }
       stopSpinner();
     } catch (e) {
@@ -126,7 +152,16 @@ export async function triage(
       searchResults = { issues: [], total: 0 };
     }
 
-    if (searchResults.issues.length > 0 && !ctx.forceNew) {
+    const decision = decideDuplicate(matchedBy, searchResults.issues[0]?.key);
+    if (decision.relatedKey) {
+      relatedKey = decision.relatedKey;
+      console.log(
+        `[TRIAGE] Keyword matched ${decision.relatedKey} (${searchResults.issues[0]!.fields.summary}) — ` +
+        `too weak to treat as a duplicate; noting it as possibly related and continuing`
+      );
+    }
+
+    if (decision.isDuplicate && !ctx.forceNew) {
       const existing = searchResults.issues[0]!;
       console.log(
         `[TRIAGE] Duplicate found: ${existing.key} — ${existing.fields.summary}`
@@ -216,6 +251,12 @@ export async function triage(
     ? `h3. Regression\nThis error was previously tracked in ${regressionRef} (now resolved). It may have regressed or resurfaced.\n\n`
     : "";
 
+  // A keyword hit is a hint, not a verdict — the text search matches any
+  // ticket that merely discusses the same class, so a human decides.
+  const relatedNote = relatedKey
+    ? `h3. Possibly Related\nA keyword search also matched ${relatedKey}. It may cover the same defect, or may simply mention the same code — worth a look before duplicating effort.\n\n`
+    : "";
+
   startSpinner("Creating Jira ticket...");
   const issueResponse = await jiraClient.createIssue({
     project: { key: ctx.jiraProject },
@@ -227,6 +268,7 @@ export async function triage(
       `*Occurrences:* ${topError.occurrences}\n` +
       `*Severity:* ${triageResult.severity}\n\n` +
       regressionNote +
+      relatedNote +
       `h3. Root Cause Analysis\n` +
       `${triageResult.rootCause}\n\n` +
       `h3. Stack Trace\n` +
