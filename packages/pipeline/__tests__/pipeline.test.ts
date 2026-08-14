@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
@@ -618,6 +618,33 @@ describe("run-state", () => {
 import { getMapping, setMapping, loadRepoMap } from "../src/repo-map.js";
 
 describe("repo-map", () => {
+  // Point the cache at a throwaway file: these tests used to write fixture
+  // entries into the operator's real ~/.raven/repo-map.json on every run.
+  let repoMapDir: string;
+  let savedRepoMapPath: string | undefined;
+
+  beforeEach(() => {
+    savedRepoMapPath = process.env["RAVEN_REPO_MAP_PATH"];
+    repoMapDir = mkdtempSync(join(tmpdir(), "raven-repomap-"));
+    process.env["RAVEN_REPO_MAP_PATH"] = join(repoMapDir, "repo-map.json");
+  });
+
+  afterEach(() => {
+    if (savedRepoMapPath === undefined) delete process.env["RAVEN_REPO_MAP_PATH"];
+    else process.env["RAVEN_REPO_MAP_PATH"] = savedRepoMapPath;
+    rmSync(repoMapDir, { recursive: true, force: true });
+  });
+
+  it("writes to the overridden path, never the operator's real cache", () => {
+    setMapping("SOS", "some-component", {
+      bitbucketProject: "CWM",
+      bitbucketRepo: "cwm-generic-lib",
+      discoveredAt: new Date().toISOString(),
+    });
+    expect(existsSync(process.env["RAVEN_REPO_MAP_PATH"]!)).toBe(true);
+    expect(Object.keys(loadRepoMap())).toEqual(["SOS/some-component"]);
+  });
+
   it("returns null for an app/component that has never been mapped", () => {
     const result = getMapping("NONEXISTENT", "fake-component-" + Date.now());
     expect(result).toBeNull();
