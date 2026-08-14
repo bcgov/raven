@@ -34,9 +34,6 @@ product_technology_information:
   data_storage_platforms: []
   ci_cd_tools:
     - GitHub-Actions
-    - Other
-  # "Azure DevOps" has no enum value in ci_cd_tools, so it rides on Other.
-  ci_cd_tools_custom: Azure DevOps
   # Listed explicitly as an empty array rather than omitted: the schema's
   # conditional blocks match an absent key and then demand its *_custom partner.
   spatial_mapping_technologies: []
