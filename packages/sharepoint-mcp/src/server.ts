@@ -15,6 +15,8 @@ const safeErr = (err: unknown): string =>
 
 const DEFAULT_SEARCH_LIMIT = 10;
 const MAX_SEARCH_LIMIT = 50;
+const DEFAULT_LIST_LIMIT = 50;
+const MAX_LIST_LIMIT = 200;
 const MAX_FETCH_BYTES = 10 * 1024 * 1024;
 const MAX_TEXT_CHARS = 50_000;
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
@@ -90,6 +92,25 @@ export function formatSearchHit(hit: SearchHit, index: number): string {
   return lines.join("\n");
 }
 
+/**
+ * One list item as a numbered markdown block: Title first, then each
+ * remaining non-null field as a `key: value` line. OData metadata fields
+ * (`odata.etag`, `OData__*`) are noise for readers and are dropped.
+ */
+export function formatListItem(item: Record<string, unknown>, index: number): string {
+  const title = typeof item["Title"] === "string" && item["Title"] ? item["Title"] : "(untitled)";
+  const lines = Object.entries(item)
+    .filter(
+      ([key, value]) =>
+        key !== "Title" &&
+        value !== null &&
+        value !== undefined &&
+        !key.toLowerCase().startsWith("odata")
+    )
+    .map(([key, value]) => `   ${key}: ${typeof value === "object" ? JSON.stringify(value) : String(value)}`);
+  return [`${index + 1}. **${title}**`, ...lines].join("\n");
+}
+
 /** Word SPO failures accurately: 403 = permissions, 404 = wrong path. */
 export function describeSpoError(err: unknown): string {
   if (err instanceof SpoApiError) {
@@ -155,7 +176,7 @@ export function createSharePointServer(): McpServer {
       version: "0.1.0",
     },
     {
-      instructions: `You have access to read-only tools for searching and reading BC Gov SharePoint Online content: project documentation, design documents, architecture diagrams, requirements, and mock-up screens stored in document libraries and site pages. All tools are READ-ONLY — never attempt to create, modify, or delete SharePoint content. The expected workflow is: search_sharepoint first (or list_sites/get_site/list_folder to browse), then read_document or read_page on the most relevant results, then summarize for the user. Always include the SharePoint URL when referencing results. Results are permission-trimmed: the user only sees content their IDIR account can access; a 403 on a specific item means they lack access to it, not that authentication failed. Keep API calls to a minimum — SharePoint Online throttles aggressively. Never call the same tool twice with the same arguments. If you encounter authentication errors ("No valid SharePoint session"), tell the user to run: node packages/auth/dist/cli.js --sharepoint (or npx raven-auth --sharepoint), or to set SPO_FEDAUTH and SPO_RTFA environment variables. NOTE: inlined image content (diagrams, mock-ups, screenshots) may contain personal information visible to the AI and cannot be PI-scrubbed.`,
+      instructions: `You have access to read-only tools for searching and reading BC Gov SharePoint Online content: project documentation, design documents, architecture diagrams, requirements, and mock-up screens stored in document libraries and site pages. All tools are READ-ONLY — never attempt to create, modify, or delete SharePoint content. The expected workflow is: search_sharepoint first (or list_sites/get_site/list_folder to browse; list_items for the rows of a SharePoint list such as an events or bulletins list), then read_document or read_page on the most relevant results, then summarize for the user. Always include the SharePoint URL when referencing results. Results are permission-trimmed: the user only sees content their IDIR account can access; a 403 on a specific item means they lack access to it, not that authentication failed. Keep API calls to a minimum — SharePoint Online throttles aggressively. Never call the same tool twice with the same arguments. If you encounter authentication errors ("No valid SharePoint session"), tell the user to run: node packages/auth/dist/cli.js --sharepoint (or npx raven-auth --sharepoint), or to set SPO_FEDAUTH and SPO_RTFA environment variables. NOTE: inlined image content (diagrams, mock-ups, screenshots) may contain personal information visible to the AI and cannot be PI-scrubbed.`,
     }
   );
 
@@ -282,6 +303,65 @@ list_folder to browse.`,
       } catch (err) {
         return {
           content: [{ type: "text", text: `get_site error: ${describeSpoError(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "list_items",
+    `Read items from a SharePoint list (not a document library) by list title.
+
+Returns each item's fields as key: value lines (keys are SharePoint internal
+field names). Call once without select/filter first to discover the field
+names, then refine with select, an OData filter (e.g.
+"EventDate ge datetime'2026-08-01T00:00:00Z'"), and orderby. Results are
+permission-trimmed to what the logged-in user can see.`,
+    {
+      sitePath: sitePathSchema,
+      listTitle: z.string().min(1).describe('List display title, e.g. "Infrastructure Bulletins"'),
+      select: z
+        .array(z.string())
+        .optional()
+        .describe("Optional internal field names to return; omit to get all fields"),
+      filter: z.string().optional().describe("Optional OData $filter expression"),
+      orderby: z.string().optional().describe('Optional OData $orderby, e.g. "EventDate asc"'),
+      limit: z
+        .number()
+        .min(1)
+        .max(MAX_LIST_LIMIT)
+        .default(DEFAULT_LIST_LIMIT)
+        .describe(`Maximum items (1-${MAX_LIST_LIMIT}, default ${DEFAULT_LIST_LIMIT})`),
+    },
+    { readOnlyHint: true },
+    async ({ sitePath, listTitle, select, filter, orderby, limit }) => {
+      try {
+        const spo = await getClient();
+        const items = await spo.getListItems(sitePath, listTitle, {
+          select,
+          filter,
+          orderby,
+          top: limit,
+        });
+        if (items.length === 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: pi.scrubText(
+                  `No items in '${listTitle}' match the query. Check the list title (display title, not URL name) and any $filter field names.`
+                ),
+              },
+            ],
+          };
+        }
+        const body = items.map((item, i) => formatListItem(item, i)).join("\n\n");
+        const text = truncateText(`${items.length} items from '${listTitle}':\n\n${body}`);
+        return { content: [{ type: "text", text: pi.scrubText(text) }] };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `list_items error: ${describeSpoError(err)}` }],
           isError: true,
         };
       }

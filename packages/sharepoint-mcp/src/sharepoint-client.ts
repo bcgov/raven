@@ -112,6 +112,29 @@ export class SharePointClient {
     return data.value;
   }
 
+  /**
+   * Items of a named SharePoint list (not a document library), via
+   * getbytitle. Optional OData clauses pass through untouched; callers own
+   * their $filter quoting. Field keys in the result are internal names.
+   */
+  async getListItems(
+    sitePath: string,
+    listTitle: string,
+    opts?: { select?: string[]; filter?: string; orderby?: string; top?: number }
+  ): Promise<Record<string, unknown>[]> {
+    const params = new URLSearchParams();
+    if (opts?.select?.length) params.set("$select", opts.select.join(","));
+    if (opts?.filter) params.set("$filter", opts.filter);
+    if (opts?.orderby) params.set("$orderby", opts.orderby);
+    if (opts?.top !== undefined) params.set("$top", String(opts.top));
+    const qs = params.toString();
+    const url =
+      `${this.baseUrl}${sitePath}/_api/web/lists/getbytitle(` +
+      `'${encodeURIComponent(escapeODataPath(listTitle))}')/items${qs ? `?${qs}` : ""}`;
+    const data = await this.getJson<{ value: Record<string, unknown>[] }>(url);
+    return data.value;
+  }
+
   /** Files and sub-folders of a folder, by server-relative folder path. */
   async listFolder(sitePath: string, folderPath: string): Promise<SpoFolderContents> {
     const params = new URLSearchParams({
