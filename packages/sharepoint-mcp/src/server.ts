@@ -357,8 +357,10 @@ permission-trimmed to what the logged-in user can see.`,
           };
         }
         const body = items.map((item, i) => formatListItem(item, i)).join("\n\n");
-        const text = truncateText(`${items.length} items from '${listTitle}':\n\n${body}`);
-        return { content: [{ type: "text", text: pi.scrubText(text) }] };
+        // Scrub before truncating: a cut mid-value would leave a partial
+        // email/phone the scrubber's patterns no longer recognize.
+        const text = pi.scrubText(`${items.length} items from '${listTitle}':\n\n${body}`);
+        return { content: [{ type: "text", text: truncateText(text) }] };
       } catch (err) {
         return {
           content: [{ type: "text", text: `list_items error: ${describeSpoError(err)}` }],
