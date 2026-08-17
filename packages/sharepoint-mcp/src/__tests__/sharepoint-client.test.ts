@@ -106,4 +106,38 @@ describe("SharePointClient", () => {
     expect(page.canvasContent).toBe("<div>wiki body</div>");
     expect(page.title).toBe("");
   });
+
+  it("getListItems builds the getbytitle URL with escaped quotes and unwraps value", async () => {
+    const capture: { url?: string } = {};
+    const client = clientWith(200, { value: [{ Id: 1, Title: "Bulletin" }] }, capture);
+    const items = await client.getListItems("/sites/WLRS-TEC", "O'Brien's List");
+    expect(items).toHaveLength(1);
+    expect(items[0]?.Title).toBe("Bulletin");
+    expect(capture.url).toBe(
+      `${BASE}/sites/WLRS-TEC/_api/web/lists/getbytitle('O''Brien''s%20List')/items`
+    );
+  });
+
+  it("getListItems forwards select, filter, orderby, and top as OData params", async () => {
+    const capture: { url?: string } = {};
+    const client = clientWith(200, { value: [] }, capture);
+    await client.getListItems("/sites/WLRS-TEC", "Infrastructure Bulletins", {
+      select: ["Id", "Title", "EventDate"],
+      filter: "EventDate ge datetime'2026-08-13T00:00:00Z'",
+      orderby: "EventDate asc",
+      top: 200,
+    });
+    const url = decodeURIComponent(capture.url!).replace(/\+/g, " ");
+    expect(url).toContain("$select=Id,Title,EventDate");
+    expect(url).toContain("$filter=EventDate ge datetime'2026-08-13T00:00:00Z'");
+    expect(url).toContain("$orderby=EventDate asc");
+    expect(url).toContain("$top=200");
+  });
+
+  it("getListItems surfaces SpoApiError with the status on failure", async () => {
+    const client = clientWith(403, { error: "denied" });
+    await expect(
+      client.getListItems("/sites/WLRS-TEC", "Infrastructure Bulletins")
+    ).rejects.toMatchObject({ status: 403 });
+  });
 });

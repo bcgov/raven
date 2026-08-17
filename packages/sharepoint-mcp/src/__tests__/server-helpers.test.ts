@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   formatBytes,
   formatSearchHit,
+  formatListItem,
   describeSpoError,
   truncateText,
   mimeFromExtension,
@@ -38,6 +39,33 @@ describe("formatSearchHit", () => {
     expect(line).toContain("https://example.sharepoint.com/sites/p/Docs/d.docx");
     expect(line).toContain("docx");
     expect(line).toContain("The design covers");
+  });
+});
+
+describe("formatListItem", () => {
+  it("leads with the Title and lists remaining fields as key: value lines", () => {
+    const block = formatListItem(
+      { Id: 7, Title: "PROD patching", EventDate: "2026-08-23T05:00:00Z" },
+      0
+    );
+    expect(block).toContain("1. **PROD patching**");
+    expect(block).toContain("Id: 7");
+    expect(block).toContain("EventDate: 2026-08-23T05:00:00Z");
+  });
+
+  it("drops null values and OData metadata fields", () => {
+    const block = formatListItem(
+      { "odata.etag": '"3"', OData__UIVersionString: "1.0", Title: "T", Notes: null },
+      1
+    );
+    expect(block).toContain("2. **T**");
+    expect(block).not.toContain("odata");
+    expect(block).not.toContain("UIVersionString");
+    expect(block).not.toContain("Notes");
+  });
+
+  it("labels an item with no Title field", () => {
+    expect(formatListItem({ Id: 3 }, 0)).toContain("1. **(untitled)**");
   });
 });
 
