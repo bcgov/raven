@@ -9,7 +9,14 @@ import {
   writeCachedSpoSession,
   clearCachedSpoSession,
 } from "./spo-cookie-cache.js";
-import type { SpoAuthConfig, SpoAuthResult, SpoCookies } from "./types.js";
+import {
+  authProfileDir,
+  buildCaptureScript,
+  ensureProfileDir,
+  resolveAutofillCredentials,
+  type CaptureResult,
+} from "./capture-script.js";
+import type { SpoAuthConfig, SpoCookies } from "./types.js";
 import { BROWSER_USER_AGENT } from "./browser-ua.js";
 
 const DEFAULT_CACHE_PATH = join(homedir(), ".workflow-suite", "spo-session.json");
@@ -73,84 +80,29 @@ export class SpoSessionManager {
    * Open a browser window for Entra/IDIR authentication against SharePoint
    * Online and capture the FedAuth + rtFa cookies. Runs Playwright in a
    * subprocess to avoid conflicts with the MCP server's stdio transport.
+   *
+   * The capture runs on the shared persistent profile, so an existing Entra
+   * session usually completes the flow with no typing; when a full login is
+   * needed, credentials autofill from the environment and only the MFA
+   * prompt is left to the human.
    */
   async authenticate(): Promise<SpoCookies> {
     this.log("Starting SPO browser authentication flow...");
 
-    const targetUrl = this.config.targetUrl;
+    const profileDir = authProfileDir();
+    await ensureProfileDir(profileDir);
+    const credentials = resolveAutofillCredentials(process.env);
 
-    const script = `
-const { chromium } = require('playwright');
-
-(async () => {
-  const browser = await chromium.launch({
-    headless: false,
-    args: ['--disable-blink-features=AutomationControlled'],
-  });
-
-  const context = await browser.newContext({
-    userAgent: ${JSON.stringify(BROWSER_USER_AGENT)},
-    ignoreHTTPSErrors: true,
-  });
-
-  const page = await context.newPage();
-
-  // Entra's device-auth hop (device.login.microsoftonline.com) intermittently
-  // drops the first connection in automated Chromium with
-  // net::ERR_SOCKET_NOT_CONNECTED; a plain reload succeeds. Auto-retry failed
-  // main-frame navigations so the user never has to refresh the error page.
-  let navRetries = 0;
-  page.on('requestfailed', (request) => {
-    try {
-      if (!request.isNavigationRequest()) return;
-      if (request.frame() !== page.mainFrame()) return;
-      const failure = request.failure();
-      if (failure && failure.errorText === 'net::ERR_ABORTED') return;
-      if (navRetries >= 3) return;
-      navRetries += 1;
-      setTimeout(() => { page.reload().catch(() => {}); }, 750);
-    } catch {}
-  });
-
-  try {
-    await page.goto(${JSON.stringify(targetUrl)}, { waitUntil: 'networkidle', timeout: 120000 });
-  } catch (navErr) {
-    const navMsg = navErr && navErr.message ? String(navErr.message) : String(navErr);
-    const isTransientNet = navMsg.indexOf('net::ERR_') !== -1;
-    const isTimeout = navErr && navErr.name === 'TimeoutError';
-    if (!isTransientNet && !isTimeout) {
-      await browser.close().catch(() => {});
-      console.log(JSON.stringify({ status: 'error', message: 'Navigation failed: ' + navMsg.split('\\n')[0] }));
-      return;
-    }
-    // net::ERR_* drops are reloaded by the requestfailed handler above, and a
-    // goto timeout can coexist with a login the user already completed — the
-    // cookie poll below is the authoritative success signal for both.
-  }
-
-  let fedAuth = null;
-  let rtFa = null;
-  const startTime = Date.now();
-  while (Date.now() - startTime < 180000) {
-    const cookies = await context.cookies();
-    for (const cookie of cookies) {
-      if (!cookie.domain || cookie.domain.indexOf('sharepoint.com') === -1) continue;
-      if (cookie.name === 'FedAuth') fedAuth = cookie.value;
-      if (cookie.name === 'rtFa') rtFa = cookie.value;
-    }
-    if (fedAuth && rtFa) break;
-    await new Promise(r => setTimeout(r, 1000));
-  }
-
-  await browser.close();
-
-  if (fedAuth && rtFa) {
-    console.log(JSON.stringify({ status: 'ok', fedAuth, rtFa }));
-  } else {
-    console.log(JSON.stringify({ status: 'error', message: 'FedAuth/rtFa cookies not captured within 180s' }));
-  }
-})();
-`;
+    const script = buildCaptureScript({
+      targetUrl: this.config.targetUrl,
+      cookieNames: ["FedAuth", "rtFa"],
+      cookieDomainFilter: "sharepoint.com",
+      profileDir,
+      userAgent: BROWSER_USER_AGENT,
+      navTimeoutMs: 120_000,
+      pollBudgetMs: 180_000,
+      autofill: credentials !== null,
+    });
 
     try {
       // Run from the monorepo root so require('playwright') resolves
@@ -160,23 +112,33 @@ const { chromium } = require('playwright');
         encoding: "utf-8",
         timeout: 240_000,
         cwd: monorepoRoot,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["ignore", "pipe", process.env["RAVEN_AUTH_DEBUG"] ? "inherit" : "pipe"],
         env: {
           ...process.env,
           PLAYWRIGHT_BROWSERS_PATH:
             process.env["PLAYWRIGHT_BROWSERS_PATH"] ?? undefined,
+          // Autofill credentials travel via the environment, never argv or
+          // the script text.
+          ...(credentials
+            ? {
+                RAVEN_AUTOFILL_USERNAME: credentials.username,
+                RAVEN_AUTOFILL_PASSWORD: credentials.password,
+              }
+            : {}),
         },
       });
 
-      const parsed: SpoAuthResult = JSON.parse(result.trim());
+      const parsed: CaptureResult = JSON.parse(result.trim());
+      const fedAuth = parsed.cookies?.["FedAuth"];
+      const rtFa = parsed.cookies?.["rtFa"];
 
-      if (parsed.status !== "ok" || !parsed.fedAuth || !parsed.rtFa) {
+      if (parsed.status !== "ok" || !fedAuth || !rtFa) {
         throw new Error(
           parsed.message ?? "Authentication failed: cookies not captured"
         );
       }
 
-      const pair: SpoCookies = { fedAuth: parsed.fedAuth, rtFa: parsed.rtFa };
+      const pair: SpoCookies = { fedAuth, rtFa };
       this.cookies = pair;
       await writeCachedSpoSession(this.config.cachePath, pair, this.host());
       this.log("FedAuth/rtFa captured via browser auth");

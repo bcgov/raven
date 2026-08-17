@@ -89,6 +89,15 @@ export {
 } from "./content-blocks.js";
 export type { AttachmentKind, McpContentBlock } from "./content-blocks.js";
 export { SpoSessionManager } from "./spo-session-manager.js";
+export {
+  authProfileDir,
+  buildCaptureScript,
+  ensureProfileDir,
+  resolveAutofillCredentials,
+  siteMinderProbeUrl,
+  siteMinderWebUrl,
+} from "./capture-script.js";
+export type { AutofillCredentials, CaptureResult, CaptureScriptOptions } from "./capture-script.js";
 export { createSpoFetch, isSpoSessionExpired } from "./spo-http-client.js";
 export { spoLimiterOpts } from "./rate-limit.js";
 export {

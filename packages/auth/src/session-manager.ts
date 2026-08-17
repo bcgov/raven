@@ -9,7 +9,16 @@ import {
   writeCachedSession,
   clearCachedSession,
 } from "./cookie-cache.js";
-import type { AuthConfig, AuthResult } from "./types.js";
+import {
+  authProfileDir,
+  buildCaptureScript,
+  ensureProfileDir,
+  resolveAutofillCredentials,
+  siteMinderProbeUrl,
+  siteMinderWebUrl,
+  type CaptureResult,
+} from "./capture-script.js";
+import type { AuthConfig } from "./types.js";
 import { BROWSER_USER_AGENT } from "./browser-ua.js";
 
 const DEFAULT_CACHE_PATH = join(homedir(), ".workflow-suite", "session.json");
@@ -31,8 +40,10 @@ export class SessionManager {
       targetUrl:
         config?.targetUrl ??
         process.env["CONFLUENCE_URL"] ??
+        // ATLASSIAN_BASE_URL is usually the BWA API host, where a browser
+        // capture can never mint SMSESSION — map it to the SSO web host.
         (process.env["ATLASSIAN_BASE_URL"]
-          ? `${process.env["ATLASSIAN_BASE_URL"]}/int/confluence`
+          ? `${siteMinderWebUrl(process.env["ATLASSIAN_BASE_URL"])}/int/confluence`
           : "https://apps.example.gov.bc.ca/int/confluence"),
       cachePath: config?.cachePath ?? DEFAULT_CACHE_PATH,
       sessionTtlSeconds: config?.sessionTtlSeconds ?? DEFAULT_TTL,
@@ -88,107 +99,31 @@ export class SessionManager {
    * Open a browser window for SiteMinder authentication.
    * Runs Playwright in a subprocess to avoid conflicts with the MCP
    * server's stdio transport (Playwright must not write to stdout).
+   *
+   * The capture navigates to the protected Confluence dashboard — the REST
+   * endpoints answer anonymous requests, so probing them never triggers the
+   * SiteMinder challenge and no SMSESSION is minted. It runs on the shared
+   * persistent profile, so an existing identity-provider session usually
+   * completes the flow with no typing; when a full login is needed,
+   * credentials autofill from the environment and only the MFA prompt is
+   * left to the human.
    */
   async authenticate(): Promise<string> {
     this.log("Starting browser authentication flow...");
 
-    const targetUrl = this.config.targetUrl;
+    const profileDir = authProfileDir();
+    await ensureProfileDir(profileDir);
+    const credentials = resolveAutofillCredentials(process.env);
 
-    // Playwright script runs in a separate Node.js process.
-    // It navigates to a protected resource, waits for the user to
-    // authenticate via IDIR, then captures the SMSESSION cookie.
-    const script = `
-const { chromium } = require('playwright');
-
-(async () => {
-  const browser = await chromium.launch({
-    headless: false,
-    args: ['--disable-blink-features=AutomationControlled'],
-  });
-
-  const context = await browser.newContext({
-    userAgent: ${JSON.stringify(BROWSER_USER_AGENT)},
-    ignoreHTTPSErrors: true,
-  });
-
-  const page = await context.newPage();
-  let smsessionValue = null;
-
-  // Entra's device-auth hop (device.login.microsoftonline.com) intermittently
-  // drops the first connection in automated Chromium with
-  // net::ERR_SOCKET_NOT_CONNECTED; a plain reload succeeds. Auto-retry failed
-  // main-frame navigations so the user never has to refresh the error page.
-  let navRetries = 0;
-  page.on('requestfailed', (request) => {
-    try {
-      if (!request.isNavigationRequest()) return;
-      if (request.frame() !== page.mainFrame()) return;
-      const failure = request.failure();
-      if (failure && failure.errorText === 'net::ERR_ABORTED') return;
-      if (navRetries >= 3) return;
-      navRetries += 1;
-      setTimeout(() => { page.reload().catch(() => {}); }, 750);
-    } catch {}
-  });
-
-  try {
-    await page.goto(
-      ${JSON.stringify(targetUrl + "/rest/api/space?limit=1")},
-      { waitUntil: 'networkidle', timeout: 120000 }
-    );
-  } catch (navErr) {
-    const navMsg = navErr && navErr.message ? String(navErr.message) : String(navErr);
-    const isTransientNet = navMsg.indexOf('net::ERR_') !== -1;
-    const isTimeout = navErr && navErr.name === 'TimeoutError';
-    if (!isTransientNet && !isTimeout) {
-      // Real failure (closed browser, crashed renderer, bad URL): fail fast
-      // with the script's JSON error contract instead of polling pointlessly.
-      await browser.close().catch(() => {});
-      console.log(JSON.stringify({ status: 'error', message: 'Navigation failed: ' + navMsg.split('\\n')[0] }));
-      return;
-    }
-    // net::ERR_* drops are reloaded by the requestfailed handler above, and a
-    // goto timeout can coexist with a login the user already completed
-    // (networkidle may never fire on a chatty login page) — the SMSESSION
-    // poll below is the authoritative success signal for both, so keep going.
-  }
-
-  const startTime = Date.now();
-  while (Date.now() - startTime < 120000) {
-    const cookies = await context.cookies();
-    for (const cookie of cookies) {
-      if (cookie.name === 'SMSESSION') {
-        smsessionValue = cookie.value;
-        break;
-      }
-    }
-
-    if (smsessionValue) break;
-
-    const currentUrl = page.url();
-    if (currentUrl.includes('/int/confluence/') && !currentUrl.toLowerCase().includes('logon')) {
-      const cookies2 = await context.cookies();
-      for (const cookie of cookies2) {
-        if (cookie.name === 'SMSESSION') {
-          smsessionValue = cookie.value;
-          break;
-        }
-      }
-      if (smsessionValue) break;
-    }
-
-    await new Promise(r => setTimeout(r, 1000));
-  }
-
-  await browser.close();
-
-  if (smsessionValue) {
-    console.log(JSON.stringify({ status: 'ok', smsession: smsessionValue }));
-  } else {
-    console.log(JSON.stringify({ status: 'error', message: 'No SMSESSION cookie captured within 120s' }));
-  }
-})();
-`;
+    const script = buildCaptureScript({
+      targetUrl: siteMinderProbeUrl(this.config.targetUrl),
+      cookieNames: ["SMSESSION"],
+      profileDir,
+      userAgent: BROWSER_USER_AGENT,
+      navTimeoutMs: 120_000,
+      pollBudgetMs: 120_000,
+      autofill: credentials !== null,
+    });
 
     try {
       // Run from the monorepo root so require('playwright') resolves
@@ -198,27 +133,36 @@ const { chromium } = require('playwright');
         encoding: "utf-8",
         timeout: 180_000,
         cwd: monorepoRoot,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["ignore", "pipe", process.env["RAVEN_AUTH_DEBUG"] ? "inherit" : "pipe"],
         env: {
           ...process.env,
           // Ensure Playwright finds its browsers
           PLAYWRIGHT_BROWSERS_PATH:
             process.env["PLAYWRIGHT_BROWSERS_PATH"] ?? undefined,
+          // Autofill credentials travel via the environment, never argv or
+          // the script text.
+          ...(credentials
+            ? {
+                RAVEN_AUTOFILL_USERNAME: credentials.username,
+                RAVEN_AUTOFILL_PASSWORD: credentials.password,
+              }
+            : {}),
         },
       });
 
-      const parsed: AuthResult = JSON.parse(result.trim());
+      const parsed: CaptureResult = JSON.parse(result.trim());
+      const smsession = parsed.cookies?.["SMSESSION"];
 
-      if (parsed.status !== "ok" || !parsed.smsession) {
+      if (parsed.status !== "ok" || !smsession) {
         throw new Error(
           parsed.message ?? "Authentication failed: no cookie captured"
         );
       }
 
-      this.smsession = parsed.smsession;
-      await writeCachedSession(this.config.cachePath, parsed.smsession);
+      this.smsession = smsession;
+      await writeCachedSession(this.config.cachePath, smsession);
       this.log("SMSESSION captured via browser auth");
-      return parsed.smsession;
+      return smsession;
     } catch (err) {
       const msg =
         err instanceof Error ? err.message : "Unknown authentication error";
