@@ -31,10 +31,10 @@ The pipeline is implemented as `@nrs/pipeline`, a standalone CLI (`raven-pipelin
 All AI calls go through `ai-client.ts`, which wraps the `@github/copilot-sdk`:
 
 - **Authentication**: Uses the developer's GitHub Copilot license (via `gh` CLI auth)
-- **Default model**: `claude-sonnet-4.6` (configurable via `--model`)
-- **PI scrubbing**: All prompts are scrubbed for personal information (names, emails, IDIRs, SINs) via `@nrs/auth` PiScrubber before being sent to the API — FOIPPA compliance
+- **Default model**: `claude-sonnet-5` (configurable via `--model`)
+- **PI scrubbing**: All prompts are scrubbed for personal information (names, emails, IDIRs, SINs) via `@nrs/auth` PiScrubber before being sent to the API — FOIPPA compliance. The pipeline pins `RAVEN_SCRUB_PI=true` in its own process unconditionally: neither a global `RAVEN_SCRUB_PI=false` in `~/.raven/.env` (still honored by other RAVEN tools) nor a shell variable can disable scrubbing for pipeline runs
 - **Session lifecycle**: Each AI call creates a fresh Copilot session with no built-in tools (text-only responses), then destroys it
-- **Timeout**: 120 seconds per AI call
+- **Timeout**: 120 seconds per AI call by default; tune with `RAVEN_AI_TIMEOUT_MS` (clamped to 60–600s) — some functional-bug planning calls legitimately need longer generation time
 
 ### Internal Dependencies
 
@@ -70,6 +70,7 @@ AI-analyzes the top error and checks Jira for duplicates.
 - Sends the stack trace to the Copilot SDK for root cause analysis (severity, summary, suggested ticket title)
 - Searches Jira for existing tickets matching the error (last 90 days, open status)
 - If duplicate found: adds a "seen again" comment to the existing ticket, tries the next error
+- Every live triage action (ticket created or seen-again comment) is recorded in a per-target store file under `~/.raven/processed-errors/` (one file per server/app/component, atomic writes — concurrent per-target scheduled jobs can't clobber each other); errors seen within the cooldown window (default 168h, `--cooldown-hours`, 0 disables) are skipped at DETECT so scheduled fresh runs don't re-comment on known errors
 - If all errors are duplicates: stops the pipeline (nothing new to fix)
 - If new error found: checks for resolved historical tickets (regression detection)
 - Creates a new Jira Bug ticket with: error details, root cause analysis, stack trace, severity, `raven-pipeline` + `auto-detected` labels
@@ -89,6 +90,15 @@ Locates source code in Bitbucket and generates a fix plan with AI.
 - Validates Bitbucket project keys against a known-good list (200+ projects) to avoid 404s
 - Reads matching source files and sends them + the stack trace to AI for fix planning
 - AI returns: root cause, proposed fix, affected files, and a unified diff patch
+
+**Functional-bug path** (automatic): when a ticket yields zero stack-trace
+signals, PLAN switches to keyword-based location — an AI call extracts
+weighted domain terms (UI labels, entity nouns) from the full ticket text,
+the app repo is cloned/updated locally (honoring `--branch`) and searched
+with `git grep`, and the top-ranked source files feed a functional planning
+prompt. Guardrails: tickets needing business input or too vague to plan
+fail with a categorized reason; the patch may only touch files actually
+read; every functional patch must include tests or it is discarded.
 
 **Output**: `ctx.fixPlan` (with `.patch` in unified diff format)
 

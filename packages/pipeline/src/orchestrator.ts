@@ -6,6 +6,8 @@ import { JiraClient } from "@nrs/jira-mcp/client";
 import { BitbucketClient } from "@nrs/bitbucket-mcp/client";
 
 import type { CliArgs, PipelineContext, PipelineResult } from "./types.js";
+import { applyPipelineScrubDefault } from "./scrub-default.js";
+import { filterByCooldown, DEFAULT_COOLDOWN_HOURS } from "./processed-errors.js";
 import { setModel, stopAI } from "./ai-client.js";
 import { loadRunState, saveRunState, createRunState, type RunState } from "./run-state.js";
 import { detect } from "./steps/detect.js";
@@ -15,12 +17,15 @@ import { implement } from "./steps/implement.js";
 import { createPr } from "./steps/create-pr.js";
 import { validate } from "./steps/validate.js";
 import { extractFromTicket } from "./steps/extract-from-ticket.js";
+import { FunctionalPlanError } from "./steps/plan-functional.js";
 
 /**
  * Run the full 6-step autonomous DevOps pipeline.
  */
 export async function runPipeline(args: CliArgs, processedDedupeKeys?: Set<string>): Promise<PipelineResult> {
-  // Bootstrap environment and auth
+  // Bootstrap environment and auth. Scrubbing is pinned on unconditionally
+  // for pipeline processes — no environment value can disable it (FOIPPA).
+  applyPipelineScrubDefault();
   loadEnv();
 
   // Configure AI model
@@ -92,6 +97,21 @@ export async function runPipeline(args: CliArgs, processedDedupeKeys?: Set<strin
     ctx.verbose = args.verbose;
     if (args.existingTicket) ctx.existingTicket = args.existingTicket;
     if (args.forceNew) ctx.forceNew = args.forceNew;
+    // A saved fix plan (step 3+) was generated against a specific source
+    // branch — silently swapping ctx.branch on resume would reuse that
+    // plan's patch against a different branch's source. Applying --branch
+    // is safe before PLAN has run (step < 3); once a plan exists, refuse
+    // and point at --fresh instead of silently ignoring the flag.
+    if (args.branch !== undefined && args.branch !== ctx.branch) {
+      if (resumedFrom >= 3) {
+        console.error(
+          `[RAVEN] --branch ${args.branch} differs from the saved plan's branch (${ctx.branch ?? "default"}). ` +
+          `A saved fix plan is source-specific — re-run with --fresh to plan against the new branch.`
+        );
+        process.exit(1);
+      }
+      ctx.branch = args.branch;
+    }
     console.log(`\n[RAVEN] Resuming pipeline from step ${resumedFrom + 1}: ${ctx.app}/${ctx.component} on ${ctx.server}`);
   } else {
     ctx = {
@@ -103,6 +123,7 @@ export async function runPipeline(args: CliArgs, processedDedupeKeys?: Set<strin
       jiraProject: args.jiraProject ?? args.app,
       bitbucketProject: args.bitbucketProject,
       bitbucketRepo: args.bitbucketRepo,
+      branch: args.branch,
       skipTests: args.skipTests,
       verbose: args.verbose,
       errors: [],
@@ -124,17 +145,10 @@ export async function runPipeline(args: CliArgs, processedDedupeKeys?: Set<strin
   ].filter(Boolean).join(", ");
   console.log(`[RAVEN] Mode: ${flags}`);
 
-  // PI scrubber visibility — every prompt that goes to the LLM passes
-  // through PiScrubber from @nrs/auth, but the default can be overridden
-  // by RAVEN_SCRUB_PI=false. Surface the actual state at run start so an
-  // operator can never accidentally ship raw PII to GitHub Copilot
-  // without realizing the scrubber is off.
-  const scrubEnabled = process.env["RAVEN_SCRUB_PI"] !== "false" && process.env["RAVEN_SCRUB_PI"] !== "0";
-  if (scrubEnabled) {
-    console.log(`[RAVEN] PI scrubbing: ENABLED (FOIPPA-compliant — PII stripped from all LLM prompts)`);
-  } else {
-    console.warn(`[RAVEN] PI scrubbing: DISABLED — RAVEN_SCRUB_PI=${process.env["RAVEN_SCRUB_PI"]}. Raw ticket text and stack traces will be sent to the LLM. Confirm this is intentional.`);
-  }
+  // Every prompt that goes to the LLM passes through PiScrubber from
+  // @nrs/auth, and the pipeline pins RAVEN_SCRUB_PI=true unconditionally
+  // (see applyPipelineScrubDefault) — there is no opt-out (FOIPPA).
+  console.log(`[RAVEN] PI scrubbing: ENABLED (FOIPPA-compliant — PII stripped from all LLM prompts)`);
   console.log("");
 
   const verbose = args.verbose ?? false;
@@ -157,6 +171,25 @@ export async function runPipeline(args: CliArgs, processedDedupeKeys?: Set<strin
       ctx.errors = ctx.errors.filter((e) => !ctx.processedDedupeKeys!.has(e.dedupeKey));
       if (before !== ctx.errors.length) {
         console.log(`[DETECT] Filtered ${before - ctx.errors.length} already-processed error(s), ${ctx.errors.length} remaining`);
+      }
+    }
+
+    // Persistent cross-run cooldown: scheduled fresh runs must not re-triage
+    // (and re-comment on) the same error signature every interval. Skipped in
+    // --ticket mode, where the operator explicitly targets a known error.
+    if (!args.existingTicket && ctx.errors.length > 0) {
+      const cooldownHours = args.cooldownHours ?? DEFAULT_COOLDOWN_HOURS;
+      const { kept, skipped } = filterByCooldown(ctx.errors, {
+        server: ctx.server,
+        app: ctx.app,
+        component: ctx.component,
+        cooldownHours,
+      });
+      if (skipped.length > 0) {
+        ctx.errors = kept;
+        console.log(
+          `[DETECT] Skipped ${skipped.length} error(s) in triage cooldown (<${cooldownHours}h since last triage; --cooldown-hours 0 to disable)`
+        );
       }
     }
 
@@ -346,6 +379,7 @@ export async function runPipelineWatch(args: CliArgs): Promise<void> {
  * for each one.
  */
 export async function runJiraBacklog(args: CliArgs): Promise<void> {
+  applyPipelineScrubDefault();
   loadEnv();
   if (args.model) setModel(args.model);
 
@@ -361,7 +395,11 @@ export async function runJiraBacklog(args: CliArgs): Promise<void> {
 
   console.log(`\n[RAVEN] Jira backlog mode: ${args.jiraQuery}`);
 
-  const searchResults = await jiraClient.searchIssues(args.jiraQuery!, 20);
+  // 100 is a deliberate per-run bound (each ticket costs AI calls), but it
+  // must never be a SILENT one — a survey that quietly drops tickets reads
+  // as a complete census when it isn't.
+  const BACKLOG_MAX_TICKETS = 100;
+  const searchResults = await jiraClient.searchIssues(args.jiraQuery!, BACKLOG_MAX_TICKETS);
   const tickets = searchResults.issues;
 
   if (tickets.length === 0) {
@@ -370,9 +408,18 @@ export async function runJiraBacklog(args: CliArgs): Promise<void> {
   }
 
   console.log(`[RAVEN] Found ${tickets.length} ticket(s) to process.\n`);
+  if (searchResults.total > tickets.length) {
+    console.warn(
+      `[RAVEN] WARNING: query matched ${searchResults.total} ticket(s) but only the first ` +
+      `${tickets.length} will be processed this run — narrow the JQL or run again for the rest.`
+    );
+  }
 
-  let processed = 0;
-  let failed = 0;
+  const outcomes = new Map<string, string[]>(); // category → ["ARTS-220: reason", ...]
+  const note = (category: string, line: string) => {
+    if (!outcomes.has(category)) outcomes.set(category, []);
+    outcomes.get(category)!.push(line);
+  };
 
   for (let i = 0; i < tickets.length; i++) {
     const ticket = tickets[i]!;
@@ -382,7 +429,7 @@ export async function runJiraBacklog(args: CliArgs): Promise<void> {
 
     try {
       // Extract error info from ticket
-      const { errors, triageResult } = await extractFromTicket(ticket.key, jiraClient);
+      const { errors, triageResult, ticketText } = await extractFromTicket(ticket.key, jiraClient);
 
       // Build context for this ticket
       const ctx: PipelineContext = {
@@ -393,12 +440,14 @@ export async function runJiraBacklog(args: CliArgs): Promise<void> {
         jiraProject: args.jiraProject ?? args.app,
         bitbucketProject: args.bitbucketProject,
         bitbucketRepo: args.bitbucketRepo,
+      branch: args.branch,
         skipTests: args.skipTests,
         verbose: args.verbose,
         errors,
         ticketKey: ticket.key,
         isDuplicate: false,
         triageResult,
+        ticketText,
       };
 
       const maxStep = args.stopAfter ?? 6;
@@ -414,29 +463,46 @@ export async function runJiraBacklog(args: CliArgs): Promise<void> {
         t("PLAN", s);
       }
 
+      // In dry-run mode, stop after plan unless --stop-after explicitly
+      // requests more — mirrors runPipeline. (implement/createPr also guard
+      // on ctx.dryRun themselves; this keeps the two entry points consistent.)
+      const stopAfterPlan = ctx.dryRun && !args.stopAfter;
+
       // Step 4: IMPLEMENT
-      if (maxStep >= 4 && ctx.fixPlan?.patch) {
+      if (!stopAfterPlan && maxStep >= 4 && ctx.fixPlan?.patch) {
         const s = Date.now();
         await implement(ctx, bitbucketClient);
         t("IMPLEMENT", s);
       }
 
       // Step 5: CREATE PR
-      if (maxStep >= 5 && ctx.branchName) {
+      if (!stopAfterPlan && maxStep >= 5 && ctx.branchName) {
         const s = Date.now();
         await createPr(ctx, bitbucketClient, jiraClient);
         t("CREATE-PR", s);
       }
 
       validate(ctx);
-      processed++;
-    } catch (error) {
-      console.error(`[RAVEN] Failed on ${ticket.key}: ${(error as Error).message}`);
-      failed++;
+      // A ticket only counts as "planned" when PLAN actually produced a
+      // patch — e.g. --stop-after 2 (PLAN never ran) or a plan step that
+      // completed without a usable patch must not be counted as planned.
+      note(ctx.fixPlan?.patch ? "planned" : "no-plan", ticket.key);
+    } catch (e) {
+      const category = e instanceof FunctionalPlanError ? e.category : "error";
+      note(category, `${ticket.key}: ${(e as Error).message}`);
+      console.log(`[RAVEN] ${category === "error" ? "Failed on" : "Skipped"} ${ticket.key}: ${(e as Error).message}`);
     }
   }
 
-  console.log(`\n[RAVEN] Jira backlog complete: ${processed} processed, ${failed} failed out of ${tickets.length} tickets.`);
+  const plannedCount = outcomes.get("planned")?.length ?? 0;
+  console.log(
+    `\n[RAVEN] Jira backlog complete: ${plannedCount} planned, ${tickets.length - plannedCount} not planned, of ${tickets.length} ticket(s).`,
+  );
+  for (const [category, lines] of outcomes) {
+    if (category === "planned") continue;
+    console.log(`[RAVEN]   ${category} (${lines.length}):`);
+    for (const line of lines) console.log(`[RAVEN]     ${line}`);
+  }
   await stopAI();
 }
 
