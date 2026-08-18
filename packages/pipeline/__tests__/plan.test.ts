@@ -90,6 +90,18 @@ describe("extractTargetClasses", () => {
     expect(classes.has("HTTP.java")).toBe(false);
     expect(classes.has("ERROR.java")).toBe(false);
   });
+
+  it("does not extract Word:number tokens from ticket prose with no log level on the line", () => {
+    // Backlog tickets without a stack trace get their prose used as the
+    // synthetic error text; compact tokens like "Limit:40" must not mint
+    // target classes, or the functional-bug path is never taken.
+    const classes = extractTargetClasses(
+      "Increase the report display cap",
+      "The report shows at most Limit:40 rows per page.\nA config value Timeout:30 applies to exports.",
+    );
+    expect(classes.has("Limit.java")).toBe(false);
+    expect(classes.has("Timeout.java")).toBe(false);
+  });
 });
 
 describe("validatePatchTargets", () => {
@@ -282,6 +294,55 @@ describe("extractRelevantCode", () => {
     const result = extractRelevantCode(source, "KEYWORD_LINE_MARKER context", 12_000);
     expect(result).toContain("KEYWORD_LINE_MARKER");
     expect(result.length).toBeLessThanOrEqual(12_000 + 200);
+  });
+});
+
+describe("plan() functional fallback after failed class search", () => {
+  it("falls back to planFunctional when extracted classes locate no source and ticketText exists", async () => {
+    const failingClient = {
+      readFile: vi.fn().mockRejectedValue(new Error("404")),
+      listFiles: vi.fn().mockResolvedValue([]),
+      listRepos: vi.fn().mockRejectedValue(new Error("404")),
+    };
+    const ctx = {
+      app: "NOSUCHAPP5",
+      component: "nosuchapp5-fake-api",
+      errors: [
+        // A genuine-looking log token that resolves to no real file — the
+        // class search must exhaust, then fall back instead of throwing.
+        { message: "ERROR NoSuchClazz:42 - see ticket", stackTrace: "", occurrences: 1, dedupeKey: "k" },
+      ],
+      ticketKey: "TEST-10",
+      ticketText: "Report page truncates results, see attached screenshot",
+      dryRun: false,
+      isDuplicate: false,
+    } as unknown as PipelineContext;
+
+    await plan(ctx, failingClient as never);
+
+    expect(vi.mocked(planFunctional)).toHaveBeenCalledOnce();
+    expect(vi.mocked(askAI)).not.toHaveBeenCalled();
+  });
+
+  it("still refuses to plan without ticketText when no source is found", async () => {
+    const failingClient = {
+      readFile: vi.fn().mockRejectedValue(new Error("404")),
+      listFiles: vi.fn().mockResolvedValue([]),
+      listRepos: vi.fn().mockRejectedValue(new Error("404")),
+    };
+    const ctx = {
+      app: "NOSUCHAPP6",
+      component: "nosuchapp6-fake-api",
+      errors: [
+        { message: "ERROR NoSuchClazz:42 - boom", stackTrace: "", occurrences: 1, dedupeKey: "k" },
+      ],
+      ticketKey: "TEST-11",
+      dryRun: false,
+      isDuplicate: false,
+    } as unknown as PipelineContext;
+
+    await expect(plan(ctx, failingClient as never)).rejects.toThrow(/no source files/i);
+    expect(vi.mocked(planFunctional)).not.toHaveBeenCalled();
   });
 });
 

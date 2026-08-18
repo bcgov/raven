@@ -463,15 +463,20 @@ export async function runJiraBacklog(args: CliArgs): Promise<void> {
         t("PLAN", s);
       }
 
+      // In dry-run mode, stop after plan unless --stop-after explicitly
+      // requests more — mirrors runPipeline. (implement/createPr also guard
+      // on ctx.dryRun themselves; this keeps the two entry points consistent.)
+      const stopAfterPlan = ctx.dryRun && !args.stopAfter;
+
       // Step 4: IMPLEMENT
-      if (maxStep >= 4 && ctx.fixPlan?.patch) {
+      if (!stopAfterPlan && maxStep >= 4 && ctx.fixPlan?.patch) {
         const s = Date.now();
         await implement(ctx, bitbucketClient);
         t("IMPLEMENT", s);
       }
 
       // Step 5: CREATE PR
-      if (maxStep >= 5 && ctx.branchName) {
+      if (!stopAfterPlan && maxStep >= 5 && ctx.branchName) {
         const s = Date.now();
         await createPr(ctx, bitbucketClient, jiraClient);
         t("CREATE-PR", s);

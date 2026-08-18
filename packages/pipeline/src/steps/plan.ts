@@ -297,6 +297,14 @@ export async function plan(
   // DMS-364 produced a patch for a package that doesn't exist). Failing here
   // gives a clear, actionable error instead of a downstream patch failure.
   if (sourceFiles.length === 0) {
+    // Extracted tokens can be junk (ticket prose, truncated logs) that no
+    // repo will ever match. With ticket text available the functional-bug
+    // path is a better fallback than refusing outright.
+    if (ctx.ticketText) {
+      console.log("[PLAN] No source found for extracted classes — falling back to functional-bug path");
+      const { planFunctional } = await import("./plan-functional.js");
+      return planFunctional(ctx, bitbucketClient);
+    }
     throw new Error(
       `No source files located in Bitbucket for ${[...targetClasses].join(", ") || "(no target classes extracted from the error)"} — ` +
       `refusing to generate a fix plan without real source. Check --bitbucket-project/--bitbucket-repo.`
@@ -421,8 +429,13 @@ export function extractTargetClasses(message: string, stackTrace: string): Set<s
   // distinguishes logger classes from stack-frame tokens like "Foo.java:42"
   // (the token before that ':' is "java", all-lowercase). Requiring at
   // least one lowercase letter in the token excludes ALL-CAPS noise like
-  // "HTTP:8080" or "ERROR:123" that isn't a class name.
-  const loggerLineMatches = fullText.matchAll(/\b([A-Z][\w$]*[a-z][\w$]*):\d+\b/g);
+  // "HTTP:8080" or "ERROR:123" that isn't a class name. An uppercase log
+  // level must precede the token on the same line: this text can be ticket
+  // prose (backlog tickets without a stack trace), and compact tokens like
+  // "Limit:40" would otherwise mint classes and bypass the functional path.
+  const loggerLineMatches = fullText.matchAll(
+    /\b(?:ERROR|WARN(?:ING)?|INFO|DEBUG|TRACE|FATAL|SEVERE)\b[^\r\n]*?\b([A-Z][\w$]*[a-z][\w$]*):\d+\b/g,
+  );
   for (const m of loggerLineMatches) {
     classes.add(`${m[1]!}.java`);
   }
