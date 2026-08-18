@@ -1,10 +1,12 @@
 import spawn from "cross-spawn";
 import { fileURLToPath } from "node:url";
-import { dirname, join, isAbsolute, relative, resolve } from "node:path";
+import { dirname, join, isAbsolute, resolve } from "node:path";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const MAX_DOTNET_SCAN_DEPTH = 5;
+const IGNORED_DOTNET_DIRECTORIES = new Set(["node_modules", "bin", "obj", "dist"]);
 
 export interface RunScanOptions {
   projectKey: string;
@@ -20,7 +22,6 @@ export interface RunScanOptions {
   timeoutMs?: number;
   useMsBuild?: boolean;
   runTests?: boolean;
-  testsDir?: string;
   solutionFile?: string;
 }
 
@@ -104,79 +105,68 @@ export function getMergedSonarProps(projectDir?: string): {
   };
 }
 
-export function hasDotNetCode(dir: string, depth = 0): boolean {
-  if (depth > 5) return false;
+function findDotNetFiles(
+  dir: string,
+  predicate: (fileName: string) => boolean,
+  depth = 0,
+): string[] {
+  if (depth > MAX_DOTNET_SCAN_DEPTH) return [];
   try {
     const files = readdirSync(dir);
+    const matches: string[] = [];
     for (const file of files) {
-      if (["node_modules", "bin", "obj", "dist"].includes(file.toLowerCase()) || file.startsWith(".")) {
-
-        continue;
-      }
+      const lower = file.toLowerCase();
+      if (IGNORED_DOTNET_DIRECTORIES.has(lower) || file.startsWith(".")) continue;
       const fullPath = join(dir, file);
       const stat = statSync(fullPath);
       if (stat.isDirectory()) {
-        if (hasDotNetCode(fullPath, depth + 1)) {
-          return true;
-        }
-      } else {
-        const lower = file.toLowerCase();
-        if (
-          lower.endsWith(".cs") ||
-          lower.endsWith(".vb") ||
-          lower.endsWith(".csproj") ||
-          lower.endsWith(".vbproj") ||
-          lower.endsWith(".sln") ||
-          lower.endsWith(".slnx")
-        ) {
-          return true;
-        }
+        matches.push(...findDotNetFiles(fullPath, predicate, depth + 1));
+      } else if (predicate(file)) {
+        matches.push(fullPath);
       }
     }
+    return matches;
   } catch {
-    // Ignore read errors
+    return [];
   }
-  return false;
+}
+
+function isDotNetProjectFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  return lower.endsWith(".csproj") || lower.endsWith(".vbproj");
+}
+
+function isDotNetSolutionFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  return lower.endsWith(".slnx") || lower.endsWith(".sln");
+}
+
+function isDotNetCodeFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  return (
+    lower.endsWith(".cs") ||
+    lower.endsWith(".vb") ||
+    isDotNetProjectFile(fileName) ||
+    isDotNetSolutionFile(fileName)
+  );
+}
+
+function isDotNetTestFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  return (
+    (isDotNetProjectFile(fileName) && lower.includes("test")) ||
+    ((lower.endsWith("tests.cs") || lower.endsWith("test.cs")) &&
+      !lower.includes("sonar-scanner.test.cs") &&
+      !lower.includes("sonar-client.test.cs"))
+  );
+}
+
+export function hasDotNetCode(dir: string, depth = 0): boolean {
+  return findDotNetFiles(dir, isDotNetCodeFile, depth).length > 0;
 }
 
 export function hasDotNetTests(dir: string, depth = 0): boolean {
-  if (depth > 5) return false;
-  try {
-    const files = readdirSync(dir);
-    for (const file of files) {
-      const lower = file.toLowerCase();
-      if (
-        lower === "node_modules" ||
-        lower === "bin" ||
-        lower === "obj" ||
-        lower === "dist" ||
-        lower.startsWith(".")
-      ) {
-        continue;
-      }
-      const fullPath = join(dir, file);
-      const stat = statSync(fullPath);
-      if (stat.isDirectory()) {
-        if (hasDotNetTests(fullPath, depth + 1)) {
-          return true;
-        }
-      } else {
-        if (lower.endsWith(".csproj") && lower.includes("test")) {
-          return true;
-        }
-        if (
-          (lower.endsWith("tests.cs") || lower.endsWith("test.cs")) &&
-          !lower.includes("sonar-scanner.test.cs") &&
-          !lower.includes("sonar-client.test.cs")
-        ) {
-          return true;
-        }
-      }
-    }
-  } catch {
-    // Ignore read errors
-  }
-  return false;
+  return findDotNetFiles(dir, isDotNetTestFile, depth).length > 0;
 }
 
 export function hasNodeTests(dir: string): boolean {
@@ -211,27 +201,6 @@ export function getScannerPath(bin: string): string {
   return bin;
 }
 
-function getTestsDir(projectDir: string, configuredTestsDir?: string): string | undefined {
-  if (configuredTestsDir) {
-    const testsDir = isAbsolute(configuredTestsDir)
-      ? configuredTestsDir
-      : resolve(projectDir, configuredTestsDir);
-    if (!existsSync(testsDir)) {
-      throw new Error(`Configured tests directory does not exist: "${testsDir}"`);
-    }
-    return testsDir;
-  }
-
-  const siblingTestsDir = resolve(projectDir, "..", "tests");
-  return existsSync(siblingTestsDir) ? siblingTestsDir : undefined;
-}
-
-function getRelativeTestsDir(projectDir: string, testsDir: string | undefined): string | undefined {
-  if (!testsDir) return undefined;
-  const relativeTestsDir = relative(projectDir, testsDir).replaceAll("\\", "/");
-  return relativeTestsDir && relativeTestsDir !== "." ? relativeTestsDir : undefined;
-}
-
 function getDotNetBuildTarget(projectDir: string, configuredSolutionFile?: string): string | undefined {
   if (configuredSolutionFile) {
     const solutionFile = isAbsolute(configuredSolutionFile)
@@ -243,41 +212,20 @@ function getDotNetBuildTarget(projectDir: string, configuredSolutionFile?: strin
     return solutionFile;
   }
 
-  let files: string[];
-  try {
-    const entries = readdirSync(projectDir);
-    if (!Array.isArray(entries)) return undefined;
-    files = entries;
-  } catch {
-    return undefined;
-  }
-
-  const slnxFiles = files.filter((file) => file.toLowerCase().endsWith(".slnx"));
+  const slnxFiles = findDotNetFiles(projectDir, (file) => file.toLowerCase().endsWith(".slnx"));
   if (slnxFiles.length === 1) {
-    return join(projectDir, slnxFiles[0]);
+    return slnxFiles[0];
   }
   if (slnxFiles.length > 1) return undefined;
 
-  const slnFiles = files.filter((file) => file.toLowerCase().endsWith(".sln"));
+  const slnFiles = findDotNetFiles(projectDir, (file) => file.toLowerCase().endsWith(".sln"));
   if (slnFiles.length === 1) {
-    return join(projectDir, slnFiles[0]);
+    return slnFiles[0];
   }
   if (slnFiles.length > 1) return undefined;
 
-  const projectFiles = files.filter((file) => {
-    const lower = file.toLowerCase();
-    return lower.endsWith(".csproj") || lower.endsWith(".vbproj");
-  });
-  return projectFiles.length === 1 ? join(projectDir, projectFiles[0]) : undefined;
-}
-
-function getSonarTestReportsPath(projectDir: string, testsDir: string | undefined, fileName: string): string {
-  const reportPaths = [`**/TestResults/**/${fileName}`];
-  const relativeTestsDir = getRelativeTestsDir(projectDir, testsDir);
-  if (relativeTestsDir) {
-    reportPaths.unshift(`${relativeTestsDir}/**/TestResults/**/${fileName}`);
-  }
-  return reportPaths.join(",");
+  const projectFiles = findDotNetFiles(projectDir, isDotNetProjectFile);
+  return projectFiles.length === 1 ? projectFiles[0] : undefined;
 }
 
 interface RunCommandResult {
@@ -318,8 +266,10 @@ function runCommand(
 
 export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
   const bin = opts.scannerBin ?? process.env.SONAR_SCANNER_BIN ?? "sonar-scanner";
-  const isDotNet = opts.useMsBuild ?? hasDotNetCode(opts.projectDir);
-  const candidateTestsDir = getTestsDir(opts.projectDir, opts.testsDir);
+  const isDotNet =
+    opts.useMsBuild ??
+    (Boolean(opts.solutionFile) ||
+      hasDotNetCode(opts.projectDir));
 
   if (!isDotNet) {
     if (!isValidSonarScanner(bin)) {
@@ -371,19 +321,8 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
     }
 
     const hasProjectTests = hasDotNetTests(opts.projectDir);
-    const hasCandidateTests = candidateTestsDir ? hasDotNetTests(candidateTestsDir) : false;
     const dotNetBuildTarget = getDotNetBuildTarget(opts.projectDir, opts.solutionFile);
-    const dotNetTestTarget =
-      opts.solutionFile
-        ? dotNetBuildTarget
-        : candidateTestsDir
-          ? getDotNetBuildTarget(candidateTestsDir) ?? dotNetBuildTarget
-          : dotNetBuildTarget;
-    const testsDir =
-      hasCandidateTests || (opts.runTests === true && opts.testsDir !== undefined)
-        ? candidateTestsDir
-        : undefined;
-    const shouldRunTests = opts.runTests ?? (hasProjectTests || hasCandidateTests);
+    const shouldRunTests = opts.runTests ?? hasProjectTests;
 
     const beginArgs: string[] = [
       "begin",
@@ -398,14 +337,10 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
 
     if (shouldRunTests) {
       beginArgs.push(
-        `/d:sonar.cs.opencover.reportsPaths=${getSonarTestReportsPath(
-          opts.projectDir,
-          testsDir,
-          "coverage.opencover.xml",
-        )}`,
+        "/d:sonar.cs.opencover.reportsPaths=**/TestResults/**/coverage.opencover.xml",
       );
       beginArgs.push(
-        `/d:sonar.cs.vstest.reportsPaths=${getSonarTestReportsPath(opts.projectDir, testsDir, "*.trx")}`,
+        "/d:sonar.cs.vstest.reportsPaths=**/TestResults/**/*.trx",
       );
     }
 
@@ -471,25 +406,23 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
     }
     // 2.5. Test (if shouldRunTests)
     if (shouldRunTests) {
-      const testArgs = [
-        "test",
-        ...(dotNetTestTarget ? [dotNetTestTarget] : []),
-        ...(testsDir || dotNetTestTarget ? [] : ["--no-build"]),
-        "--collect:XPlat Code Coverage",
-        "--logger",
-        "trx",
-        "--",
-        "DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover",
-      ];
       const testResult = await runCommand(
         "dotnet",
-        testArgs,
+        [
+          "test",
+          ...(dotNetBuildTarget ? [dotNetBuildTarget] : []),
+          "--collect:XPlat Code Coverage",
+          "--logger",
+          "trx",
+          "--",
+          "DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover",
+        ],
         opts.projectDir,
         getRemainingTimeout()
       );
 
-      combinedOut += `\n[STEP 2.5: TEST]\n` + testResult.stdout;
-      combinedErr += `\n[STEP 2.5: TEST]\n` + testResult.stderr;
+      combinedOut += "\n[STEP 2.5: TEST]\n" + testResult.stdout;
+      combinedErr += "\n[STEP 2.5: TEST]\n" + testResult.stderr;
 
       if (!testResult.success) {
         return {
@@ -521,12 +454,7 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
 
   // Fallback to normal sonar-scanner
   const hasProjectTests = hasNodeTests(opts.projectDir);
-  const hasCandidateTests = candidateTestsDir ? hasNodeTests(candidateTestsDir) : false;
-  const testsDir =
-    hasCandidateTests || (opts.runTests === true && opts.testsDir !== undefined)
-      ? candidateTestsDir
-      : undefined;
-  const runNodeTests = opts.runTests ?? (hasProjectTests || hasCandidateTests);
+  const runNodeTests = opts.runTests ?? hasProjectTests;
 
   const args: string[] = [
     `-Dsonar.projectKey=${opts.projectKey}`,
@@ -539,15 +467,7 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
   if (coverageExclusions) args.push(`-Dsonar.coverage.exclusions=${coverageExclusions}`);
 
   if (runNodeTests) {
-    const reportPaths = ["coverage/lcov.info", "**/coverage/lcov.info"];
-    const relativeTestsDir = getRelativeTestsDir(opts.projectDir, testsDir);
-    if (relativeTestsDir) {
-      reportPaths.unshift(`${relativeTestsDir}/coverage/lcov.info`);
-      if (!relativeTestsDir.startsWith("../")) {
-        reportPaths.unshift(`${relativeTestsDir}/**/coverage/lcov.info`);
-      }
-    }
-    args.push(`-Dsonar.javascript.lcov.reportPaths=${reportPaths.join(",")}`);
+    args.push("-Dsonar.javascript.lcov.reportPaths=coverage/lcov.info,**/coverage/lcov.info");
   }
 
   if (opts.extraArgs?.length)  args.push(...opts.extraArgs);
@@ -566,7 +486,7 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
     const testResult = await runCommand(
       process.platform === "win32" ? "npm.cmd" : "npm",
       ["test"],
-      testsDir ?? opts.projectDir,
+      opts.projectDir,
       getRemainingTimeout(1000)
     );
     if (!testResult.success) {

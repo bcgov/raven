@@ -443,30 +443,27 @@ describe("MSBuild/DotNet detection and execution tests", () => {
       await expect(scanPromise).resolves.toMatchObject({ success: true, exitCode: 0 });
     });
 
-    it("uses the solution for tests when testsDir is outside the project directory", async () => {
+    it("treats an explicit solutionFile as MSBuild input when useMsBuild is omitted", async () => {
       const spawnedChildren: MockChildProcess[] = [];
+      const solutionFile = "/repo/build/Jarvis.slnx";
       vi.mocked(spawn).mockImplementation(() => {
         const child = new MockChildProcess();
         spawnedChildren.push(child);
         return child as any;
       });
-      vi.mocked(existsSync).mockImplementation((path: any) => {
-        const normalizedPath = String(path).replaceAll("\\", "/");
-        return normalizedPath.includes("SonarScanner.MSBuild.exe") || normalizedPath === "/repo/tests";
-      });
-      vi.mocked(readdirSync).mockImplementation((path: any) =>
-        path === "/repo/src" ? ["Jarvis.slnx"] as any : [] as any,
+      vi.mocked(existsSync).mockImplementation((path: any) =>
+        String(path).replaceAll("\\", "/") === solutionFile ||
+        String(path).includes("SonarScanner.MSBuild.exe"),
       );
-      vi.mocked(statSync).mockReturnValue({ isDirectory: () => false } as any);
+      vi.mocked(readdirSync).mockReturnValue([] as any);
 
       const scanPromise = runScan({
         projectKey: "dotnet-project",
         branch: "main",
-        projectDir: "/repo/src",
-        testsDir: "/repo/tests",
+        projectDir: "/repo",
+        solutionFile,
         serverUrl: "https://sonar.example.com",
         token: "sonar-tok-456",
-        useMsBuild: true,
         runTests: true,
       });
 
@@ -475,23 +472,19 @@ describe("MSBuild/DotNet detection and execution tests", () => {
       expect(spawn).toHaveBeenNthCalledWith(
         1,
         expect.stringContaining("SonarScanner.MSBuild.exe"),
-        expect.arrayContaining([
-          "/d:sonar.cs.opencover.reportsPaths=../tests/**/TestResults/**/coverage.opencover.xml,**/TestResults/**/coverage.opencover.xml",
-        ]),
+        expect.arrayContaining(["begin"]),
         expect.any(Object),
       );
       spawnedChildren[0].emit("close", 0);
-
       await new Promise((resolve) => setTimeout(resolve, 10));
       expect(spawnedChildren.length).toBe(2);
       expect(spawn).toHaveBeenNthCalledWith(
         2,
         "dotnet",
-        [ "build", join("/repo/src", "Jarvis.slnx") ],
-        expect.objectContaining({ cwd: "/repo/src" }),
+        ["build", solutionFile],
+        expect.any(Object),
       );
       spawnedChildren[1].emit("close", 0);
-
       await new Promise((resolve) => setTimeout(resolve, 10));
       expect(spawnedChildren.length).toBe(3);
       expect(spawn).toHaveBeenNthCalledWith(
@@ -499,20 +492,45 @@ describe("MSBuild/DotNet detection and execution tests", () => {
         "dotnet",
         [
           "test",
-          join("/repo/src", "Jarvis.slnx"),
+          solutionFile,
           "--collect:XPlat Code Coverage",
           "--logger",
           "trx",
           "--",
           "DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover",
         ],
-        expect.objectContaining({ cwd: "/repo/src" }),
+        expect.any(Object),
       );
       spawnedChildren[2].emit("close", 0);
-
       await new Promise((resolve) => setTimeout(resolve, 10));
       expect(spawnedChildren.length).toBe(4);
       spawnedChildren[3].emit("close", 0);
+
+      await expect(scanPromise).resolves.toMatchObject({ success: true, exitCode: 0 });
+    });
+
+    it("honors useMsBuild false even when solutionFile is provided", async () => {
+      const child = new MockChildProcess();
+      vi.mocked(spawn).mockReturnValue(child as any);
+      vi.mocked(existsSync).mockReturnValue(false);
+
+      const scanPromise = runScan({
+        projectKey: "dotnet-project",
+        branch: "main",
+        projectDir: "/repo",
+        solutionFile: "/repo/build/Jarvis.slnx",
+        serverUrl: "https://sonar.example.com",
+        token: "sonar-tok-456",
+        useMsBuild: false,
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawn).toHaveBeenCalledWith(
+        "sonar-scanner",
+        expect.any(Array),
+        expect.any(Object),
+      );
+      child.emit("close", 0);
 
       await expect(scanPromise).resolves.toMatchObject({ success: true, exitCode: 0 });
     });
@@ -555,222 +573,6 @@ describe("MSBuild/DotNet detection and execution tests", () => {
       expect(spawn).toHaveBeenCalledTimes(1);
     });
 
-    it("uses an explicit sibling tests directory for test execution and reports", async () => {
-      const spawnedChildren: MockChildProcess[] = [];
-      vi.mocked(spawn).mockImplementation(() => {
-        const child = new MockChildProcess();
-        spawnedChildren.push(child);
-        return child as any;
-      });
-      vi.mocked(existsSync).mockImplementation((path: any) =>
-        String(path).includes("SonarScanner.MSBuild.exe") || String(path).includes("/tmp/copy/tests"),
-      );
-      vi.mocked(readdirSync).mockImplementation((path: any) =>
-        String(path).replaceAll("\\", "/").endsWith("/tests")
-          ? ["MyApp.Tests.csproj"] as any
-          : [] as any,
-      );
-      vi.mocked(statSync).mockReturnValue({ isDirectory: () => false } as any);
-
-      const scanPromise = runScan({
-        projectKey: "dotnet-project",
-        branch: "main",
-        projectDir: "/tmp/copy/src",
-        testsDir: "/tmp/copy/tests",
-        serverUrl: "https://sonar.example.com",
-        token: "sonar-tok-456",
-        useMsBuild: true,
-        runTests: true,
-      });
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(spawnedChildren.length).toBe(1);
-      expect(spawn).toHaveBeenNthCalledWith(
-        1,
-        expect.stringContaining("SonarScanner.MSBuild.exe"),
-        expect.arrayContaining([
-          "/d:sonar.cs.opencover.reportsPaths=../tests/**/TestResults/**/coverage.opencover.xml,**/TestResults/**/coverage.opencover.xml",
-          "/d:sonar.cs.vstest.reportsPaths=../tests/**/TestResults/**/*.trx,**/TestResults/**/*.trx",
-        ]),
-        expect.any(Object),
-      );
-      spawnedChildren[0].emit("close", 0);
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(spawnedChildren.length).toBe(2);
-      spawnedChildren[1].emit("close", 0);
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(spawnedChildren.length).toBe(3);
-      expect(spawn).toHaveBeenNthCalledWith(
-        3,
-        "dotnet",
-        [
-          "test",
-          join("/tmp/copy/tests", "MyApp.Tests.csproj"),
-          "--collect:XPlat Code Coverage",
-          "--logger",
-          "trx",
-          "--",
-          "DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover",
-        ],
-        expect.objectContaining({ cwd: "/tmp/copy/src" }),
-      );
-      spawnedChildren[2].emit("close", 0);
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(spawnedChildren.length).toBe(4);
-      spawnedChildren[3].emit("close", 0);
-
-      const result = await scanPromise;
-      expect(result.success).toBe(true);
-    });
-
-    it("auto-detects a sibling tests directory for test execution and reports", async () => {
-      const spawnedChildren: MockChildProcess[] = [];
-      vi.mocked(spawn).mockImplementation(() => {
-        const child = new MockChildProcess();
-        spawnedChildren.push(child);
-        return child as any;
-      });
-      vi.mocked(existsSync).mockImplementation((path: any) => {
-        const normalizedPath = String(path).replaceAll("\\", "/");
-        return normalizedPath.endsWith("/tests") || normalizedPath.includes("SonarScanner.MSBuild.exe");
-      });
-      vi.mocked(readdirSync).mockImplementation((path: any) =>
-        String(path).replaceAll("\\", "/").endsWith("/tests")
-          ? ["MyApp.Tests.csproj"] as any
-          : [] as any,
-      );
-      vi.mocked(statSync).mockReturnValue({ isDirectory: () => false } as any);
-
-      const scanPromise = runScan({
-        projectKey: "dotnet-project",
-        branch: "main",
-        projectDir: "/tmp/copy/src",
-        serverUrl: "https://sonar.example.com",
-        token: "sonar-tok-456",
-        useMsBuild: true,
-      });
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(spawnedChildren.length).toBe(1);
-      expect(spawn).toHaveBeenNthCalledWith(
-        1,
-        expect.stringContaining("SonarScanner.MSBuild.exe"),
-        expect.arrayContaining([
-          "/d:sonar.cs.opencover.reportsPaths=../tests/**/TestResults/**/coverage.opencover.xml,**/TestResults/**/coverage.opencover.xml",
-          "/d:sonar.cs.vstest.reportsPaths=../tests/**/TestResults/**/*.trx,**/TestResults/**/*.trx",
-        ]),
-        expect.any(Object),
-      );
-      spawnedChildren[0].emit("close", 0);
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      spawnedChildren[1].emit("close", 0);
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(spawnedChildren.length).toBe(3);
-      expect(spawn).toHaveBeenNthCalledWith(
-        3,
-        "dotnet",
-        expect.arrayContaining(["test", expect.stringMatching(/tests[\\/]MyApp\.Tests\.csproj$/)]),
-        expect.objectContaining({ cwd: "/tmp/copy/src" }),
-      );
-      spawnedChildren[2].emit("close", 0);
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      spawnedChildren[3].emit("close", 0);
-
-      const result = await scanPromise;
-      expect(result.success).toBe(true);
-    });
-
-    it("falls back to project tests when the sibling tests directory has no tests", async () => {
-      const spawnedChildren: MockChildProcess[] = [];
-      vi.mocked(spawn).mockImplementation(() => {
-        const child = new MockChildProcess();
-        spawnedChildren.push(child);
-        return child as any;
-      });
-      vi.mocked(existsSync).mockImplementation((path: any) => {
-        const normalizedPath = String(path).replaceAll("\\", "/");
-        return normalizedPath.endsWith("/tests") || normalizedPath.includes("SonarScanner.MSBuild.exe");
-      });
-      vi.mocked(readdirSync).mockImplementation((path: any) =>
-        String(path).replaceAll("\\", "/").endsWith("/src")
-          ? ["MyApp.Tests.csproj"] as any
-          : [] as any,
-      );
-      vi.mocked(statSync).mockReturnValue({ isDirectory: () => false } as any);
-
-      const scanPromise = runScan({
-        projectKey: "dotnet-project",
-        branch: "main",
-        projectDir: "/tmp/copy/src",
-        serverUrl: "https://sonar.example.com",
-        token: "sonar-tok-456",
-        useMsBuild: true,
-      });
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(spawnedChildren.length).toBe(1);
-      expect(spawn).toHaveBeenNthCalledWith(
-        1,
-        expect.stringContaining("SonarScanner.MSBuild.exe"),
-        expect.arrayContaining([
-          "/d:sonar.cs.opencover.reportsPaths=**/TestResults/**/coverage.opencover.xml",
-          "/d:sonar.cs.vstest.reportsPaths=**/TestResults/**/*.trx",
-        ]),
-        expect.any(Object),
-      );
-      expect(spawnedChildren[0]).toBeDefined();
-      spawnedChildren[0].emit("close", 0);
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      spawnedChildren[1].emit("close", 0);
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(spawnedChildren.length).toBe(3);
-      expect(spawn).toHaveBeenNthCalledWith(
-        3,
-        "dotnet",
-        [
-          "test",
-          join("/tmp/copy/src", "MyApp.Tests.csproj"),
-          "--collect:XPlat Code Coverage",
-          "--logger",
-          "trx",
-          "--",
-          "DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover",
-        ],
-        expect.objectContaining({ cwd: "/tmp/copy/src" }),
-      );
-      spawnedChildren[2].emit("close", 0);
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      spawnedChildren[3].emit("close", 0);
-
-      const result = await scanPromise;
-      expect(result.success).toBe(true);
-    });
-
-    it("rejects an explicit tests directory that does not exist", async () => {
-      vi.mocked(existsSync).mockReturnValue(false);
-
-      await expect(
-        runScan({
-          projectKey: "dotnet-project",
-          branch: "main",
-          projectDir: "/tmp/copy/src",
-          testsDir: "/tmp/copy/missing-tests",
-          serverUrl: "https://sonar.example.com",
-          token: "sonar-tok-456",
-          useMsBuild: true,
-        }),
-      ).rejects.toThrow('Configured tests directory does not exist: "/tmp/copy/missing-tests"');
-      expect(spawn).not.toHaveBeenCalled();
-    });
   });
 
   describe("runScan with Node.js/Fallback support", () => {
@@ -844,61 +646,6 @@ describe("MSBuild/DotNet detection and execution tests", () => {
         ]),
         expect.any(Object)
       );
-    });
-
-    it("uses a literal external LCOV path for an explicit sibling tests directory", async () => {
-      const spawnedChildren: MockChildProcess[] = [];
-      vi.mocked(spawn).mockImplementation(() => {
-        const child = new MockChildProcess();
-        spawnedChildren.push(child);
-        return child as any;
-      });
-      vi.mocked(existsSync).mockImplementation((path: any) => {
-        const normalizedPath = String(path).replaceAll("\\", "/");
-        return normalizedPath === "/tmp/copy/tests" || normalizedPath.endsWith("/tests/package.json");
-      });
-      vi.mocked(readFileSync).mockImplementation((path: any) =>
-        String(path).replaceAll("\\", "/").endsWith("/tests/package.json")
-          ? JSON.stringify({ scripts: { test: "vitest run" } })
-          : "",
-      );
-      vi.mocked(readdirSync).mockReturnValue([] as any);
-      vi.mocked(statSync).mockReturnValue({ isDirectory: () => false } as any);
-
-      const scanPromise = runScan({
-        projectKey: "node-project",
-        branch: "main",
-        projectDir: "/tmp/copy/src",
-        testsDir: "/tmp/copy/tests",
-        serverUrl: "https://sonar.example.com",
-        token: "sonar-tok-012",
-        runTests: true,
-      });
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(spawnedChildren.length).toBe(1);
-      expect(spawn).toHaveBeenNthCalledWith(
-        1,
-        process.platform === "win32" ? "npm.cmd" : "npm",
-        ["test"],
-        expect.objectContaining({ cwd: "/tmp/copy/tests" }),
-      );
-      spawnedChildren[0].emit("close", 0);
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(spawnedChildren.length).toBe(2);
-      expect(spawn).toHaveBeenNthCalledWith(
-        2,
-        "sonar-scanner",
-        expect.arrayContaining([
-          "-Dsonar.javascript.lcov.reportPaths=../tests/coverage/lcov.info,coverage/lcov.info,**/coverage/lcov.info",
-        ]),
-        expect.objectContaining({ cwd: "/tmp/copy/src" }),
-      );
-      spawnedChildren[1].emit("close", 0);
-
-      const result = await scanPromise;
-      expect(result.success).toBe(true);
     });
 
     it("terminates normal scan sequence early if npm tests fail", async () => {
