@@ -35,7 +35,11 @@ vi.mock("../src/steps/plan-functional.js", async (importOriginal) => {
 import { extractTargetClasses, validatePatchTargets, extractRelevantCode, plan } from "../src/steps/plan.js";
 import { planFunctional } from "../src/steps/plan-functional.js";
 import { askAI } from "../src/ai-client.js";
+import { setMapping, getMapping } from "../src/repo-map.js";
 import type { PipelineContext } from "../src/types.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // The real TEST-server log line that produced zero target classes (grep line-number
 // prefix included, level directly followed by LoggerClass:line).
@@ -294,6 +298,121 @@ describe("extractRelevantCode", () => {
     const result = extractRelevantCode(source, "KEYWORD_LINE_MARKER context", 12_000);
     expect(result).toContain("KEYWORD_LINE_MARKER");
     expect(result.length).toBeLessThanOrEqual(12_000 + 200);
+  });
+});
+
+describe("plan() with a cached repo mapping and --branch", () => {
+  const BRANCH = "feature/DMS-310";
+  const HANDLER_PATH =
+    "src/main/java/ca/bc/gov/nrs/dm/controller/GlobalExceptionHandler.java";
+  const HANDLER_PATCH =
+    `{"affectedFiles":["${HANDLER_PATH}"],"rootCause":"rc","proposedFix":"pf","patch":""}\n\n` +
+    `--- a/${HANDLER_PATH}\n+++ b/${HANDLER_PATH}\n@@ -1,1 +1,1 @@\n-a\n+b`;
+  let repoMapDir: string;
+  let savedRepoMapPath: string | undefined;
+
+  beforeEach(() => {
+    savedRepoMapPath = process.env["RAVEN_REPO_MAP_PATH"];
+    repoMapDir = mkdtempSync(join(tmpdir(), "raven-planmap-"));
+    process.env["RAVEN_REPO_MAP_PATH"] = join(repoMapDir, "repo-map.json");
+    // A previous run discovered the fix lives in a shared library repo.
+    setMapping("CACHEAPP", "cacheapp-api", {
+      bitbucketProject: "LIB",
+      bitbucketRepo: "shared-lib",
+      discoveredAt: "2026-08-01T00:00:00.000Z",
+    });
+  });
+
+  afterEach(() => {
+    if (savedRepoMapPath === undefined) delete process.env["RAVEN_REPO_MAP_PATH"];
+    else process.env["RAVEN_REPO_MAP_PATH"] = savedRepoMapPath;
+    rmSync(repoMapDir, { recursive: true, force: true });
+  });
+
+  function cacheCtx(): PipelineContext {
+    return {
+      app: "CACHEAPP",
+      component: "cacheapp-api",
+      branch: BRANCH,
+      errors: [
+        { message: TEST01_MESSAGE, stackTrace: TEST01_STACK, occurrences: 1, dedupeKey: "k" },
+      ],
+      ticketKey: "TEST-20",
+      dryRun: false,
+      isDuplicate: false,
+    } as unknown as PipelineContext;
+  }
+
+  it("reads the cached repo on its default branch, not the app's --branch", async () => {
+    const reads: Array<{ repo: string; at?: string }> = [];
+    const client = {
+      readFile: vi.fn().mockImplementation((_p: string, r: string, path: string, at?: string) => {
+        reads.push({ repo: r, at });
+        return r === "shared-lib" && at === undefined && path === HANDLER_PATH
+          ? Promise.resolve("public class GlobalExceptionHandler { /* Unexpected error */ }")
+          : Promise.reject(new Error("404"));
+      }),
+      listFiles: vi.fn().mockImplementation((_p: string, r: string, _l?: number, _m?: number, at?: string) =>
+        Promise.resolve(r === "shared-lib" && at === undefined ? [HANDLER_PATH] : []),
+      ),
+      listRepos: vi.fn().mockRejectedValue(new Error("404")),
+    };
+    vi.mocked(askAI).mockResolvedValueOnce(HANDLER_PATCH);
+    const ctx = cacheCtx();
+
+    await plan(ctx, client as never);
+
+    expect(ctx.fixPlan?.patch).toContain(HANDLER_PATH);
+    const sharedLibReads = reads.filter((c) => c.repo === "shared-lib");
+    expect(sharedLibReads.length).toBeGreaterThan(0);
+    expect(sharedLibReads.every((c) => c.at === undefined)).toBe(true);
+  });
+
+  it("records a cache-redirected fix as a rerouted source", async () => {
+    const client = {
+      readFile: vi.fn().mockImplementation((_p: string, r: string, path: string, at?: string) =>
+        r === "shared-lib" && at === undefined && path === HANDLER_PATH
+          ? Promise.resolve("public class GlobalExceptionHandler { /* Unexpected error */ }")
+          : Promise.reject(new Error("404")),
+      ),
+      listFiles: vi.fn().mockImplementation((_p: string, r: string, _l?: number, _m?: number, at?: string) =>
+        Promise.resolve(r === "shared-lib" && at === undefined ? [HANDLER_PATH] : []),
+      ),
+      listRepos: vi.fn().mockRejectedValue(new Error("404")),
+    };
+    vi.mocked(askAI).mockResolvedValueOnce(HANDLER_PATCH);
+    const ctx = cacheCtx();
+
+    await plan(ctx, client as never);
+
+    expect(ctx.sourceRepo).toBe("shared-lib");
+    expect(ctx.sourceProject).toBe("LIB");
+  });
+
+  it("keeps --branch for a fix found in the original repo despite a stale redirect", async () => {
+    const client = {
+      readFile: vi.fn().mockImplementation((_p: string, r: string, path: string, at?: string) =>
+        r === "cacheapp-api" && at === BRANCH && path === HANDLER_PATH
+          ? Promise.resolve("public class GlobalExceptionHandler { /* Unexpected error */ }")
+          : Promise.reject(new Error("404")),
+      ),
+      listFiles: vi.fn().mockImplementation((_p: string, r: string, _l?: number, _m?: number, at?: string) =>
+        Promise.resolve(r === "cacheapp-api" && at === BRANCH ? [HANDLER_PATH] : []),
+      ),
+      listRepos: vi.fn().mockRejectedValue(new Error("404")),
+    };
+    vi.mocked(askAI).mockResolvedValueOnce(HANDLER_PATCH);
+    const ctx = cacheCtx();
+
+    await plan(ctx, client as never);
+
+    // The fix stayed in the app repo: no reroute, so IMPLEMENT/CREATE-PR
+    // keep applying --branch to it.
+    expect(ctx.sourceRepo).toBeUndefined();
+    expect(ctx.sourceProject).toBeUndefined();
+    expect(ctx.fixPlan?.patch).toContain(HANDLER_PATH);
+    // The stale mapping self-heals so the next run searches the app repo first.
+    expect(getMapping("CACHEAPP", "cacheapp-api")?.bitbucketRepo).toBe("cacheapp-api");
   });
 });
 

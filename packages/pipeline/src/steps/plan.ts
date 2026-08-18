@@ -51,6 +51,13 @@ export async function plan(
     console.log(`[PLAN] Using cached repo mapping: ${project}/${repo}`);
   }
 
+  // ctx.branch belongs to the app repository. A cache redirect points the
+  // primary search at a DIFFERENT repo (dependency/sibling), which won't
+  // have the app's feature branch — or worse, has an unrelated same-named
+  // one — so redirected reads use that repo's default branch instead.
+  const usingCachedMapping = repo !== originalRepo || project !== originalProject;
+  const primaryRepoBranch = usingCachedMapping ? undefined : ctx.branch;
+
   console.log(`[PLAN] Analyzing ${project}/${repo} for fix...`);
 
   const topError = ctx.errors[0]!;
@@ -90,11 +97,12 @@ export async function plan(
   let sourceFoundInProject = project;
 
   // Strategy 1: Direct file paths from stack trace
-  // ctx.branch applies to app-repo reads only (strategies 1, 2, 2b) —
-  // dependency and sibling repos won't have the app's feature branch.
+  // primaryRepoBranch is ctx.branch only when the primary IS the app repo
+  // (no cache redirect); strategy 2b always reads the app repo, so it keeps
+  // ctx.branch. Dependency and sibling repos are searched on their defaults.
   for (const hint of fileHints.slice(0, 5)) {
     try {
-      const content = await bitbucketClient.readFile(project, repo, hint, ctx.branch);
+      const content = await bitbucketClient.readFile(project, repo, hint, primaryRepoBranch);
       sourceFiles.push({ path: hint, content, repo, project });
       console.log(`[PLAN] Read: ${project}/${repo}/${hint}`);
     } catch {
@@ -108,13 +116,13 @@ export async function plan(
       (cls) => !sourceFiles.some((sf) => sf.path.endsWith(cls))
     ));
     if (remainingClasses.size > 0) {
-      console.log(`[PLAN] Searching ${project}/${repo} tree for: ${[...remainingClasses].join(", ")}${ctx.branch ? ` (branch: ${ctx.branch})` : ""}`);
+      console.log(`[PLAN] Searching ${project}/${repo} tree for: ${[...remainingClasses].join(", ")}${primaryRepoBranch ? ` (branch: ${primaryRepoBranch})` : ""}`);
       startSpinner("Searching repo tree...");
-      const found = await findFilesInRepo(bitbucketClient, project, repo, remainingClasses, ctx.branch);
+      const found = await findFilesInRepo(bitbucketClient, project, repo, remainingClasses, primaryRepoBranch);
       stopSpinner();
       for (const filePath of found.slice(0, 3)) {
         try {
-          const content = await bitbucketClient.readFile(project, repo, filePath, ctx.branch);
+          const content = await bitbucketClient.readFile(project, repo, filePath, primaryRepoBranch);
           sourceFiles.push({ path: filePath, content, repo, project });
           console.log(`[PLAN] Found in app repo: ${filePath}`);
         } catch { /* skip */ }
@@ -123,7 +131,7 @@ export async function plan(
   }
 
   // Strategy 2b: If cache pointed to a different repo, also search the original component repo
-  if (repo !== originalRepo || project !== originalProject) {
+  if (usingCachedMapping) {
     const still = new Set([...targetClasses].filter(
       (cls) => !sourceFiles.some((sf) => sf.path.endsWith(cls))
     ));
@@ -147,10 +155,11 @@ export async function plan(
   if (unfoundClasses.size > 0) {
     console.log(`[PLAN] Source not in app repo — checking dependencies...`);
     startSpinner("Reading pom.xml for dependencies...");
-    // POMs are read from the app repo, so honor ctx.branch — a feature
-    // branch can declare different internal dependencies than the default.
-    // The dependency repos themselves are still searched on their defaults.
-    const depRepos = await findDependencyRepos(bitbucketClient, project, repo, ctx.branch);
+    // POMs are read from the primary repo, so honor --branch only when that
+    // is the app repo — a feature branch can declare different internal
+    // dependencies than the default. A cache-redirected primary and the
+    // dependency repos themselves are searched on their defaults.
+    const depRepos = await findDependencyRepos(bitbucketClient, project, repo, primaryRepoBranch);
     stopSpinner();
     console.log(`[PLAN] Found ${depRepos.length} dependency repo(s) to search`);
 
@@ -373,8 +382,12 @@ export async function plan(
     }
   }
 
-  // Track where the source was actually found
-  if (sourceFoundInRepo !== repo || sourceFoundInProject !== project) {
+  // Track where the source was actually found. Compare against the ORIGINAL
+  // app repo, not the possibly cache-redirected primary: a cache-mapped fix
+  // must be recorded as rerouted so IMPLEMENT/CREATE-PR clone that repo on
+  // its default branch, while a fix found back in the app repo stays
+  // un-routed so --branch keeps applying to it.
+  if (sourceFoundInRepo !== originalRepo || sourceFoundInProject !== originalProject) {
     ctx.sourceProject = sourceFoundInProject;
     ctx.sourceRepo = sourceFoundInRepo;
     console.log(`[PLAN] Fix targets different repo: ${sourceFoundInProject}/${sourceFoundInRepo}`);
@@ -385,6 +398,15 @@ export async function plan(
       discoveredAt: new Date().toISOString(),
     });
     console.log(`[PLAN] Saved repo mapping: ${ctx.app}/${ctx.component} → ${sourceFoundInProject}/${sourceFoundInRepo}`);
+  } else if (usingCachedMapping) {
+    // The cache pointed elsewhere but the fix landed in the app repo — heal
+    // the stale mapping so future runs search the app repo first again.
+    setMapping(ctx.app, ctx.component, {
+      bitbucketProject: originalProject,
+      bitbucketRepo: originalRepo,
+      discoveredAt: new Date().toISOString(),
+    });
+    console.log(`[PLAN] Updated stale repo mapping: ${ctx.app}/${ctx.component} → ${originalProject}/${originalRepo}`);
   }
 
   // Do NOT set ctx.repoPath here. PLAN doesn't yet know the absolute clone
