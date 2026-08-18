@@ -21,10 +21,12 @@
 #   - Runs a single fresh pipeline pass; the pipeline's persistent triage
 #     cooldown keeps repeat runs from re-commenting on known errors.
 #   - Appends to a dated log file per app.
-#   - Takes a per-target lock (mkdir-based) for the run's duration. launchd
-#     serializes same-label jobs natively, so this is a no-op there; it's
-#     what keeps cron (which does NOT serialize) and manual overlapping
-#     invocations from running the same target concurrently.
+#   - Takes a per-target lock (mkdir-based, PID-owned) for the run's
+#     duration. launchd serializes same-label jobs natively, so this is a
+#     no-op there; it's what keeps cron (which does NOT serialize) and
+#     manual overlapping invocations from running the same target
+#     concurrently. A lock is only reclaimed when its recorded owner
+#     process is gone — never on age alone.
 
 set -euo pipefail
 
@@ -45,20 +47,31 @@ log() {
 # Per-target lock: cron doesn't serialize overlapping invocations the way
 # launchd does, so two runs for the same target could otherwise clone/patch
 # the same working tree concurrently. mkdir is atomic, so this doubles as
-# the lock acquisition primitive.
+# the lock acquisition primitive; the acquirer records its PID inside so
+# staleness is judged by owner liveness, never by age — a long build/test
+# run must not have its lock stolen mid-flight. (macOS ships no flock(1),
+# hence PID recording rather than an OS lock.)
 LOCK_DIR="$LOG_DIR/.lock-${PIPELINE_SERVER}-${PIPELINE_APP}-${PIPELINE_COMPONENT}"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-  # Stale-lock guard: a crashed run leaves the dir behind. Locks older
-  # than 2 hours are reclaimed.
-  if [ -n "$(find "$LOCK_DIR" -maxdepth 0 -mmin +120 2>/dev/null)" ]; then
-    rmdir "$LOCK_DIR" 2>/dev/null || true
-    mkdir "$LOCK_DIR" 2>/dev/null || { log "SKIP: could not acquire lock"; exit 0; }
-  else
-    log "SKIP: another run for this target is in progress (lock held)"
+  owner_pid="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+  if [ -n "$owner_pid" ] && ps -p "$owner_pid" > /dev/null 2>&1; then
+    log "SKIP: another run for this target is in progress (lock held by PID $owner_pid)"
     exit 0
   fi
+  if [ -z "$owner_pid" ] && [ -z "$(find "$LOCK_DIR" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then
+    # No PID yet and the dir is fresh: a concurrent acquirer is between
+    # mkdir and its PID write — treat as held.
+    log "SKIP: another run for this target is acquiring the lock"
+    exit 0
+  fi
+  # Owner is dead (crashed run), or no PID was ever recorded and the dir
+  # has aged past the acquire window. Reclaim; mkdir stays the atomic gate
+  # so concurrent reclaimers cannot both win.
+  rm -rf "$LOCK_DIR" 2>/dev/null || true
+  mkdir "$LOCK_DIR" 2>/dev/null || { log "SKIP: could not acquire lock"; exit 0; }
 fi
-trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
+echo $$ > "$LOCK_DIR/pid"
+trap 'rm -rf "$LOCK_DIR" 2>/dev/null' EXIT
 
 # Pre-flight: reachability of the Atlassian base host (VPN check). Reads only
 # the URL variable from ~/.raven/.env — never secrets.
