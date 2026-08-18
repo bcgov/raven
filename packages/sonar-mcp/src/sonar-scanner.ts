@@ -21,6 +21,7 @@ export interface RunScanOptions {
   useMsBuild?: boolean;
   runTests?: boolean;
   testsDir?: string;
+  solutionFile?: string;
 }
 
 export interface RunScanResult {
@@ -231,6 +232,45 @@ function getRelativeTestsDir(projectDir: string, testsDir: string | undefined): 
   return relativeTestsDir && relativeTestsDir !== "." ? relativeTestsDir : undefined;
 }
 
+function getDotNetBuildTarget(projectDir: string, configuredSolutionFile?: string): string | undefined {
+  if (configuredSolutionFile) {
+    const solutionFile = isAbsolute(configuredSolutionFile)
+      ? configuredSolutionFile
+      : resolve(projectDir, configuredSolutionFile);
+    if (!existsSync(solutionFile)) {
+      throw new Error(`Configured .NET solution/project file does not exist: "${solutionFile}"`);
+    }
+    return solutionFile;
+  }
+
+  let files: string[];
+  try {
+    const entries = readdirSync(projectDir);
+    if (!Array.isArray(entries)) return undefined;
+    files = entries;
+  } catch {
+    return undefined;
+  }
+
+  const slnxFiles = files.filter((file) => file.toLowerCase().endsWith(".slnx"));
+  if (slnxFiles.length === 1) {
+    return join(projectDir, slnxFiles[0]);
+  }
+  if (slnxFiles.length > 1) return undefined;
+
+  const slnFiles = files.filter((file) => file.toLowerCase().endsWith(".sln"));
+  if (slnFiles.length === 1) {
+    return join(projectDir, slnFiles[0]);
+  }
+  if (slnFiles.length > 1) return undefined;
+
+  const projectFiles = files.filter((file) => {
+    const lower = file.toLowerCase();
+    return lower.endsWith(".csproj") || lower.endsWith(".vbproj");
+  });
+  return projectFiles.length === 1 ? join(projectDir, projectFiles[0]) : undefined;
+}
+
 function getSonarTestReportsPath(projectDir: string, testsDir: string | undefined, fileName: string): string {
   const reportPaths = [`**/TestResults/**/${fileName}`];
   const relativeTestsDir = getRelativeTestsDir(projectDir, testsDir);
@@ -332,6 +372,13 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
 
     const hasProjectTests = hasDotNetTests(opts.projectDir);
     const hasCandidateTests = candidateTestsDir ? hasDotNetTests(candidateTestsDir) : false;
+    const dotNetBuildTarget = getDotNetBuildTarget(opts.projectDir, opts.solutionFile);
+    const dotNetTestTarget =
+      opts.solutionFile
+        ? dotNetBuildTarget
+        : candidateTestsDir
+          ? getDotNetBuildTarget(candidateTestsDir) ?? dotNetBuildTarget
+          : dotNetBuildTarget;
     const testsDir =
       hasCandidateTests || (opts.runTests === true && opts.testsDir !== undefined)
         ? candidateTestsDir
@@ -406,7 +453,7 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
     // 2. Build
     const buildResult = await runCommand(
       "dotnet",
-      ["build"],
+      ["build", ...(dotNetBuildTarget ? [dotNetBuildTarget] : [])],
       opts.projectDir,
       getRemainingTimeout()
     );
@@ -426,8 +473,8 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
     if (shouldRunTests) {
       const testArgs = [
         "test",
-        ...(testsDir ? [testsDir] : []),
-        ...(testsDir ? [] : ["--no-build"]),
+        ...(dotNetTestTarget ? [dotNetTestTarget] : []),
+        ...(testsDir || dotNetTestTarget ? [] : ["--no-build"]),
         "--collect:XPlat Code Coverage",
         "--logger",
         "trx",
