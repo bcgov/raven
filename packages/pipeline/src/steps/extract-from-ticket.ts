@@ -11,7 +11,7 @@ import type { ErrorInfo, TriageResult } from "../types.js";
 export async function extractFromTicket(
   ticketKey: string,
   jiraClient: JiraClient
-): Promise<{ errors: ErrorInfo[]; triageResult: TriageResult }> {
+): Promise<{ errors: ErrorInfo[]; triageResult: TriageResult; ticketText: string }> {
   startSpinner(`Reading ${ticketKey}...`);
   const issue = await jiraClient.getIssue(ticketKey);
   const comments = await jiraClient.getComments(ticketKey);
@@ -40,7 +40,8 @@ export async function extractFromTicket(
   console.log(`[EXTRACT] ${ticketKey}: ${errors.length} error(s) extracted`);
   console.log(`[EXTRACT] Summary: ${triageResult.summary}`);
 
-  return { errors, triageResult };
+  const ticketText = `${issue.fields.summary}\n\n${fullText}`;
+  return { errors, triageResult, ticketText };
 }
 
 /** Extract stack traces from Jira-formatted text. */

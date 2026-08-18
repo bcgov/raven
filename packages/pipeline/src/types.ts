@@ -37,6 +37,8 @@ export interface PipelineContext {
   dryRun: boolean;
   bitbucketProject?: string;
   bitbucketRepo?: string;
+  /** Source branch to plan against and target the PR at (e.g., the feature branch a deployed SNAPSHOT is built from). Defaults to the repo's default branch. */
+  branch?: string;
 
   /** Jira project key (may differ from app name, e.g., SOS errors live in CWM project) */
   jiraProject: string;
@@ -58,6 +60,9 @@ export interface PipelineContext {
   ticketKey?: string;
   isDuplicate?: boolean;
   triageResult?: TriageResult;
+  /** Full ticket text (summary + description + comments) — set in Jira
+   *  backlog mode; its presence enables the functional-bug planning path. */
+  ticketText?: string;
 
   // Plan
   repoPath?: string;
@@ -90,6 +95,10 @@ export interface CliArgs {
   existingTicket?: string;
   bitbucketProject?: string;
   bitbucketRepo?: string;
+  /** Source branch to plan against and target the PR at. Defaults to the repo's default branch. */
+  branch?: string;
+  /** Hours before a previously triaged error signature is re-processed (0 disables). */
+  cooldownHours?: number;
   jiraProject?: string;
   model?: string;
   /** Resume the last run for this app/component. */

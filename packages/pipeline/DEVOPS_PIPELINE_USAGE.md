@@ -51,7 +51,9 @@ raven-pipeline --server <server> --app <APP> --component <component> [options]
 | `--jira-project` | Jira project key (if different from `--app`) | same as `--app` |
 | `--bitbucket-project` | Bitbucket project key | `NRS` |
 | `--bitbucket-repo` | Bitbucket repo slug (if non-standard) | inferred from component |
-| `--model` | AI model to use | `claude-sonnet-4.6` |
+| `--branch` | Source branch to plan against and target the PR at — use when the deployed build comes from a feature/release branch rather than the repo default | repo default branch |
+| `--cooldown-hours` | Don't re-triage an error signature seen within the last N hours (0 disables; max 720, since the store prunes entries after 30 days). Prevents scheduled runs from re-commenting on known errors; per-target state files in `~/.raven/processed-errors/` | `168` |
+| `--model` | AI model to use | `claude-sonnet-5` |
 
 ### Pipeline Control
 
@@ -79,6 +81,15 @@ raven-pipeline --server <server> --app <APP> --component <component> [options]
 | Flag | Description |
 |------|-------------|
 | `--jira-query <JQL>` | Process existing Jira tickets instead of scanning logs. `--server` is not required. |
+
+**Scope your JQL to the project's actual defect types.** Projects vary: some file everything as `Bug`, others split across `Bug`, `Defect`, and `Problem`. A query like `issuetype = Bug` silently misses the rest — check the project's type scheme first (e.g. `issuetype in (Bug, Defect, Problem)`).
+
+Tickets without stack traces are planned via the functional-bug path
+(keyword code search). The end-of-run summary categorizes every ticket:
+`planned`, `needs-input` (blocked on a business decision), `vague`,
+`no-source`, `declined`, `no-tests`, or `error` (operational failures,
+e.g. AI timeout after retry). Functional fixes always include
+tests in the patch — a plan without tests is discarded.
 
 ---
 
@@ -173,6 +184,27 @@ To find available applications and components on a server, use the `discover_app
 
 ---
 
+## Scheduled Operation (launchd)
+
+For unattended runs on a schedule, use `scripts/scheduled-run.sh` — a generic wrapper that reads its targeting from environment variables, checks connectivity before running (skips cleanly when off-VPN), and appends dated logs to `~/.raven/logs/`.
+
+```bash
+PIPELINE_SERVER=test01 PIPELINE_APP=DMS PIPELINE_COMPONENT=dms-document-api \
+PIPELINE_JIRA_PROJECT=DMS PIPELINE_BB_PROJECT=DMS \
+  packages/pipeline/scripts/scheduled-run.sh
+```
+
+Optional: `PIPELINE_BRANCH` (maps to `--branch`), `PIPELINE_EXTRA_FLAGS` (e.g. `--dry-run`), `RAVEN_REPO` (defaults to the checkout containing the script), `RAVEN_LOG_DIR`.
+
+To schedule on macOS, wrap it in a per-target LaunchAgent (`~/Library/LaunchAgents/ca.bc.gov.raven.pipeline.<app>.plist`) with `StartCalendarInterval` entries and the `PIPELINE_*` variables in `EnvironmentVariables`. launchd guarantees one instance per label, so overlapping runs can't corrupt run state. The persistent triage cooldown (`--cooldown-hours`, default 168) keeps repeat runs from re-commenting on errors that are already ticketed.
+
+Notes for unattended runs:
+- The job only succeeds while the machine is awake and on VPN; the wrapper's pre-flight turns off-VPN windows into clean no-ops.
+- The Copilot SDK uses the logged-in `gh` account — if `gh auth status` fails, scheduled runs will too.
+- Scheduled runs execute whatever is built in `dist/` — rebuild after switching branches.
+
+---
+
 ## What the Pipeline Does (Step by Step)
 
 | Step | What Happens | Tools Used |
@@ -201,6 +233,8 @@ In `--dry-run` mode, the pipeline stops after PLAN (step 3). No tickets, branche
 | `Tests failed` | Fix is applied but tests didn't pass. Branch is preserved for manual review — no PR is created. |
 | `Saved state exists for this app/component` notice | Informational — pipeline is starting fresh (saved state will be overwritten). Pass `--resume` to pick up where the previous run left off, or `--fresh` to silence the notice. To clear state entirely: `rm -f ~/.raven/runs/<APP>-<component>-*.json` |
 | Copilot SDK auth failure | Run `gh auth login` to refresh GitHub CLI authentication |
+| Need to disable PI scrubbing for a pipeline run | Not possible — the pipeline pins `RAVEN_SCRUB_PI=true` unconditionally (FOIPPA). The global variable in `~/.raven/.env` still controls other RAVEN tools. |
+| Known error skipped / not re-detected | It's in the triage cooldown (`Skipped N error(s) in triage cooldown` in the log). Re-run with `--cooldown-hours 0`, or delete the target's file under `~/.raven/processed-errors/`. |
 
 ---
 
@@ -241,7 +275,7 @@ Additional steps after dry run:
 ### Key Talking Points
 
 - End-to-end automation: one command goes from production error to pull request
-- Uses GitHub Copilot SDK with `claude-sonnet-4.6` for AI analysis
+- Uses GitHub Copilot SDK with `claude-sonnet-5` for AI analysis
 - All data scrubbed for PI (FOIPPA compliance) before reaching the LLM
 - Human still approves PRs — AI assists, doesn't replace
 - Works with our existing Bitbucket + Jira + Jenkins infrastructure

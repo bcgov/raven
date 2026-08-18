@@ -192,6 +192,31 @@ function mergeRelatedErrors(errors: ErrorInfo[]): ErrorInfo[] {
 }
 
 /** Filter out shell/expect script noise that isn't actual log content. */
+/**
+ * Normalize a log message for dedupe-key purposes: strip the parts that vary
+ * between otherwise-identical occurrences (grep line prefix, timestamp, ids,
+ * paths) so one defect yields one key.
+ *
+ * The thread column matters most on busy servers: a PROD scan reported 12
+ * "unique" errors where 8 were a single defect logged from different Tomcat
+ * worker threads (jsse-nio-8029-exec-1, -8, …). Inflated counts create
+ * per-thread cooldown entries and repeat tickets for one bug. Only a token
+ * sitting between the level and a `Class:line` token is treated as a thread
+ * name, so log formats without a thread column are untouched.
+ */
+export function normalizeForDedupe(message: string): string {
+  return message
+    .replace(/^\d+[:-]/, "")                          // strip leading line number
+    .replace(/\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}/, "")  // strip timestamp
+    .replace(/\b(ERROR|WARN|INFO|DEBUG|TRACE|FATAL)\s+\S+\s+(?=[\w$]+:\d+)/g, "$1 <THREAD> ")
+    .replace(/[A-F0-9]{16,}/gi, "<ID>")               // hex GUIDs
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<UUID>")
+    .replace(/[A-Z]{2,}(?:API|UI)[A-F0-9]+/gi, "<REQ>") // request IDs like DMSAPI28BC6060D772
+    .replace(/'path:[^']+'/g, "'path:<PATH>'")         // path references
+    .replace(/#\d+/g, "#<NUM>")                        // ticket/ID numbers
+    .trim();
+}
+
 function isShellNoise(line: string): boolean {
   // Terminal control sequences
   if (/\[\?\d+[hl]/.test(line)) return true;
@@ -218,16 +243,7 @@ function addError(
   );
   const firstFrame = raw.traceLines.find((l) => /^\s+at\s/.test(l))?.trim() ?? "";
 
-  // For the message-based key, normalize out variable parts (GUIDs, IDs, paths, timestamps, line numbers)
-  const normalizedMsg = raw.message
-    .replace(/^\d+[:-]/, "")                          // strip leading line number
-    .replace(/\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}/, "")  // strip timestamp
-    .replace(/[A-F0-9]{16,}/gi, "<ID>")               // hex GUIDs
-    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<UUID>")
-    .replace(/[A-Z]{2,}(?:API|UI)[A-F0-9]+/gi, "<REQ>") // request IDs like DMSAPI28BC6060D772, SNCUIEB45C5223957
-    .replace(/'path:[^']+'/g, "'path:<PATH>'")         // path references
-    .replace(/#\d+/g, "#<NUM>")                        // ticket/ID numbers
-    .trim();
+  const normalizedMsg = normalizeForDedupe(raw.message);
 
   const key = exceptionMatch
     ? `${exceptionMatch[1]}::${firstFrame || normalizedMsg}`

@@ -1,0 +1,478 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+// ---------------------------------------------------------------------------
+// extractTargetClasses / validatePatchTargets / no-source refusal (plan.ts)
+//
+// Field finding from the first live run (test01/DMS, DMS-364): the TEST-server
+// log format has no thread column ("ERROR  GlobalExceptionHandler:171 - ...")
+// so no target classes were extracted, and PLAN then let the AI fabricate a
+// patch for a file that was never read from Bitbucket.
+// ---------------------------------------------------------------------------
+
+vi.mock("../src/ai-client.js", () => ({
+  askAI: vi.fn().mockResolvedValue(
+    '{"affectedFiles":["src/main/java/com/invented/Foo.java"],"rootCause":"x","proposedFix":"y","patch":""}\n\n' +
+    "--- a/src/main/java/com/invented/Foo.java\n+++ b/src/main/java/com/invented/Foo.java\n@@ -1,1 +1,1 @@\n-a\n+b",
+  ),
+}));
+
+vi.mock("../src/steps/plan-functional.js", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("../src/steps/plan-functional.js")>();
+  return { ...orig, planFunctional: vi.fn().mockResolvedValue(undefined) };
+});
+
+// Import plan.js (the dynamic importer of plan-functional.js) BEFORE
+// plan-functional.js itself. plan-functional.ts statically imports shared
+// helpers from plan.ts, so plan.ts ↔ plan-functional.ts form a module
+// cycle; loading plan-functional's mock factory first (via importOriginal)
+// pulls in the real, unmocked plan.js ahead of time and the dynamic
+// `import("./plan-functional.js")` inside plan() ends up resolving the
+// real module instead of the mock. Importing plan.js first avoids that.
+import { extractTargetClasses, validatePatchTargets, extractRelevantCode, plan } from "../src/steps/plan.js";
+import { planFunctional } from "../src/steps/plan-functional.js";
+import { askAI } from "../src/ai-client.js";
+import { setMapping, getMapping } from "../src/repo-map.js";
+import type { PipelineContext } from "../src/types.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// The real TEST-server log line that produced zero target classes (grep line-number
+// prefix included, level directly followed by LoggerClass:line).
+const TEST01_MESSAGE =
+  "5581:2026-08-06 13:11:29 ERROR  GlobalExceptionHandler:171 - Unexpected error";
+const TEST01_STACK =
+  "5582-org.springframework.web.context.request.async.AsyncRequestNotUsableException: " +
+  "ServletOutputStream failed to write: java.net.SocketTimeoutException";
+
+describe("extractTargetClasses", () => {
+  it("extracts the logger class from a level+class:line format with no thread column", () => {
+    const classes = extractTargetClasses(TEST01_MESSAGE, TEST01_STACK);
+    expect(classes.has("GlobalExceptionHandler.java")).toBe(true);
+  });
+
+  it("does not treat third-party exception names as target classes", () => {
+    const classes = extractTargetClasses(TEST01_MESSAGE, TEST01_STACK);
+    expect(classes.has("AsyncRequestNotUsableException.java")).toBe(false);
+  });
+
+  it("still extracts the class from the classic thread-column log4j format", () => {
+    const classes = extractTargetClasses(
+      "2026-03-04 14:13:50 ERROR jsse-nio-8029-exec-5 UUIDJAXBAdapter:33 - Failed to unmarshal uuid:",
+      "",
+    );
+    expect(classes.has("UUIDJAXBAdapter.java")).toBe(true);
+  });
+
+  it("still extracts app classes from ca.bc.gov stack frames", () => {
+    const classes = extractTargetClasses(
+      "Error in processing",
+      "at ca.bc.gov.nrs.dm.service.v1.impl.FolderServiceImpl.doWork(FolderServiceImpl.java:42)",
+    );
+    expect(classes.has("FolderServiceImpl.java")).toBe(true);
+  });
+
+  it("does not extract file-frame tokens like Foo.java:42 as logger classes", () => {
+    const classes = extractTargetClasses(
+      "at com.thirdparty.Handler.run(SomethingElseImpl.java:42)",
+      "",
+    );
+    expect(classes.has("SomethingElseImpl.java")).toBe(false);
+  });
+
+  it("extracts a Class:line token with no suffix whitelist match", () => {
+    const classes = extractTargetClasses("ERROR OrderProcessor:171 - boom", "");
+    expect(classes.has("OrderProcessor.java")).toBe(true);
+  });
+
+  it("does not extract ALL-CAPS tokens before a colon-line-number as classes", () => {
+    const classes = extractTargetClasses("HTTP:8080 ERROR:123", "");
+    expect(classes.has("HTTP.java")).toBe(false);
+    expect(classes.has("ERROR.java")).toBe(false);
+  });
+
+  it("does not extract Word:number tokens from ticket prose with no log level on the line", () => {
+    // Backlog tickets without a stack trace get their prose used as the
+    // synthetic error text; compact tokens like "Limit:40" must not mint
+    // target classes, or the functional-bug path is never taken.
+    const classes = extractTargetClasses(
+      "Increase the report display cap",
+      "The report shows at most Limit:40 rows per page.\nA config value Timeout:30 applies to exports.",
+    );
+    expect(classes.has("Limit.java")).toBe(false);
+    expect(classes.has("Timeout.java")).toBe(false);
+  });
+});
+
+describe("validatePatchTargets", () => {
+  const sourceFiles = [
+    { path: "nrs-dm-api/src/main/java/ca/bc/gov/nrs/dms/GlobalExceptionHandler.java", content: "", repo: "dms-document-api", project: "DMS" },
+  ];
+
+  it("keeps a patch whose files were all read from Bitbucket", () => {
+    const patch =
+      "--- a/nrs-dm-api/src/main/java/ca/bc/gov/nrs/dms/GlobalExceptionHandler.java\n" +
+      "+++ b/nrs-dm-api/src/main/java/ca/bc/gov/nrs/dms/GlobalExceptionHandler.java\n" +
+      "@@ -1,1 +1,1 @@\n-a\n+b";
+    expect(validatePatchTargets(patch, sourceFiles)).toBe(true);
+  });
+
+  it("rejects a patch that touches a file never read from Bitbucket", () => {
+    const patch =
+      "--- a/src/main/java/com/dms/document/api/exception/GlobalExceptionHandler.java\n" +
+      "+++ b/src/main/java/com/dms/document/api/exception/GlobalExceptionHandler.java\n" +
+      "@@ -1,1 +1,1 @@\n-a\n+b";
+    expect(validatePatchTargets(patch, sourceFiles)).toBe(false);
+  });
+
+  it("rejects any patch when no source files were read", () => {
+    const patch = "--- a/Anything.java\n+++ b/Anything.java\n@@ -1,1 +1,1 @@\n-a\n+b";
+    expect(validatePatchTargets(patch, [])).toBe(false);
+  });
+
+  it("rejects a modify pair whose postimage renames a read file to a fabricated path", () => {
+    const patch =
+      "--- a/nrs-dm-api/src/main/java/ca/bc/gov/nrs/dms/GlobalExceptionHandler.java\n" +
+      "+++ b/src/main/java/com/invented/Other.java\n" +
+      "@@ -1,1 +1,1 @@\n-a\n+b";
+    expect(validatePatchTargets(patch, sourceFiles)).toBe(false);
+  });
+
+  it("rejects a patch whose matched source files span more than one repo", () => {
+    const twoRepoSourceFiles = [
+      { path: "src/main/java/Foo.java", content: "", repo: "repo-a", project: "PROJ" },
+      { path: "src/main/java/Bar.java", content: "", repo: "repo-b", project: "PROJ" },
+    ];
+    const patch =
+      "--- a/src/main/java/Foo.java\n+++ b/src/main/java/Foo.java\n@@ -1,1 +1,1 @@\n-a\n+b\n" +
+      "--- a/src/main/java/Bar.java\n+++ b/src/main/java/Bar.java\n@@ -1,1 +1,1 @@\n-c\n+d";
+    expect(validatePatchTargets(patch, twoRepoSourceFiles)).toBe(false);
+  });
+
+  it("accepts a same-path modify pair plus a new test file", () => {
+    const patch =
+      "--- a/nrs-dm-api/src/main/java/ca/bc/gov/nrs/dms/GlobalExceptionHandler.java\n" +
+      "+++ b/nrs-dm-api/src/main/java/ca/bc/gov/nrs/dms/GlobalExceptionHandler.java\n" +
+      "@@ -1,1 +1,1 @@\n-a\n+b\n" +
+      "--- /dev/null\n+++ b/nrs-dm-api/src/test/java/ca/bc/gov/nrs/dms/GlobalExceptionHandlerTest.java\n" +
+      "@@ -0,0 +1,1 @@\n+t";
+    expect(validatePatchTargets(patch, sourceFiles)).toBe(true);
+  });
+
+  it("accepts a deletion pair (a/X -> /dev/null) for a known source file", () => {
+    const patch =
+      "--- a/nrs-dm-api/src/main/java/ca/bc/gov/nrs/dms/GlobalExceptionHandler.java\n" +
+      "+++ /dev/null\n" +
+      "@@ -1,1 +0,0 @@\n-a";
+    expect(validatePatchTargets(patch, sourceFiles)).toBe(true);
+  });
+});
+
+describe("plan() with --branch", () => {
+  it("reads app-repo files at the requested branch and keeps the resulting patch", async () => {
+    const HANDLER_PATH =
+      "src/main/java/ca/bc/gov/nrs/dm/controller/GlobalExceptionHandler.java";
+    const BRANCH = "feature/DMS-310";
+    const client = {
+      readFile: vi
+        .fn()
+        .mockImplementation((_p: string, _r: string, path: string, at?: string) =>
+          at === BRANCH && path === HANDLER_PATH
+            ? Promise.resolve("public class GlobalExceptionHandler { /* Unexpected error */ }")
+            : Promise.reject(new Error("404")),
+        ),
+      listFiles: vi
+        .fn()
+        .mockImplementation((_p: string, _r: string, _l?: number, _m?: number, at?: string) =>
+          Promise.resolve(at === BRANCH ? [HANDLER_PATH] : []),
+        ),
+      listRepos: vi.fn().mockRejectedValue(new Error("404")),
+    };
+    vi.mocked(askAI).mockResolvedValueOnce(
+      `{"affectedFiles":["${HANDLER_PATH}"],"rootCause":"rc","proposedFix":"pf","patch":""}\n\n` +
+        `--- a/${HANDLER_PATH}\n+++ b/${HANDLER_PATH}\n@@ -1,1 +1,1 @@\n-a\n+b`,
+    );
+    const ctx = {
+      app: "NOSUCHAPP2",
+      component: "nosuchapp2-fake-api",
+      branch: BRANCH,
+      errors: [
+        {
+          message: TEST01_MESSAGE,
+          stackTrace: TEST01_STACK,
+          occurrences: 3,
+          dedupeKey: "k",
+        },
+      ],
+      ticketKey: "TEST-2",
+      dryRun: false,
+      isDuplicate: false,
+    } as unknown as PipelineContext;
+
+    await plan(ctx, client as never);
+
+    expect(ctx.fixPlan?.patch).toContain(HANDLER_PATH);
+    expect(ctx.fixPlan?.rootCause).toBe("rc");
+    const listFilesAts = client.listFiles.mock.calls.map((c) => c[4]);
+    expect(listFilesAts).toContain(BRANCH);
+  });
+});
+
+describe("plan() dependency discovery with --branch", () => {
+  it("reads the app repo's pom.xml at the requested branch", async () => {
+    const BRANCH = "feature/DMS-310";
+    const pomReads: Array<{ path: string; at?: string }> = [];
+    const client = {
+      readFile: vi
+        .fn()
+        .mockImplementation((_p: string, _r: string, path: string, at?: string) => {
+          if (path.endsWith("pom.xml")) pomReads.push({ path, at });
+          return Promise.reject(new Error("404"));
+        }),
+      listFiles: vi.fn().mockResolvedValue([]),
+      listRepos: vi.fn().mockRejectedValue(new Error("404")),
+    };
+    const ctx = {
+      app: "NOSUCHAPP3",
+      component: "nosuchapp3-fake-api",
+      branch: BRANCH,
+      errors: [
+        { message: TEST01_MESSAGE, stackTrace: TEST01_STACK, occurrences: 1, dedupeKey: "k" },
+      ],
+      ticketKey: "TEST-3",
+      dryRun: false,
+      isDuplicate: false,
+    } as unknown as PipelineContext;
+
+    await expect(plan(ctx, client as never)).rejects.toThrow(/no source files/i);
+    expect(pomReads.length).toBeGreaterThan(0);
+    expect(pomReads.every((r) => r.at === BRANCH)).toBe(true);
+  });
+});
+
+describe("plan() with no locatable source", () => {
+  it("fails instead of asking the AI to fabricate a patch", async () => {
+    const failingClient = {
+      readFile: vi.fn().mockRejectedValue(new Error("404")),
+      listFiles: vi.fn().mockResolvedValue([]),
+      listRepos: vi.fn().mockRejectedValue(new Error("404")),
+    };
+    const ctx = {
+      app: "NOSUCHAPP",
+      component: "nosuchapp-fake-api",
+      errors: [
+        {
+          message: TEST01_MESSAGE,
+          stackTrace: TEST01_STACK,
+          occurrences: 3,
+          dedupeKey: "k",
+        },
+      ],
+      ticketKey: "TEST-1",
+      dryRun: false,
+      isDuplicate: false,
+    } as unknown as PipelineContext;
+
+    await expect(
+      plan(ctx, failingClient as never),
+    ).rejects.toThrow(/no source files/i);
+    expect(vi.mocked(askAI)).not.toHaveBeenCalled();
+  });
+});
+
+describe("extractRelevantCode", () => {
+  it("honors a caller-supplied maxChars budget so a late keyword region isn't lost", () => {
+    // A file between 12K and 50K chars used to pass through the (hardcoded
+    // 50K) early-return check untouched, then get blindly sliced to the
+    // first 12K chars downstream — losing a keyword region near the end.
+    const fillerLine = "// filler line of source code padding out the file for the test\n";
+    const filler = fillerLine.repeat(300);
+    const source = filler + "// KEYWORD_LINE_MARKER appears only here\n";
+    expect(source.length).toBeGreaterThan(12_000);
+    expect(source.length).toBeLessThan(50_000);
+
+    const result = extractRelevantCode(source, "KEYWORD_LINE_MARKER context", 12_000);
+    expect(result).toContain("KEYWORD_LINE_MARKER");
+    expect(result.length).toBeLessThanOrEqual(12_000 + 200);
+  });
+});
+
+describe("plan() with a cached repo mapping and --branch", () => {
+  const BRANCH = "feature/DMS-310";
+  const HANDLER_PATH =
+    "src/main/java/ca/bc/gov/nrs/dm/controller/GlobalExceptionHandler.java";
+  const HANDLER_PATCH =
+    `{"affectedFiles":["${HANDLER_PATH}"],"rootCause":"rc","proposedFix":"pf","patch":""}\n\n` +
+    `--- a/${HANDLER_PATH}\n+++ b/${HANDLER_PATH}\n@@ -1,1 +1,1 @@\n-a\n+b`;
+  let repoMapDir: string;
+  let savedRepoMapPath: string | undefined;
+
+  beforeEach(() => {
+    savedRepoMapPath = process.env["RAVEN_REPO_MAP_PATH"];
+    repoMapDir = mkdtempSync(join(tmpdir(), "raven-planmap-"));
+    process.env["RAVEN_REPO_MAP_PATH"] = join(repoMapDir, "repo-map.json");
+    // A previous run discovered the fix lives in a shared library repo.
+    setMapping("CACHEAPP", "cacheapp-api", {
+      bitbucketProject: "LIB",
+      bitbucketRepo: "shared-lib",
+      discoveredAt: "2026-08-01T00:00:00.000Z",
+    });
+  });
+
+  afterEach(() => {
+    if (savedRepoMapPath === undefined) delete process.env["RAVEN_REPO_MAP_PATH"];
+    else process.env["RAVEN_REPO_MAP_PATH"] = savedRepoMapPath;
+    rmSync(repoMapDir, { recursive: true, force: true });
+  });
+
+  function cacheCtx(): PipelineContext {
+    return {
+      app: "CACHEAPP",
+      component: "cacheapp-api",
+      branch: BRANCH,
+      errors: [
+        { message: TEST01_MESSAGE, stackTrace: TEST01_STACK, occurrences: 1, dedupeKey: "k" },
+      ],
+      ticketKey: "TEST-20",
+      dryRun: false,
+      isDuplicate: false,
+    } as unknown as PipelineContext;
+  }
+
+  it("reads the cached repo on its default branch, not the app's --branch", async () => {
+    const reads: Array<{ repo: string; at?: string }> = [];
+    const client = {
+      readFile: vi.fn().mockImplementation((_p: string, r: string, path: string, at?: string) => {
+        reads.push({ repo: r, at });
+        return r === "shared-lib" && at === undefined && path === HANDLER_PATH
+          ? Promise.resolve("public class GlobalExceptionHandler { /* Unexpected error */ }")
+          : Promise.reject(new Error("404"));
+      }),
+      listFiles: vi.fn().mockImplementation((_p: string, r: string, _l?: number, _m?: number, at?: string) =>
+        Promise.resolve(r === "shared-lib" && at === undefined ? [HANDLER_PATH] : []),
+      ),
+      listRepos: vi.fn().mockRejectedValue(new Error("404")),
+    };
+    vi.mocked(askAI).mockResolvedValueOnce(HANDLER_PATCH);
+    const ctx = cacheCtx();
+
+    await plan(ctx, client as never);
+
+    expect(ctx.fixPlan?.patch).toContain(HANDLER_PATH);
+    const sharedLibReads = reads.filter((c) => c.repo === "shared-lib");
+    expect(sharedLibReads.length).toBeGreaterThan(0);
+    expect(sharedLibReads.every((c) => c.at === undefined)).toBe(true);
+  });
+
+  it("records a cache-redirected fix as a rerouted source", async () => {
+    const client = {
+      readFile: vi.fn().mockImplementation((_p: string, r: string, path: string, at?: string) =>
+        r === "shared-lib" && at === undefined && path === HANDLER_PATH
+          ? Promise.resolve("public class GlobalExceptionHandler { /* Unexpected error */ }")
+          : Promise.reject(new Error("404")),
+      ),
+      listFiles: vi.fn().mockImplementation((_p: string, r: string, _l?: number, _m?: number, at?: string) =>
+        Promise.resolve(r === "shared-lib" && at === undefined ? [HANDLER_PATH] : []),
+      ),
+      listRepos: vi.fn().mockRejectedValue(new Error("404")),
+    };
+    vi.mocked(askAI).mockResolvedValueOnce(HANDLER_PATCH);
+    const ctx = cacheCtx();
+
+    await plan(ctx, client as never);
+
+    expect(ctx.sourceRepo).toBe("shared-lib");
+    expect(ctx.sourceProject).toBe("LIB");
+  });
+
+  it("keeps --branch for a fix found in the original repo despite a stale redirect", async () => {
+    const client = {
+      readFile: vi.fn().mockImplementation((_p: string, r: string, path: string, at?: string) =>
+        r === "cacheapp-api" && at === BRANCH && path === HANDLER_PATH
+          ? Promise.resolve("public class GlobalExceptionHandler { /* Unexpected error */ }")
+          : Promise.reject(new Error("404")),
+      ),
+      listFiles: vi.fn().mockImplementation((_p: string, r: string, _l?: number, _m?: number, at?: string) =>
+        Promise.resolve(r === "cacheapp-api" && at === BRANCH ? [HANDLER_PATH] : []),
+      ),
+      listRepos: vi.fn().mockRejectedValue(new Error("404")),
+    };
+    vi.mocked(askAI).mockResolvedValueOnce(HANDLER_PATCH);
+    const ctx = cacheCtx();
+
+    await plan(ctx, client as never);
+
+    // The fix stayed in the app repo: no reroute, so IMPLEMENT/CREATE-PR
+    // keep applying --branch to it.
+    expect(ctx.sourceRepo).toBeUndefined();
+    expect(ctx.sourceProject).toBeUndefined();
+    expect(ctx.fixPlan?.patch).toContain(HANDLER_PATH);
+    // The stale mapping self-heals so the next run searches the app repo first.
+    expect(getMapping("CACHEAPP", "cacheapp-api")?.bitbucketRepo).toBe("cacheapp-api");
+  });
+});
+
+describe("plan() functional fallback after failed class search", () => {
+  it("falls back to planFunctional when extracted classes locate no source and ticketText exists", async () => {
+    const failingClient = {
+      readFile: vi.fn().mockRejectedValue(new Error("404")),
+      listFiles: vi.fn().mockResolvedValue([]),
+      listRepos: vi.fn().mockRejectedValue(new Error("404")),
+    };
+    const ctx = {
+      app: "NOSUCHAPP5",
+      component: "nosuchapp5-fake-api",
+      errors: [
+        // A genuine-looking log token that resolves to no real file — the
+        // class search must exhaust, then fall back instead of throwing.
+        { message: "ERROR NoSuchClazz:42 - see ticket", stackTrace: "", occurrences: 1, dedupeKey: "k" },
+      ],
+      ticketKey: "TEST-10",
+      ticketText: "Report page truncates results, see attached screenshot",
+      dryRun: false,
+      isDuplicate: false,
+    } as unknown as PipelineContext;
+
+    await plan(ctx, failingClient as never);
+
+    expect(vi.mocked(planFunctional)).toHaveBeenCalledOnce();
+    expect(vi.mocked(askAI)).not.toHaveBeenCalled();
+  });
+
+  it("still refuses to plan without ticketText when no source is found", async () => {
+    const failingClient = {
+      readFile: vi.fn().mockRejectedValue(new Error("404")),
+      listFiles: vi.fn().mockResolvedValue([]),
+      listRepos: vi.fn().mockRejectedValue(new Error("404")),
+    };
+    const ctx = {
+      app: "NOSUCHAPP6",
+      component: "nosuchapp6-fake-api",
+      errors: [
+        { message: "ERROR NoSuchClazz:42 - boom", stackTrace: "", occurrences: 1, dedupeKey: "k" },
+      ],
+      ticketKey: "TEST-11",
+      dryRun: false,
+      isDuplicate: false,
+    } as unknown as PipelineContext;
+
+    await expect(plan(ctx, failingClient as never)).rejects.toThrow(/no source files/i);
+    expect(vi.mocked(planFunctional)).not.toHaveBeenCalled();
+  });
+});
+
+describe("plan() functional delegation", () => {
+  it("delegates to planFunctional when there are no stack-trace signals and ticketText exists", async () => {
+    const ctx = {
+      app: "NOSUCHAPP4", component: "nosuchapp4-fake-api",
+      errors: [{ message: "Field truncates", stackTrace: "no trace here", occurrences: 1, dedupeKey: "k" }],
+      ticketKey: "TEST-9", ticketText: "Field truncates at 40 chars", dryRun: false, isDuplicate: false,
+    } as unknown as PipelineContext;
+    await plan(ctx, { readFile: vi.fn(), listFiles: vi.fn(), listRepos: vi.fn() } as never);
+    expect(vi.mocked(planFunctional)).toHaveBeenCalledOnce();
+  });
+});
