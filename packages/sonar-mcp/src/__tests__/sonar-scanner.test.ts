@@ -442,6 +442,8 @@ describe("MSBuild/DotNet detection and execution tests", () => {
         [
           "test",
           join("/my/dotnet-app", "MyApp.slnx"),
+          "--results-directory",
+          join("/my/dotnet-app", "TestResults"),
           "--collect:XPlat Code Coverage",
           "--logger",
           "trx",
@@ -531,6 +533,8 @@ describe("MSBuild/DotNet detection and execution tests", () => {
         [
           "test",
           solutionFile,
+          "--results-directory",
+          join("/repo", "TestResults"),
           "--collect:XPlat Code Coverage",
           "--logger",
           "trx",
