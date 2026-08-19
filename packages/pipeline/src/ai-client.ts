@@ -109,7 +109,9 @@ export async function askAI(
     await session.send({ prompt: scrubbedPrompt });
     await done;
   } finally {
-    try { await session.destroy(); } catch { /* best-effort cleanup */ }
+    // deleteSession (not disconnect): sessions are single-use here, and
+    // disconnect would leave each one's state on disk to accumulate.
+    try { await c.deleteSession(session.sessionId); } catch { /* best-effort cleanup */ }
   }
 
   return responseText;
