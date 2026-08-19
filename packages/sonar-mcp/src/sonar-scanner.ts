@@ -472,6 +472,8 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
         [
           "test",
           ...(dotNetBuildTarget ? [dotNetBuildTarget] : []),
+          "--results-directory",
+          join(opts.projectDir, "TestResults"),
           "--collect:XPlat Code Coverage",
           "--logger",
           "trx",
