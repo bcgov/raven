@@ -1,10 +1,11 @@
-import { execSync, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import type { BitbucketClient } from "@nrs/bitbucket-mcp/client";
 import type { JiraClient } from "@nrs/jira-mcp/client";
 import { startSpinner, stopSpinner } from "../spinner.js";
 import type { PipelineContext } from "../types.js";
+import { detectDefaultBranch, buildAuthUrl, assertHttpsUrl } from "../repo-clone.js";
 
 const CLONE_BASE = join(homedir(), ".raven", "repos");
 
@@ -22,19 +23,6 @@ function assertInsideCloneBase(repoPath: string): void {
     throw new Error(
       `Refusing CREATE-PR git operation: repoPath "${repoPath}" is not under CLONE_BASE "${CLONE_BASE}"`,
     );
-  }
-}
-
-/**
- * Force every URL passed to a git command to be `https://`-prefixed.
- * Defends against second-order command injection — git parses positional
- * args for `--`-prefixed flags (e.g., `--upload-pack=evil-cmd`), and
- * execFileSync's no-shell guarantee doesn't help once the string reaches
- * git's own argv parser. Same pattern used in implement.ts.
- */
-function assertHttpsUrl(url: string, label: string): void {
-  if (!url.startsWith("https://")) {
-    throw new Error(`Refusing git operation with non-https ${label} URL: ${url.slice(0, 60)}…`);
   }
 }
 
@@ -107,8 +95,11 @@ export async function createPr(
     `### Test Status\n${testStatus}\n\n` +
     `---\n_Created by RAVEN Autonomous Pipeline_`;
 
-  // Detect default branch from the local clone
-  const defaultBranch = detectDefaultBranch(ctx.repoPath!);
+  // PR targets the requested source branch when the fix stayed in the app
+  // repo. A rerouted fix (ctx.sourceRepo/-Project set) was based on the
+  // other repo's default branch, so target that instead.
+  const appRepoBranch = ctx.sourceRepo || ctx.sourceProject ? undefined : ctx.branch;
+  const defaultBranch = appRepoBranch ?? detectDefaultBranch(ctx.repoPath!);
 
   // Cap the PR title at 200 chars. AI-generated `suggestedTitle` can run
   // long; some Bitbucket installs reject very long titles outright, and
@@ -138,47 +129,3 @@ export async function createPr(
   );
   console.log(`[CREATE-PR] Added PR link to ${ctx.ticketKey}`);
 }
-
-/** Detect whether the repo's default branch is main or master. */
-function detectDefaultBranch(repoDir: string): string {
-  try {
-    const ref = execSync("git symbolic-ref refs/remotes/origin/HEAD", {
-      cwd: repoDir,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
-    return ref.replace("refs/remotes/origin/", "");
-  } catch {
-    try {
-      execSync("git rev-parse --verify origin/main", {
-        cwd: repoDir,
-        stdio: "pipe",
-      });
-      return "main";
-    } catch {
-      return "master";
-    }
-  }
-}
-
-/**
- * Build an authenticated URL by embedding ATLASSIAN credentials.
- */
-function buildAuthUrl(cloneUrl: string): string {
-  const email = process.env["ATLASSIAN_EMAIL"];
-  const password = process.env["ATLASSIAN_PASSWORD"];
-  if (!email || !password) return cloneUrl;
-
-  try {
-    const url = new URL(cloneUrl);
-    // URL.username / URL.password setters already percent-encode reserved
-    // characters. Pre-encoding here would double-encode an email username
-    // (e.g., user@example.com → user%2540example.com) and break git push.
-    url.username = email;
-    url.password = password;
-    return url.toString();
-  } catch {
-    return cloneUrl;
-  }
-}
-

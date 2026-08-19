@@ -106,12 +106,14 @@ export class BitbucketClient {
     projectKey: string,
     repoSlug: string,
     limit: number = 5000,
-    maxFiles: number = 50_000
+    maxFiles: number = 50_000,
+    at?: string
   ): Promise<string[]> {
     const all: string[] = [];
     let start = 0;
     while (all.length < maxFiles) {
       const params = new URLSearchParams({ limit: String(limit), start: String(start) });
+      if (at) params.set("at", at);
       const resp = await this.fetch(
         this.apiUrl(
           `/projects/${encodeURIComponent(projectKey)}/repos/${encodeURIComponent(repoSlug)}/files?${params}`

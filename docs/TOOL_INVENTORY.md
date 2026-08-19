@@ -16,11 +16,11 @@
 | | Count |
 |---|---|
 | MCP servers | **17** |
-| Tools registered locally (in-process) | **229** |
-| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 229 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
-| **Tools advertised to the AI when everything is connected** | **~235** |
+| Tools registered locally (in-process) | **230** |
+| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 230 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
+| **Tools advertised to the AI when everything is connected** | **~236** |
 | Mutating / write tools | **~79** (78 local + ~1 via Jarvis) |
-| Read-only tools | **~156** |
+| Read-only tools | **~157** |
 | Non-server packages | `auth`, `pipeline`, `server-ui`, `raven-cli` |
 
 Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share one SiteMinder/Basic-Auth session; Server Monitor, IMIS, Azure DevOps, Sonar, Jenkins, Artifactory, RFC Buddy, and Jarvis authenticate separately via `~/.raven/.env`.
@@ -43,11 +43,11 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 | Jenkins | `jenkins` | 19 | 15 | 34 |
 | RFC Buddy | `rfcbuddy` | 0 | 1 | 1 |
 | Artifactory | `artifactory` | 12 | 7 | 19 |
-| SharePoint | `sharepoint` | 8 | 0 | 8 |
+| SharePoint | `sharepoint` | 9 | 0 | 9 |
 | GitHub | `github` | 19 | 15 | 34 |
-| **Subtotal (local)** | | **151** | **78** | **229** |
+| **Subtotal (local)** | | **152** | **78** | **230** |
 | Jarvis (remote proxy) | `jarvis` | ~5 | ~1 | ~6 |
-| **Advertised total** | | **~156** | **~79** | **~235** |
+| **Advertised total** | | **~157** | **~79** | **~236** |
 
 ## Servers and tools
 
@@ -119,8 +119,8 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 
 ### Microsoft 365
 
-#### sharepoint-mcp — 8 tools (read-only)
-`search_sharepoint`, `list_sites`, `get_site`, `list_folder`, `get_file_info`, `read_document`, `read_page`, `download_file`
+#### sharepoint-mcp — 9 tools (read-only)
+`search_sharepoint`, `list_sites`, `get_site`, `list_items`, `list_folder`, `get_file_info`, `read_document`, `read_page`, `download_file`
 
 ### GitHub platform / security
 

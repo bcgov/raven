@@ -5,6 +5,8 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const MAX_DOTNET_SCAN_DEPTH = 5;
+const IGNORED_DOTNET_DIRECTORIES = new Set(["node_modules", "bin", "obj", "dist"]);
 
 export interface RunScanOptions {
   projectKey: string;
@@ -21,6 +23,7 @@ export interface RunScanOptions {
   useMsBuild?: boolean;
   runTests?: boolean;
   testsDir?: string;
+  solutionFile?: string;
 }
 
 export interface RunScanResult {
@@ -103,79 +106,91 @@ export function getMergedSonarProps(projectDir?: string): {
   };
 }
 
-export function hasDotNetCode(dir: string, depth = 0): boolean {
-  if (depth > 5) return false;
-  try {
-    const files = readdirSync(dir);
-    for (const file of files) {
-      if (["node_modules", "bin", "obj", "dist"].includes(file.toLowerCase()) || file.startsWith(".")) {
-
-        continue;
-      }
-      const fullPath = join(dir, file);
-      const stat = statSync(fullPath);
-      if (stat.isDirectory()) {
-        if (hasDotNetCode(fullPath, depth + 1)) {
-          return true;
-        }
-      } else {
-        const lower = file.toLowerCase();
-        if (
-          lower.endsWith(".cs") ||
-          lower.endsWith(".vb") ||
-          lower.endsWith(".csproj") ||
-          lower.endsWith(".vbproj") ||
-          lower.endsWith(".sln") ||
-          lower.endsWith(".slnx")
-        ) {
-          return true;
-        }
-      }
-    }
-  } catch {
-    // Ignore read errors
-  }
-  return false;
+interface DotNetScanResults {
+  hasCode: boolean;
+  hasTests: boolean;
+  slnxFiles: string[];
+  slnFiles: string[];
+  projectFiles: string[];
 }
 
-export function hasDotNetTests(dir: string, depth = 0): boolean {
-  if (depth > 5) return false;
+function scanDotNetTree(
+  dir: string,
+  depth = 0,
+  results: DotNetScanResults = {
+    hasCode: false,
+    hasTests: false,
+    slnxFiles: [],
+    slnFiles: [],
+    projectFiles: [],
+  },
+  stopWhen?: (results: DotNetScanResults) => boolean,
+): DotNetScanResults {
+  if (depth > MAX_DOTNET_SCAN_DEPTH) return results;
   try {
     const files = readdirSync(dir);
     for (const file of files) {
       const lower = file.toLowerCase();
-      if (
-        lower === "node_modules" ||
-        lower === "bin" ||
-        lower === "obj" ||
-        lower === "dist" ||
-        lower.startsWith(".")
-      ) {
-        continue;
-      }
+      if (IGNORED_DOTNET_DIRECTORIES.has(lower) || file.startsWith(".")) continue;
       const fullPath = join(dir, file);
       const stat = statSync(fullPath);
       if (stat.isDirectory()) {
-        if (hasDotNetTests(fullPath, depth + 1)) {
-          return true;
-        }
+        scanDotNetTree(fullPath, depth + 1, results, stopWhen);
       } else {
-        if (lower.endsWith(".csproj") && lower.includes("test")) {
-          return true;
-        }
-        if (
-          (lower.endsWith("tests.cs") || lower.endsWith("test.cs")) &&
-          !lower.includes("sonar-scanner.test.cs") &&
-          !lower.includes("sonar-client.test.cs")
-        ) {
-          return true;
+        if (isDotNetCodeFile(file)) results.hasCode = true;
+        if (isDotNetTestFile(file)) results.hasTests = true;
+        if (lower.endsWith(".slnx") && results.slnxFiles.length < 2) {
+          results.slnxFiles.push(fullPath);
+        } else if (lower.endsWith(".sln") && results.slnFiles.length < 2) {
+          results.slnFiles.push(fullPath);
+        } else if (isDotNetProjectFile(file) && results.projectFiles.length < 2) {
+          results.projectFiles.push(fullPath);
         }
       }
+      if (stopWhen?.(results)) return results;
     }
   } catch {
-    // Ignore read errors
+    return results;
   }
-  return false;
+  return results;
+}
+
+function isDotNetProjectFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  return lower.endsWith(".csproj") || lower.endsWith(".vbproj");
+}
+
+function isDotNetSolutionFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  return lower.endsWith(".slnx") || lower.endsWith(".sln");
+}
+
+function isDotNetCodeFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  return (
+    lower.endsWith(".cs") ||
+    lower.endsWith(".vb") ||
+    isDotNetProjectFile(fileName) ||
+    isDotNetSolutionFile(fileName)
+  );
+}
+
+function isDotNetTestFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  return (
+    (isDotNetProjectFile(fileName) && lower.includes("test")) ||
+    ((lower.endsWith("tests.cs") || lower.endsWith("test.cs")) &&
+      !lower.includes("sonar-scanner.test.cs") &&
+      !lower.includes("sonar-client.test.cs"))
+  );
+}
+
+export function hasDotNetCode(dir: string, depth = 0): boolean {
+  return scanDotNetTree(dir, depth, undefined, (results) => results.hasCode).hasCode;
+}
+
+export function hasDotNetTests(dir: string, depth = 0): boolean {
+  return scanDotNetTree(dir, depth, undefined, (results) => results.hasTests).hasTests;
 }
 
 export function hasNodeTests(dir: string): boolean {
@@ -231,13 +246,46 @@ function getRelativeTestsDir(projectDir: string, testsDir: string | undefined): 
   return relativeTestsDir && relativeTestsDir !== "." ? relativeTestsDir : undefined;
 }
 
-function getSonarTestReportsPath(projectDir: string, testsDir: string | undefined, fileName: string): string {
-  const reportPaths = [`**/TestResults/**/${fileName}`];
-  const relativeTestsDir = getRelativeTestsDir(projectDir, testsDir);
-  if (relativeTestsDir) {
-    reportPaths.unshift(`${relativeTestsDir}/**/TestResults/**/${fileName}`);
+function getDotNetBuildTarget(projectDir: string, configuredSolutionFile?: string): string | undefined {
+  if (configuredSolutionFile) {
+    const solutionFile = isAbsolute(configuredSolutionFile)
+      ? configuredSolutionFile
+      : resolve(projectDir, configuredSolutionFile);
+    if (!existsSync(solutionFile)) {
+      throw new Error(`Configured .NET solution/project file does not exist: "${solutionFile}"`);
+    }
+    return solutionFile;
   }
-  return reportPaths.join(",");
+
+  const results = scanDotNetTree(projectDir);
+  if (results.slnxFiles.length === 1) {
+    return results.slnxFiles[0];
+  }
+  if (results.slnxFiles.length > 1) {
+    throw new Error(
+      `Multiple .slnx files were found under "${projectDir}". ` +
+      `Provide solutionFile to select the solution used for the scan.`,
+    );
+  }
+
+  if (results.slnFiles.length === 1) {
+    return results.slnFiles[0];
+  }
+  if (results.slnFiles.length > 1) {
+    throw new Error(
+      `Multiple .sln files were found under "${projectDir}". ` +
+      `Provide solutionFile to select the solution used for the scan.`,
+    );
+  }
+
+  if (results.projectFiles.length === 1) return results.projectFiles[0];
+  if (results.projectFiles.length > 1) {
+    throw new Error(
+      `Multiple .NET project files were found under "${projectDir}". ` +
+      `Provide solutionFile to select the project used for the scan.`,
+    );
+  }
+  return undefined;
 }
 
 interface RunCommandResult {
@@ -278,8 +326,11 @@ function runCommand(
 
 export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
   const bin = opts.scannerBin ?? process.env.SONAR_SCANNER_BIN ?? "sonar-scanner";
-  const isDotNet = opts.useMsBuild ?? hasDotNetCode(opts.projectDir);
-  const candidateTestsDir = getTestsDir(opts.projectDir, opts.testsDir);
+  const isDotNet =
+    opts.useMsBuild ??
+    (Boolean(opts.solutionFile) ||
+      hasDotNetCode(opts.projectDir));
+  const candidateTestsDir = isDotNet ? undefined : getTestsDir(opts.projectDir, opts.testsDir);
 
   if (!isDotNet) {
     if (!isValidSonarScanner(bin)) {
@@ -331,12 +382,8 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
     }
 
     const hasProjectTests = hasDotNetTests(opts.projectDir);
-    const hasCandidateTests = candidateTestsDir ? hasDotNetTests(candidateTestsDir) : false;
-    const testsDir =
-      hasCandidateTests || (opts.runTests === true && opts.testsDir !== undefined)
-        ? candidateTestsDir
-        : undefined;
-    const shouldRunTests = opts.runTests ?? (hasProjectTests || hasCandidateTests);
+    const dotNetBuildTarget = getDotNetBuildTarget(opts.projectDir, opts.solutionFile);
+    const shouldRunTests = opts.runTests ?? hasProjectTests;
 
     const beginArgs: string[] = [
       "begin",
@@ -351,14 +398,10 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
 
     if (shouldRunTests) {
       beginArgs.push(
-        `/d:sonar.cs.opencover.reportsPaths=${getSonarTestReportsPath(
-          opts.projectDir,
-          testsDir,
-          "coverage.opencover.xml",
-        )}`,
+        "/d:sonar.cs.opencover.reportsPaths=**/TestResults/**/coverage.opencover.xml",
       );
       beginArgs.push(
-        `/d:sonar.cs.vstest.reportsPaths=${getSonarTestReportsPath(opts.projectDir, testsDir, "*.trx")}`,
+        "/d:sonar.cs.vstest.reportsPaths=**/TestResults/**/*.trx",
       );
     }
 
@@ -406,7 +449,7 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
     // 2. Build
     const buildResult = await runCommand(
       "dotnet",
-      ["build"],
+      ["build", ...(dotNetBuildTarget ? [dotNetBuildTarget] : [])],
       opts.projectDir,
       getRemainingTimeout()
     );
@@ -424,25 +467,25 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
     }
     // 2.5. Test (if shouldRunTests)
     if (shouldRunTests) {
-      const testArgs = [
-        "test",
-        ...(testsDir ? [testsDir] : []),
-        ...(testsDir ? [] : ["--no-build"]),
-        "--collect:XPlat Code Coverage",
-        "--logger",
-        "trx",
-        "--",
-        "DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover",
-      ];
       const testResult = await runCommand(
         "dotnet",
-        testArgs,
+        [
+          "test",
+          ...(dotNetBuildTarget ? [dotNetBuildTarget] : []),
+          "--results-directory",
+          join(opts.projectDir, "TestResults"),
+          "--collect:XPlat Code Coverage",
+          "--logger",
+          "trx",
+          "--",
+          "DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover",
+        ],
         opts.projectDir,
         getRemainingTimeout()
       );
 
-      combinedOut += `\n[STEP 2.5: TEST]\n` + testResult.stdout;
-      combinedErr += `\n[STEP 2.5: TEST]\n` + testResult.stderr;
+      combinedOut += "\n[STEP 2.5: TEST]\n" + testResult.stdout;
+      combinedErr += "\n[STEP 2.5: TEST]\n" + testResult.stderr;
 
       if (!testResult.success) {
         return {
@@ -475,10 +518,9 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
   // Fallback to normal sonar-scanner
   const hasProjectTests = hasNodeTests(opts.projectDir);
   const hasCandidateTests = candidateTestsDir ? hasNodeTests(candidateTestsDir) : false;
-  const testsDir =
-    hasCandidateTests || (opts.runTests === true && opts.testsDir !== undefined)
-      ? candidateTestsDir
-      : undefined;
+  const testsDir = hasCandidateTests || (opts.runTests === true && opts.testsDir !== undefined)
+    ? candidateTestsDir
+    : undefined;
   const runNodeTests = opts.runTests ?? (hasProjectTests || hasCandidateTests);
 
   const args: string[] = [

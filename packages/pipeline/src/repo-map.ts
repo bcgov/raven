@@ -2,7 +2,15 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 
-const REPO_MAP_PATH = join(homedir(), ".raven", "repo-map.json");
+/**
+ * Path to the repo-map cache. Overridable via RAVEN_REPO_MAP_PATH so tests
+ * (and any throwaway run) write somewhere disposable: with a hard-coded
+ * path, every test run appended fixture entries to the operator's real cache
+ * — hundreds accumulated, and PLAN's sibling search iterates that map.
+ */
+function repoMapPath(): string {
+  return process.env["RAVEN_REPO_MAP_PATH"] ?? join(homedir(), ".raven", "repo-map.json");
+}
 
 /** Cached mapping from app/component to its Bitbucket project and repo. */
 export interface RepoMapping {
@@ -15,9 +23,10 @@ type RepoMap = Record<string, RepoMapping>;
 
 /** Load the repo map from disk. */
 export function loadRepoMap(): RepoMap {
-  if (!existsSync(REPO_MAP_PATH)) return {};
+  const path = repoMapPath();
+  if (!existsSync(path)) return {};
   try {
-    return JSON.parse(readFileSync(REPO_MAP_PATH, "utf-8")) as RepoMap;
+    return JSON.parse(readFileSync(path, "utf-8")) as RepoMap;
   } catch {
     return {};
   }
@@ -25,8 +34,9 @@ export function loadRepoMap(): RepoMap {
 
 /** Save the repo map to disk, creating ~/.raven on first use if needed. */
 export function saveRepoMap(map: RepoMap): void {
-  mkdirSync(dirname(REPO_MAP_PATH), { recursive: true });
-  writeFileSync(REPO_MAP_PATH, JSON.stringify(map, null, 2));
+  const path = repoMapPath();
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(map, null, 2));
 }
 
 /** Get the cached mapping for an app/component, or null if not cached. */

@@ -1,0 +1,16 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: "raven"
+  title: "RAVEN"
+  description: "Model Context Protocol (MCP) servers bridging AI assistants to BC Gov enterprise dev tools, with PII scrubbing."
+  annotations:
+    github.com/project-slug: bcgov/raven
+  tags:
+    - mcp
+    - typescript
+    - developer-tools
+spec:
+  type: tool
+  lifecycle: experimental
+  owner: "jamesgagan"
