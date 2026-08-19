@@ -19,6 +19,6 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@nrs/auth": "*",
-    "zod": "^3.24.0"
+    "zod": "^4.4.3"
   }
 }

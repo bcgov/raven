@@ -380,7 +380,7 @@ export function createJenkinsServer(clientOverride?: JenkinsClient): McpServer {
     "Trigger a Jenkins build. Confirm with the user before invoking because this starts live CI work.",
     {
       jobPath: z.string().describe("Slash-separated Jenkins job path"),
-      parameters: z.record(z.string()).optional().describe("Optional build parameters as key/value strings"),
+      parameters: z.record(z.string(), z.string()).optional().describe("Optional build parameters as key/value strings"),
       delay: z.string().optional().describe("Optional Jenkins quiet-period delay, e.g. '0sec'"),
     },
     { readOnlyHint: false },
