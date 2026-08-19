@@ -655,7 +655,7 @@ export function createJiraServer(): McpServer {
           "(e.g. an RFD-subtask under an RFD). Only valid for sub-task issue types."
         ),
       customFields: z
-        .record(z.unknown())
+        .record(z.string(), z.unknown())
         .optional()
         .describe(
           "Custom fields by display name or field ID, e.g. " +
@@ -790,7 +790,7 @@ export function createJiraServer(): McpServer {
         .optional()
         .describe("New assignee username (use search_assignable_users to find it)"),
       customFields: z
-        .record(z.unknown())
+        .record(z.string(), z.unknown())
         .optional()
         .describe(
           "Custom fields by display name or field ID, e.g. " +
