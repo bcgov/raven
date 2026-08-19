@@ -21,7 +21,7 @@
     "@nrs/auth": "*",
     "markdown-it": "^15.0.0",
     "turndown": "^7.2.0",
-    "zod": "^3.24.0"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/turndown": "^5.0.5"
