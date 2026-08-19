@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { runScan, isValidSonarScanner, parseSonarConfig, getMergedSonarProps, hasDotNetCode } from "../sonar-scanner.js";
 import spawn from "cross-spawn";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { EventEmitter } from "events";
 
 vi.mock("cross-spawn", () => {
@@ -241,6 +241,22 @@ describe("MSBuild/DotNet detection and execution tests", () => {
       expect(res).toBe(true);
     });
 
+    it("stops scanning after the first matching file", () => {
+      vi.mocked(readdirSync).mockReturnValue(["first.cs", "second.cs"] as any);
+      vi.mocked(statSync).mockReturnValue({ isDirectory: () => false } as any);
+
+      expect(hasDotNetCode("/some/dir")).toBe(true);
+      expect(statSync).toHaveBeenCalledTimes(1);
+    });
+
+    it("stops code detection after the first matching file", () => {
+      vi.mocked(readdirSync).mockReturnValue(["my-app.cs", "another-app.cs"] as any);
+      vi.mocked(statSync).mockReturnValue({ isDirectory: () => false } as any);
+
+      expect(hasDotNetCode("/some/dir")).toBe(true);
+      expect(statSync).toHaveBeenCalledTimes(1);
+    });
+
     it("returns true if csproj file is present", () => {
       vi.mocked(readdirSync).mockReturnValue(["MyApp.csproj"] as any);
       vi.mocked(statSync).mockReturnValue({ isDirectory: () => false } as any);
@@ -441,6 +457,28 @@ describe("MSBuild/DotNet detection and execution tests", () => {
       spawnedChildren[3].emit("close", 0);
 
       await expect(scanPromise).resolves.toMatchObject({ success: true, exitCode: 0 });
+    });
+
+    it("rejects ambiguous recursive solution discovery with solutionFile guidance", async () => {
+      vi.mocked(existsSync).mockImplementation((path: any) =>
+        String(path).includes("SonarScanner.MSBuild.exe"),
+      );
+      vi.mocked(readdirSync).mockReturnValue(["First.slnx", "Second.slnx"] as any);
+      vi.mocked(statSync).mockReturnValue({ isDirectory: () => false } as any);
+
+      await expect(
+        runScan({
+          projectKey: "dotnet-project",
+          branch: "main",
+          projectDir: "/my/dotnet-app",
+          serverUrl: "https://sonar.example.com",
+          token: "sonar-tok-456",
+          useMsBuild: true,
+        }),
+      ).rejects.toThrow(
+        'Multiple .slnx files were found under "/my/dotnet-app". Provide solutionFile to select the solution used for the scan.',
+      );
+      expect(spawn).not.toHaveBeenCalled();
     });
 
     it("treats an explicit solutionFile as MSBuild input when useMsBuild is omitted", async () => {
@@ -646,6 +684,59 @@ describe("MSBuild/DotNet detection and execution tests", () => {
         ]),
         expect.any(Object)
       );
+    });
+
+    it("runs external sibling Node tests and includes their LCOV path", async () => {
+      const spawnedChildren: MockChildProcess[] = [];
+      const siblingTestsDir = resolve("/my/node-app", "..", "tests");
+      vi.mocked(spawn).mockImplementation(() => {
+        const child = new MockChildProcess();
+        spawnedChildren.push(child);
+        return child as any;
+      });
+      vi.mocked(existsSync).mockImplementation((path: any) => {
+        const normalizedPath = String(path).replaceAll("\\", "/");
+        return normalizedPath === siblingTestsDir.replaceAll("\\", "/") ||
+          normalizedPath.includes("package.json");
+      });
+      vi.mocked(readFileSync).mockImplementation((path: any) =>
+        String(path).includes("package.json")
+          ? JSON.stringify({ scripts: { test: "vitest run" } })
+          : "",
+      );
+      vi.mocked(readdirSync).mockReturnValue([] as any);
+
+      const scanPromise = runScan({
+        projectKey: "node-project",
+        branch: "main",
+        projectDir: "/my/node-app",
+        serverUrl: "https://sonar.example.com",
+        token: "sonar-tok-012",
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnedChildren.length).toBe(1);
+      expect(spawn).toHaveBeenNthCalledWith(
+        1,
+        process.platform === "win32" ? "npm.cmd" : "npm",
+        ["test"],
+        expect.objectContaining({ cwd: siblingTestsDir }),
+      );
+      spawnedChildren[0].emit("close", 0);
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnedChildren.length).toBe(2);
+      expect(spawn).toHaveBeenNthCalledWith(
+        2,
+        "sonar-scanner",
+        expect.arrayContaining([
+          "-Dsonar.javascript.lcov.reportPaths=../tests/coverage/lcov.info,coverage/lcov.info,**/coverage/lcov.info",
+        ]),
+        expect.objectContaining({ cwd: "/my/node-app" }),
+      );
+      spawnedChildren[1].emit("close", 0);
+
+      await expect(scanPromise).resolves.toMatchObject({ success: true, exitCode: 0 });
     });
 
     it("terminates normal scan sequence early if npm tests fail", async () => {

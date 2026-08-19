@@ -1,6 +1,6 @@
 import spawn from "cross-spawn";
 import { fileURLToPath } from "node:url";
-import { dirname, join, isAbsolute, resolve } from "node:path";
+import { dirname, join, isAbsolute, relative, resolve } from "node:path";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -22,6 +22,7 @@ export interface RunScanOptions {
   timeoutMs?: number;
   useMsBuild?: boolean;
   runTests?: boolean;
+  testsDir?: string;
   solutionFile?: string;
 }
 
@@ -105,30 +106,53 @@ export function getMergedSonarProps(projectDir?: string): {
   };
 }
 
-function findDotNetFiles(
+interface DotNetScanResults {
+  hasCode: boolean;
+  hasTests: boolean;
+  slnxFiles: string[];
+  slnFiles: string[];
+  projectFiles: string[];
+}
+
+function scanDotNetTree(
   dir: string,
-  predicate: (fileName: string) => boolean,
   depth = 0,
-): string[] {
-  if (depth > MAX_DOTNET_SCAN_DEPTH) return [];
+  results: DotNetScanResults = {
+    hasCode: false,
+    hasTests: false,
+    slnxFiles: [],
+    slnFiles: [],
+    projectFiles: [],
+  },
+  stopWhen?: (results: DotNetScanResults) => boolean,
+): DotNetScanResults {
+  if (depth > MAX_DOTNET_SCAN_DEPTH) return results;
   try {
     const files = readdirSync(dir);
-    const matches: string[] = [];
     for (const file of files) {
       const lower = file.toLowerCase();
       if (IGNORED_DOTNET_DIRECTORIES.has(lower) || file.startsWith(".")) continue;
       const fullPath = join(dir, file);
       const stat = statSync(fullPath);
       if (stat.isDirectory()) {
-        matches.push(...findDotNetFiles(fullPath, predicate, depth + 1));
-      } else if (predicate(file)) {
-        matches.push(fullPath);
+        scanDotNetTree(fullPath, depth + 1, results, stopWhen);
+      } else {
+        if (isDotNetCodeFile(file)) results.hasCode = true;
+        if (isDotNetTestFile(file)) results.hasTests = true;
+        if (lower.endsWith(".slnx") && results.slnxFiles.length < 2) {
+          results.slnxFiles.push(fullPath);
+        } else if (lower.endsWith(".sln") && results.slnFiles.length < 2) {
+          results.slnFiles.push(fullPath);
+        } else if (isDotNetProjectFile(file) && results.projectFiles.length < 2) {
+          results.projectFiles.push(fullPath);
+        }
       }
+      if (stopWhen?.(results)) return results;
     }
-    return matches;
   } catch {
-    return [];
+    return results;
   }
+  return results;
 }
 
 function isDotNetProjectFile(fileName: string): boolean {
@@ -162,11 +186,11 @@ function isDotNetTestFile(fileName: string): boolean {
 }
 
 export function hasDotNetCode(dir: string, depth = 0): boolean {
-  return findDotNetFiles(dir, isDotNetCodeFile, depth).length > 0;
+  return scanDotNetTree(dir, depth, undefined, (results) => results.hasCode).hasCode;
 }
 
 export function hasDotNetTests(dir: string, depth = 0): boolean {
-  return findDotNetFiles(dir, isDotNetTestFile, depth).length > 0;
+  return scanDotNetTree(dir, depth, undefined, (results) => results.hasTests).hasTests;
 }
 
 export function hasNodeTests(dir: string): boolean {
@@ -201,6 +225,27 @@ export function getScannerPath(bin: string): string {
   return bin;
 }
 
+function getTestsDir(projectDir: string, configuredTestsDir?: string): string | undefined {
+  if (configuredTestsDir) {
+    const testsDir = isAbsolute(configuredTestsDir)
+      ? configuredTestsDir
+      : resolve(projectDir, configuredTestsDir);
+    if (!existsSync(testsDir)) {
+      throw new Error(`Configured tests directory does not exist: "${testsDir}"`);
+    }
+    return testsDir;
+  }
+
+  const siblingTestsDir = resolve(projectDir, "..", "tests");
+  return existsSync(siblingTestsDir) ? siblingTestsDir : undefined;
+}
+
+function getRelativeTestsDir(projectDir: string, testsDir: string | undefined): string | undefined {
+  if (!testsDir) return undefined;
+  const relativeTestsDir = relative(projectDir, testsDir).replaceAll("\\", "/");
+  return relativeTestsDir && relativeTestsDir !== "." ? relativeTestsDir : undefined;
+}
+
 function getDotNetBuildTarget(projectDir: string, configuredSolutionFile?: string): string | undefined {
   if (configuredSolutionFile) {
     const solutionFile = isAbsolute(configuredSolutionFile)
@@ -212,20 +257,35 @@ function getDotNetBuildTarget(projectDir: string, configuredSolutionFile?: strin
     return solutionFile;
   }
 
-  const slnxFiles = findDotNetFiles(projectDir, (file) => file.toLowerCase().endsWith(".slnx"));
-  if (slnxFiles.length === 1) {
-    return slnxFiles[0];
+  const results = scanDotNetTree(projectDir);
+  if (results.slnxFiles.length === 1) {
+    return results.slnxFiles[0];
   }
-  if (slnxFiles.length > 1) return undefined;
-
-  const slnFiles = findDotNetFiles(projectDir, (file) => file.toLowerCase().endsWith(".sln"));
-  if (slnFiles.length === 1) {
-    return slnFiles[0];
+  if (results.slnxFiles.length > 1) {
+    throw new Error(
+      `Multiple .slnx files were found under "${projectDir}". ` +
+      `Provide solutionFile to select the solution used for the scan.`,
+    );
   }
-  if (slnFiles.length > 1) return undefined;
 
-  const projectFiles = findDotNetFiles(projectDir, isDotNetProjectFile);
-  return projectFiles.length === 1 ? projectFiles[0] : undefined;
+  if (results.slnFiles.length === 1) {
+    return results.slnFiles[0];
+  }
+  if (results.slnFiles.length > 1) {
+    throw new Error(
+      `Multiple .sln files were found under "${projectDir}". ` +
+      `Provide solutionFile to select the solution used for the scan.`,
+    );
+  }
+
+  if (results.projectFiles.length === 1) return results.projectFiles[0];
+  if (results.projectFiles.length > 1) {
+    throw new Error(
+      `Multiple .NET project files were found under "${projectDir}". ` +
+      `Provide solutionFile to select the project used for the scan.`,
+    );
+  }
+  return undefined;
 }
 
 interface RunCommandResult {
@@ -270,6 +330,7 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
     opts.useMsBuild ??
     (Boolean(opts.solutionFile) ||
       hasDotNetCode(opts.projectDir));
+  const candidateTestsDir = isDotNet ? undefined : getTestsDir(opts.projectDir, opts.testsDir);
 
   if (!isDotNet) {
     if (!isValidSonarScanner(bin)) {
@@ -454,7 +515,11 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
 
   // Fallback to normal sonar-scanner
   const hasProjectTests = hasNodeTests(opts.projectDir);
-  const runNodeTests = opts.runTests ?? hasProjectTests;
+  const hasCandidateTests = candidateTestsDir ? hasNodeTests(candidateTestsDir) : false;
+  const testsDir = hasCandidateTests || (opts.runTests === true && opts.testsDir !== undefined)
+    ? candidateTestsDir
+    : undefined;
+  const runNodeTests = opts.runTests ?? (hasProjectTests || hasCandidateTests);
 
   const args: string[] = [
     `-Dsonar.projectKey=${opts.projectKey}`,
@@ -467,7 +532,15 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
   if (coverageExclusions) args.push(`-Dsonar.coverage.exclusions=${coverageExclusions}`);
 
   if (runNodeTests) {
-    args.push("-Dsonar.javascript.lcov.reportPaths=coverage/lcov.info,**/coverage/lcov.info");
+    const reportPaths = ["coverage/lcov.info", "**/coverage/lcov.info"];
+    const relativeTestsDir = getRelativeTestsDir(opts.projectDir, testsDir);
+    if (relativeTestsDir) {
+      reportPaths.unshift(`${relativeTestsDir}/coverage/lcov.info`);
+      if (!relativeTestsDir.startsWith("../")) {
+        reportPaths.unshift(`${relativeTestsDir}/**/coverage/lcov.info`);
+      }
+    }
+    args.push(`-Dsonar.javascript.lcov.reportPaths=${reportPaths.join(",")}`);
   }
 
   if (opts.extraArgs?.length)  args.push(...opts.extraArgs);
@@ -486,7 +559,7 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
     const testResult = await runCommand(
       process.platform === "win32" ? "npm.cmd" : "npm",
       ["test"],
-      opts.projectDir,
+      testsDir ?? opts.projectDir,
       getRemainingTimeout(1000)
     );
     if (!testResult.success) {

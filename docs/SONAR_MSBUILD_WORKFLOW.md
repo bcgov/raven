@@ -31,4 +31,4 @@ flowchart TD
 4. Otherwise, a unique recursive `.csproj` or `.vbproj` is used.
 5. The resolved build target is also passed to `dotnet test`.
 
-There is no separate test-directory or test-solution selection. Coverage and TRX reports are collected from tests belonging to the same solution or project used for the scan.
+MSBuild scans do not select a separate test directory or test solution. Coverage and TRX reports are collected from tests belonging to the same solution or project used for the scan. The generic Node scanner may still use `testsDir` to locate an external `package.json` and LCOV output.

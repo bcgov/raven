@@ -171,10 +171,11 @@ export function createSonarServer(): McpServer {
       timeoutMs:  z.number().int().min(10_000).max(3_600_000).default(900_000),
       useMsBuild: z.boolean().optional().describe("Use MSBuild sonar step sequence for C#/.NET projects (default: auto-detect .NET code)"),
       runTests:   z.boolean().optional().describe("Run tests to calculate/report code coverage (default: auto-detect tests)"),
+      testsDir:   z.string().optional().describe("Absolute or project-relative Node.js tests directory (generic scanner only; default: sibling ../tests when present)"),
       solutionFile: z.string().optional().describe("Absolute or project-relative .NET solution/project file (.slnx, .sln, .csproj, or .vbproj)"),
     },
     { readOnlyHint: false },
-    async ({ projectKey, branch, projectDir, extraArgs, timeoutMs, useMsBuild, runTests, solutionFile }) => {
+    async ({ projectKey, branch, projectDir, extraArgs, timeoutMs, useMsBuild, runTests, testsDir, solutionFile }) => {
       try {
         const props = getMergedSonarProps(projectDir);
 
@@ -201,6 +202,7 @@ export function createSonarServer(): McpServer {
           extraArgs, timeoutMs,
           useMsBuild,
           runTests,
+          testsDir,
           solutionFile,
         });
 
