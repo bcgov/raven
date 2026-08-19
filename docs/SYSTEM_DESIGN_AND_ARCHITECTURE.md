@@ -608,7 +608,7 @@ To address specific fears directly:
 
 ### 11.1 "Can the AI delete a database?"
 
-**No.** RAVEN has no database tools. There are no SQL connections, no ORM, no database client libraries. The `oracledb` dependency in the root `package.json` is used only by standalone analysis scripts (not MCP tools). No MCP server imports or uses it.
+**No.** RAVEN has no database tools. There are no SQL connections, no ORM, no database client libraries, and no database driver dependencies.
 
 ### 11.2 "Can the AI steal sensitive information?"
 
