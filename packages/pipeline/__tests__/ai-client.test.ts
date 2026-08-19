@@ -1,5 +1,49 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { aiTimeoutMs, DEFAULT_AI_TIMEOUT_MS } from "../src/ai-client.js";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+
+// ---------------------------------------------------------------------------
+// askAI session cleanup (ai-client.ts)
+// copilot-sdk 1.x replaced session.destroy() with disconnect() (keeps
+// on-disk session state for resume) and client.deleteSession() (full
+// removal — the old destroy semantics). The pipeline creates short-lived
+// sessions per AI call, so cleanup must permanently delete them or watch /
+// backlog runs accumulate session state on disk.
+// ---------------------------------------------------------------------------
+
+const sdkState = vi.hoisted(() => ({
+  deleteSessionCalls: [] as string[],
+  sendShouldThrow: false,
+}));
+
+vi.mock("@github/copilot-sdk", () => {
+  class FakeSession {
+    sessionId = "sess-1";
+    private handlers = new Map<string, (e: unknown) => void>();
+    on(event: string, handler: (e: unknown) => void): () => void {
+      this.handlers.set(event, handler);
+      return () => {};
+    }
+    async send(_opts: unknown): Promise<void> {
+      if (sdkState.sendShouldThrow) throw new Error("send failed");
+      queueMicrotask(() => {
+        this.handlers.get("assistant.message")?.({ data: { content: "hello from ai" } });
+        this.handlers.get("session.idle")?.({});
+      });
+    }
+  }
+  class CopilotClient {
+    async start(): Promise<void> {}
+    async stop(): Promise<void> {}
+    async createSession(_opts: unknown): Promise<FakeSession> {
+      return new FakeSession();
+    }
+    async deleteSession(id: string): Promise<void> {
+      sdkState.deleteSessionCalls.push(id);
+    }
+  }
+  return { CopilotClient, approveAll: () => "approve" };
+});
+
+import { aiTimeoutMs, DEFAULT_AI_TIMEOUT_MS, askAI, stopAI } from "../src/ai-client.js";
 
 // ---------------------------------------------------------------------------
 // aiTimeoutMs (ai-client.ts)
@@ -43,5 +87,28 @@ describe("aiTimeoutMs", () => {
   it("ignores garbage values", () => {
     process.env["RAVEN_AI_TIMEOUT_MS"] = "not-a-number";
     expect(aiTimeoutMs()).toBe(DEFAULT_AI_TIMEOUT_MS);
+  });
+});
+
+describe("askAI session cleanup", () => {
+  beforeEach(() => {
+    sdkState.deleteSessionCalls.length = 0;
+    sdkState.sendShouldThrow = false;
+  });
+
+  afterEach(async () => {
+    await stopAI();
+  });
+
+  it("permanently deletes the session after a successful call", async () => {
+    const response = await askAI("what is up");
+    expect(response).toBe("hello from ai");
+    expect(sdkState.deleteSessionCalls).toEqual(["sess-1"]);
+  });
+
+  it("permanently deletes the session even when the send fails", async () => {
+    sdkState.sendShouldThrow = true;
+    await expect(askAI("boom")).rejects.toThrow("send failed");
+    expect(sdkState.deleteSessionCalls).toEqual(["sess-1"]);
   });
 });

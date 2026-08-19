@@ -272,7 +272,7 @@ try {
 
   await session.send({ prompt: scrubbedPrompt });
   await done;
-  await session.destroy();
+  await copilotClient.deleteSession(session.sessionId);
 } catch (e) {
   console.error(`[AI] Error: ${(e as Error).message}`);
   await copilotClient.stop();
