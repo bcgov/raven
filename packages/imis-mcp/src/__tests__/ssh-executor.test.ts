@@ -9,6 +9,7 @@ import {
   getSshAuthMode,
   buildConnectOpts,
   sshExec,
+  getSshUser,
   type SshAuthMode,
 } from "../ssh-executor.js";
 
@@ -175,6 +176,28 @@ describe("getSshAuthMode", () => {
   it("does NOT match a partial IPv4 prefix", () => {
     const mode = getSshAuthMode("192.168.1.10", existingKey, "192");
     expect(mode).toEqual({ kind: "password" });
+  });
+});
+
+describe("getSshUser", () => {
+  const saved = process.env.IMIS_SSH_USER;
+
+  afterAll(() => {
+    if (saved === undefined) delete process.env.IMIS_SSH_USER;
+    else process.env.IMIS_SSH_USER = saved;
+  });
+
+  it("returns IMIS_SSH_USER verbatim when set", () => {
+    process.env.IMIS_SSH_USER = "svc_proxy_a";
+    expect(getSshUser()).toBe("svc_proxy_a");
+  });
+
+  it("never returns an uppercase username (lowercases the OS-user fallback)", () => {
+    // Windows userInfo().username is often upper/mixed case; the derived
+    // `<user>_a` must be lowercased or BC Gov Unix hosts reject the login.
+    delete process.env.IMIS_SSH_USER;
+    const user = getSshUser();
+    expect(user).toBe(user.toLowerCase());
   });
 });
 

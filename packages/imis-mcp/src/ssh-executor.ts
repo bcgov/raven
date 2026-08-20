@@ -77,10 +77,19 @@ function shellEscape(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
-/** Get the SSH username. Checks IMIS_SSH_USER env, falls back to current user + _a. */
+/**
+ * Get the SSH username. Checks IMIS_SSH_USER env, falls back to the current OS
+ * user + `_a`. The OS username is lowercased first: BC Gov `_A` service
+ * accounts are lowercase in Unix (e.g. `jsmith_a`), but on Windows
+ * `userInfo().username` is often upper/mixed case (e.g. `JSMITH`), which would
+ * otherwise produce an invalid `JSMITH_a` and fail auth on the Apache proxy
+ * and application servers. Set IMIS_SSH_USER to override entirely.
+ */
 function getSshUser(): string {
-  return loadEnvVar("IMIS_SSH_USER") ?? `${userInfo().username}_a`;
+  return loadEnvVar("IMIS_SSH_USER") ?? `${userInfo().username.toLowerCase()}_a`;
 }
+
+export { getSshUser };
 
 /**
  * SSH authentication mode.
