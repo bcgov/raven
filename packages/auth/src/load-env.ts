@@ -147,42 +147,74 @@ export function decodeKeychainBlob(blob: string): Record<string, string> {
   return record;
 }
 
-type ExecFileSync = (cmd: string, args: string[], opts: object) => string;
+/** Minimal execFileSync shape so tests can inject a fake `security` binary. */
+export type KeychainExec = (
+  cmd: string,
+  args: string[],
+  opts: { encoding?: "utf-8"; timeout?: number; stdio?: unknown; input?: string },
+) => string;
+
+const SECURITY_BIN = "/usr/bin/security";
+
+/** Keychain service name; RAVEN_KEYCHAIN_SERVICE overrides it for testing. */
+export function keychainService(): string {
+  return process.env["RAVEN_KEYCHAIN_SERVICE"] || DEFAULT_KEYCHAIN_SERVICE;
+}
 
 /**
- * Read the RAVEN credential blob from the macOS login keychain (a single
- * generic-password item, service "raven" / account "credentials", written by
- * scripts/setup-credentials-mac.mjs) and merge it into process.env.
- *
- * Silently no-ops when the item does not exist, `security` is unavailable,
- * or the blob is corrupt. Values are only written when the key is NOT
- * already set, preserving the explicit-env-var-wins contract.
- *
- * The one-item-blob design mirrors ~/.raven/.env.dpapi on Windows: one
- * subprocess call per server startup, and any later "Confirm before allowing
- * access" ACL gates all credentials behind a single prompt.
+ * Read the RAVEN credential blob from the login keychain. Returns null when
+ * the item does not exist, `security` is unavailable, or the blob is corrupt.
  */
-export function loadKeychain(exec: ExecFileSync = execFileSync as ExecFileSync): void {
-  const service = process.env["RAVEN_KEYCHAIN_SERVICE"] || DEFAULT_KEYCHAIN_SERVICE;
+export function readKeychainRecord(
+  exec: KeychainExec = execFileSync as unknown as KeychainExec,
+): Record<string, string> | null {
   try {
     const output = exec(
-      "/usr/bin/security",
-      ["find-generic-password", "-s", service, "-a", KEYCHAIN_ACCOUNT, "-w"],
+      SECURITY_BIN,
+      ["find-generic-password", "-s", keychainService(), "-a", KEYCHAIN_ACCOUNT, "-w"],
       {
         encoding: "utf-8",
         timeout: 10_000,
         // Suppress stderr so security warnings don't leak to stdout (MCP stdio transport)
         stdio: ["ignore", "pipe", "ignore"],
-      }
+      },
     );
-    const record = decodeKeychainBlob(output);
-    for (const [key, val] of Object.entries(record)) {
-      if (key && !(key in process.env)) {
-        process.env[key] = val;
-      }
-    }
+    return decodeKeychainBlob(output);
   } catch {
-    // Item not found, security unavailable, or corrupt blob — silently skip.
+    return null;
+  }
+}
+
+/**
+ * Replace the RAVEN credential blob in the login keychain. Uses `security -i`
+ * so the blob travels on stdin, never in the process argument list where any
+ * same-user process could momentarily see it. Throws on failure.
+ */
+export function writeKeychainRecord(
+  record: Record<string, string>,
+  exec: KeychainExec = execFileSync as unknown as KeychainExec,
+): void {
+  const blob = encodeKeychainBlob(record);
+  exec(SECURITY_BIN, ["-i"], {
+    encoding: "utf-8",
+    timeout: 10_000,
+    input: `add-generic-password -U -s ${keychainService()} -a ${KEYCHAIN_ACCOUNT} -w ${blob}\n`,
+    stdio: ["pipe", "ignore", "ignore"],
+  });
+}
+
+/**
+ * Read the RAVEN credential blob from the macOS login keychain and merge it
+ * into process.env. Values are only written when the key is NOT already
+ * set, preserving the explicit-env-var-wins contract. Silent no-op on any failure.
+ */
+export function loadKeychain(exec?: KeychainExec): void {
+  const record = readKeychainRecord(exec);
+  if (!record) return;
+  for (const [key, val] of Object.entries(record)) {
+    if (key && !(key in process.env)) {
+      process.env[key] = val;
+    }
   }
 }
 
