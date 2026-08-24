@@ -40,8 +40,10 @@ export {
   readKeychainRecord,
   writeKeychainRecord,
   KEYCHAIN_KEY_PATTERN,
+  KEYCHAIN_ACCOUNT,
   setKeychainEntry,
   deleteKeychainEntry,
+  KeychainReadError,
 } from "./load-env.js";
 export type { KeychainExec } from "./load-env.js";
 export { authCliPath } from "./auth-cli-path.js";

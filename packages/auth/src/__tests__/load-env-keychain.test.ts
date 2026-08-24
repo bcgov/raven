@@ -7,6 +7,7 @@ import {
   writeKeychainRecord,
   setKeychainEntry,
   deleteKeychainEntry,
+  KeychainReadError,
 } from "../load-env.js";
 
 const TEST_KEYS = ["RAVEN_TEST_KC_A", "RAVEN_TEST_KC_B", "RAVEN_KEYCHAIN_SERVICE"];
@@ -94,6 +95,18 @@ describe("loadKeychain", () => {
     expect(() => loadKeychain(exec)).not.toThrow();
     expect(process.env["RAVEN_TEST_KC_A"]).toBeUndefined();
   });
+
+  it("skips keys that don't match KEYCHAIN_KEY_PATTERN", () => {
+    const exec = vi
+      .fn()
+      .mockReturnValue(encodeKeychainBlob({ "bad-key": "x", RAVEN_TEST_KC_A: "ok" }));
+
+    loadKeychain(exec);
+
+    expect(process.env["RAVEN_TEST_KC_A"]).toBe("ok");
+    expect(process.env["bad-key"]).toBeUndefined();
+    delete process.env["bad-key"];
+  });
 });
 
 describe("readKeychainRecord", () => {
@@ -128,9 +141,18 @@ describe("readKeychainRecord", () => {
     expect(readKeychainRecord(exec)).toBeNull();
   });
 
-  it("returns null on a corrupt blob", () => {
+  it("throws KeychainReadError on a corrupt blob", () => {
     const exec = vi.fn().mockReturnValue("garbage!!");
-    expect(readKeychainRecord(exec)).toBeNull();
+    expect(() => readKeychainRecord(exec)).toThrow(KeychainReadError);
+  });
+
+  it("throws KeychainReadError on a non-not-found failure (status 1)", () => {
+    const exec = vi.fn(() => {
+      const err = new Error("User interaction is not allowed.");
+      Object.assign(err, { status: 1 });
+      throw err;
+    });
+    expect(() => readKeychainRecord(exec)).toThrow(KeychainReadError);
   });
 });
 
@@ -178,6 +200,12 @@ describe("writeKeychainRecord", () => {
     });
     expect(() => writeKeychainRecord({ A: "1" }, exec)).toThrow(/User interaction/);
   });
+
+  it("rejects an oversized record without calling security -i", () => {
+    const exec = vi.fn();
+    expect(() => writeKeychainRecord({ BIG: "x".repeat(5000) }, exec)).toThrow(/too large/);
+    expect(exec).not.toHaveBeenCalled();
+  });
 });
 
 /** A fake `security` that keeps one blob in memory across find/add calls. */
@@ -185,7 +213,7 @@ function fakeSecurity(initial: Record<string, string> | null) {
   let stored = initial ? encodeKeychainBlob(initial) : null;
   const exec = vi.fn((_cmd: string, args: string[], opts: { input?: string }) => {
     if (args[0] === "find-generic-password") {
-      if (stored === null) throw new Error("not found");
+      if (stored === null) throw new Error("The specified item could not be found in the keychain.");
       return stored + "\n";
     }
     if (args[0] === "-i") {
@@ -222,6 +250,19 @@ describe("setKeychainEntry", () => {
     expect(() => setKeychainEntry("K", "", kc.exec)).toThrow(/value/i);
     expect(kc.exec).not.toHaveBeenCalled();
   });
+
+  it("propagates a read failure without calling `-i`", () => {
+    const exec = vi.fn((_cmd: string, _args: string[], _opts: unknown) => {
+      const err = new Error("User interaction is not allowed.");
+      Object.assign(err, { status: 1 });
+      throw err;
+    });
+    expect(() => setKeychainEntry("K", "v", exec)).toThrow(KeychainReadError);
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(exec.mock.calls[0]![1]).toEqual(
+      expect.arrayContaining(["find-generic-password"]),
+    );
+  });
 });
 
 describe("deleteKeychainEntry", () => {
@@ -240,5 +281,37 @@ describe("deleteKeychainEntry", () => {
   it("returns false when there is no keychain item at all", () => {
     const kc = fakeSecurity(null);
     expect(deleteKeychainEntry("A", kc.exec)).toBe(false);
+  });
+
+  it("propagates a read failure without calling `-i`", () => {
+    const exec = vi.fn((_cmd: string, _args: string[], _opts: unknown) => {
+      const err = new Error("User interaction is not allowed.");
+      Object.assign(err, { status: 1 });
+      throw err;
+    });
+    expect(() => deleteKeychainEntry("A", exec)).toThrow(KeychainReadError);
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(exec.mock.calls[0]![1]).toEqual(
+      expect.arrayContaining(["find-generic-password"]),
+    );
+  });
+});
+
+describe("keychainService validation", () => {
+  const original = process.env["RAVEN_KEYCHAIN_SERVICE"];
+
+  afterEach(() => {
+    if (original === undefined) delete process.env["RAVEN_KEYCHAIN_SERVICE"];
+    else process.env["RAVEN_KEYCHAIN_SERVICE"] = original;
+  });
+
+  it("rejects a service name with whitespace before touching exec, but loadKeychain stays silent", () => {
+    process.env["RAVEN_KEYCHAIN_SERVICE"] = "raven test";
+    const exec = vi.fn();
+
+    expect(() => readKeychainRecord(exec)).toThrow(/RAVEN_KEYCHAIN_SERVICE/);
+    expect(() => writeKeychainRecord({ A: "1" }, exec)).toThrow(/RAVEN_KEYCHAIN_SERVICE/);
+    expect(exec).not.toHaveBeenCalled();
+    expect(() => loadKeychain(exec)).not.toThrow();
   });
 });
