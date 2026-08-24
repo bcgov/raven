@@ -1,6 +1,15 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, statSync, chmodSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  chmodSync,
+  existsSync,
+  writeFileSync,
+  utimesSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,6 +19,7 @@ import {
   newAuditId,
   AuditLog,
   listAuditFiles,
+  releaseLock,
 } from "../audit-log.js";
 
 describe("canonicalJson", () => {
@@ -167,10 +177,60 @@ describe("AuditLog.append", () => {
     await log.append({ n: 1 });
     expect(existsSync(log.fileFor(AUG()) + ".lock")).toBe(false);
   });
+
+  it("leaves no lock file behind after a failing append (corrupt last line)", async () => {
+    const dir = tmpDir();
+    const log = new AuditLog({ stream: "s", dir, clock: AUG });
+    await log.append({ n: 1 });
+    const { appendFileSync } = await import("node:fs");
+    appendFileSync(log.fileFor(AUG()), "{not json\n");
+    await expect(log.append({ n: 2 })).rejects.toThrow();
+    expect(existsSync(log.fileFor(AUG()) + ".lock")).toBe(false);
+  });
+
+  it("ignores caller-supplied hash and prevHash fields", async () => {
+    const log = new AuditLog({ stream: "s", dir: tmpDir(), clock: AUG });
+    const rec = await log.append({ n: 1, hash: "bogus", prevHash: "bogus" });
+    expect(rec.prevHash).toBe(GENESIS_HASH);
+    expect(rec.hash).toBe(
+      hashRecord(GENESIS_HASH, { ts: rec.ts, id: rec.id, n: 1, prevHash: GENESIS_HASH })
+    );
+  });
+
+  it("does not misdetect a large last record as corrupt", async () => {
+    const dir = tmpDir();
+    const log = new AuditLog({ stream: "s", dir, clock: AUG });
+    const big = "x".repeat(100_000);
+    const first = await log.append({ payload: big });
+    const second = await log.append({ n: 2 });
+    expect(second.prevHash).toBe(first.hash);
+  });
+
+  it("reclaims a lock older than 30s and leaves no lock file behind", async () => {
+    const dir = tmpDir();
+    const log = new AuditLog({ stream: "s", dir, clock: AUG });
+    const lockPath = log.fileFor(AUG()) + ".lock";
+    writeFileSync(lockPath, "foreign-token");
+    const past = new Date(Date.now() - 31_000);
+    utimesSync(lockPath, past, past);
+    const rec = await log.append({ n: 1 });
+    expect(rec.prevHash).toBe(GENESIS_HASH);
+    expect(existsSync(lockPath)).toBe(false);
+  });
 });
 
 describe("listAuditFiles", () => {
   it("returns [] when the directory does not exist", () => {
     expect(listAuditFiles(join(tmpDir(), "nope"), "s")).toEqual([]);
+  });
+});
+
+describe("releaseLock", () => {
+  it("does not unlink a lock whose content differs from the token", () => {
+    const dir = tmpDir();
+    const lock = join(dir, "example.lock");
+    writeFileSync(lock, "foreign-token");
+    releaseLock(lock, "my-token");
+    expect(existsSync(lock)).toBe(true);
   });
 });
