@@ -15,43 +15,19 @@
 //
 // Set RAVEN_KEYCHAIN_SERVICE to use a scratch service name when testing.
 
-import { execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { parse as parseDotenv } from "dotenv";
 import {
-  encodeKeychainBlob,
-  decodeKeychainBlob,
+  readKeychainRecord,
+  writeKeychainRecord,
 } from "../packages/auth/dist/load-env.js";
 import { mask, seedDefaults } from "./setup-credentials-mac.lib.mjs";
 
 const SERVICE = process.env.RAVEN_KEYCHAIN_SERVICE || "raven";
 const ACCOUNT = "credentials";
-
-function readStoredRecord() {
-  try {
-    const blob = execFileSync(
-      "/usr/bin/security",
-      ["find-generic-password", "-s", SERVICE, "-a", ACCOUNT, "-w"],
-      { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }
-    );
-    return decodeKeychainBlob(blob);
-  } catch {
-    return null;
-  }
-}
-
-function writeStoredRecord(record) {
-  const blob = encodeKeychainBlob(record);
-  // security's interactive mode (-i) keeps the blob out of the process
-  // argument list, where any same-user process could momentarily see it.
-  execFileSync("/usr/bin/security", ["-i"], {
-    input: `add-generic-password -U -s ${SERVICE} -a ${ACCOUNT} -w ${blob}\n`,
-    stdio: ["pipe", "ignore", "inherit"],
-  });
-}
 
 /** Values from ~/.raven/.env, used as first-run defaults; {} when absent. */
 function readEnvFile() {
@@ -113,7 +89,7 @@ function createPrompter() {
 
 // --- Verify mode ---
 if (process.argv.includes("--verify")) {
-  const stored = readStoredRecord();
+  const stored = readKeychainRecord();
   if (!stored) {
     console.log(`No keychain item found (service "${SERVICE}", account "${ACCOUNT}").`);
     console.log("Run this script without --verify to create one.");
@@ -135,7 +111,7 @@ console.log("scoped to your macOS user account. Leave any prompt blank to keep t
 console.log("existing value (or skip an optional integration).");
 console.log("");
 
-const existing = readStoredRecord() ?? {};
+const existing = readKeychainRecord() ?? {};
 
 // Same variables, sections, and order as setup-credentials.ps1.
 const SECTIONS = [
@@ -234,7 +210,7 @@ if (!record.ATLASSIAN_BASE_URL || !record.ATLASSIAN_EMAIL || !record.ATLASSIAN_P
   process.exit(1);
 }
 
-writeStoredRecord(record);
+writeKeychainRecord(record);
 
 console.log(`Credentials saved to the login keychain (service "${SERVICE}", account "${ACCOUNT}").`);
 console.log("");
