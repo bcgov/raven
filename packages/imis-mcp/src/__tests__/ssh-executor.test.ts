@@ -180,24 +180,12 @@ describe("getSshAuthMode", () => {
 });
 
 describe("getSshUser", () => {
-  const saved = process.env.IMIS_SSH_USER;
-
-  afterAll(() => {
-    if (saved === undefined) delete process.env.IMIS_SSH_USER;
-    else process.env.IMIS_SSH_USER = saved;
-  });
-
   it("returns IMIS_SSH_USER verbatim when set", () => {
-    process.env.IMIS_SSH_USER = "svc_proxy_a";
-    expect(getSshUser()).toBe("svc_proxy_a");
+    expect(getSshUser("JSMITH", "svc_proxy_a")).toBe("svc_proxy_a");
   });
 
-  it("never returns an uppercase username (lowercases the OS-user fallback)", () => {
-    // Windows userInfo().username is often upper/mixed case; the derived
-    // `<user>_a` must be lowercased or BC Gov Unix hosts reject the login.
-    delete process.env.IMIS_SSH_USER;
-    const user = getSshUser();
-    expect(user).toBe(user.toLowerCase());
+  it("lowercases a mixed-case Windows OS username when no override is configured", () => {
+    expect(getSshUser("JSMITH", undefined)).toBe("jsmith_a");
   });
 });
 

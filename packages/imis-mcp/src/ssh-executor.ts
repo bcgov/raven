@@ -85,8 +85,11 @@ function shellEscape(s: string): string {
  * otherwise produce an invalid `JSMITH_a` and fail auth on the Apache proxy
  * and application servers. Set IMIS_SSH_USER to override entirely.
  */
-function getSshUser(): string {
-  return loadEnvVar("IMIS_SSH_USER") ?? `${userInfo().username.toLowerCase()}_a`;
+function getSshUser(
+  osUsername: string = userInfo().username,
+  configuredUsername: string | undefined = loadEnvVar("IMIS_SSH_USER"),
+): string {
+  return configuredUsername ?? `${osUsername.toLowerCase()}_a`;
 }
 
 export { getSshUser };
