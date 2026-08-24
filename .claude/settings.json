@@ -2,9 +2,13 @@
   "permissions": {
     "deny": [
       "Bash(security find-generic-password:*)",
+      "Bash(/usr/bin/security find-generic-password:*)",
       "Bash(security dump-keychain:*)",
+      "Bash(/usr/bin/security dump-keychain:*)",
+      "Bash(security -i:*)",
+      "Bash(/usr/bin/security -i:*)",
       "Read(~/.raven/.env)",
-      "Read(~/.raven/.env.dpapi)"
+      "Read(~/.raven/.env*)"
     ]
   }
 }

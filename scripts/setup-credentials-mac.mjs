@@ -14,6 +14,10 @@
 //   security delete-generic-password -s raven -a credentials
 //
 // Set RAVEN_KEYCHAIN_SERVICE to use a scratch service name when testing.
+//
+// The whole credential record is written in a single `security -i` command;
+// `security -i` reads stdin in ~4095-byte chunks, so the encoded record has
+// a hard ceiling around that size. writeKeychainRecord() enforces it.
 
 import { createInterface } from "node:readline";
 import { readFileSync } from "node:fs";
@@ -23,11 +27,11 @@ import { parse as parseDotenv } from "dotenv";
 import {
   readKeychainRecord,
   writeKeychainRecord,
+  keychainService,
+  KEYCHAIN_ACCOUNT,
+  KeychainReadError,
 } from "../packages/auth/dist/load-env.js";
 import { mask, seedDefaults } from "./setup-credentials-mac.lib.mjs";
-
-const SERVICE = process.env.RAVEN_KEYCHAIN_SERVICE || "raven";
-const ACCOUNT = "credentials";
 
 /** Values from ~/.raven/.env, used as first-run defaults; {} when absent. */
 function readEnvFile() {
@@ -89,13 +93,20 @@ function createPrompter() {
 
 // --- Verify mode ---
 if (process.argv.includes("--verify")) {
-  const stored = readKeychainRecord();
+  let stored;
+  try {
+    stored = readKeychainRecord();
+  } catch (err) {
+    if (!(err instanceof KeychainReadError)) throw err;
+    console.log(err.message);
+    process.exit(1);
+  }
   if (!stored) {
-    console.log(`No keychain item found (service "${SERVICE}", account "${ACCOUNT}").`);
+    console.log(`No keychain item found (service "${keychainService()}", account "${KEYCHAIN_ACCOUNT}").`);
     console.log("Run this script without --verify to create one.");
     process.exit(1);
   }
-  console.log(`Stored credential keys (service "${SERVICE}"):`);
+  console.log(`Stored credential keys (service "${keychainService()}"):`);
   for (const [key, value] of Object.entries(stored)) {
     console.log(`  ${key}: ${mask(value)}`);
   }
@@ -111,7 +122,24 @@ console.log("scoped to your macOS user account. Leave any prompt blank to keep t
 console.log("existing value (or skip an optional integration).");
 console.log("");
 
-const existing = readKeychainRecord() ?? {};
+// One readline interface for the whole session (see createPrompter's doc
+// comment) — created before the existing-record read so it is also
+// available for the overwrite confirmation below, if needed.
+const prompter = createPrompter();
+
+let existing;
+try {
+  existing = readKeychainRecord() ?? {};
+} catch (err) {
+  if (!(err instanceof KeychainReadError)) throw err;
+  console.log("Existing keychain item could not be read — continuing will overwrite it.");
+  const answer = await prompter.ask("Overwrite the unreadable keychain item? (yes/no)");
+  if (answer.trim().toLowerCase() !== "yes") {
+    prompter.close();
+    process.exit(1);
+  }
+  existing = {};
+}
 
 // Same variables, sections, and order as setup-credentials.ps1.
 const SECTIONS = [
@@ -187,7 +215,6 @@ if (promptedKeys.some((k) => !existing[k] && defaults[k])) {
   console.log("");
 }
 
-const prompter = createPrompter();
 for (const section of SECTIONS) {
   if (section.header) {
     console.log("");
@@ -210,9 +237,14 @@ if (!record.ATLASSIAN_BASE_URL || !record.ATLASSIAN_EMAIL || !record.ATLASSIAN_P
   process.exit(1);
 }
 
-writeKeychainRecord(record);
+try {
+  writeKeychainRecord(record);
+} catch (err) {
+  console.error(`Could not write to the login keychain (locked or access denied): ${err.message}`);
+  process.exit(1);
+}
 
-console.log(`Credentials saved to the login keychain (service "${SERVICE}", account "${ACCOUNT}").`);
+console.log(`Credentials saved to the login keychain (service "${keychainService()}", account "${KEYCHAIN_ACCOUNT}").`);
 console.log("");
 console.log("Next steps:");
 console.log("  - Remove the values now stored in the keychain from ~/.raven/.env —");

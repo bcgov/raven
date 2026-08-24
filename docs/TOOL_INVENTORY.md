@@ -160,7 +160,7 @@ Set in `~/.raven/.env` (`chmod 600`). **Sensitive** values are secrets — never
 | `ATLASSIAN_EMAIL` | required | no | same | IDIR email |
 | `ATLASSIAN_PASSWORD` | required | **yes** | same | IDIR password |
 | `RAVEN_SCRUB_PI` | recommended | no | all | PI scrubbing toggle (FOIPPA) |
-| `RAVEN_KEYCHAIN_SERVICE` | optional | no | all (macOS) | override the keychain service name (testing) |
+| `RAVEN_KEYCHAIN_SERVICE` | optional | no | all (macOS) | override the keychain service name (testing); must be set in the process environment — the keychain is read before .env |
 | `JIRA_EPIC_LINK_FIELD` | optional | no | jira | Epic Link custom-field id (default `customfield_10006`) |
 | `JIRA_EPIC_NAME_FIELD` | optional | no | jira | Epic Name custom-field id (default `customfield_10005`) |
 | `JIRA_URL` / `CONFLUENCE_URL` / `BITBUCKET_URL` | optional | no | respective | per-product base-URL override |
