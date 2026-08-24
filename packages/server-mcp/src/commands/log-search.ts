@@ -154,8 +154,12 @@ export function buildLogSearchCommand(params: LogSearchParams): string {
  * Note: dates in filenames use dots (YYYY.MM.DD), not dashes (YYYY-MM-DD).
  *
  * These servers store logs in a hot/cold split:
- *   hot  — recently active log files
- *   cold — older rotated log files
+ *   hot  — recently active log files (plain .log)
+ *   cold — older rotated log files, gzip-compressed (.log.gz)
+ *
+ * Cold archives are read with `zgrep`/`zcat`; the file glob matches both
+ * `.log` and `.log.gz` so a `subdir: "cold"` search transparently searches
+ * the compressed archives.
  *
  * Throws if pattern contains shell metacharacters.
  */
@@ -177,13 +181,20 @@ export function buildHttpdLogSearchCommand(params: HttpdLogSearchParams): string
   const prefix = `${domain}-${logType}`;
   const grepOpts = `-E -n -a${contextLines > 0 ? ` -C ${contextLines}` : ""}`;
 
+  // Cold logs are gzip-rotated (…-access.YYYY.MM.DD.log.gz), while hot logs are
+  // plain .log. We handle both: match a .log* glob (covers .log and .log.gz)
+  // and read the newest with zgrep, which transparently handles plain and
+  // gzipped input. Specific-date lookups probe the plain .log first, then the
+  // .log.gz sibling.
+
   // Date range mode — loop over each day, converting YYYY-MM-DD to YYYY.MM.DD
   if (dateFrom && dateTo) {
     return [
       `( d='${dateFrom}'; end='${dateTo}';`,
       ` while [ "$d" != "$end" ] && [ "$d" \\< "$end" ] || [ "$d" = "$end" ]; do`,
-      `   fd=$(echo "$d" | tr '-' '.'); f="${logDir}/${prefix}.$\{fd}.log";`,
-      `   if [ -f "$f" ]; then grep ${grepOpts} '${pattern}' "$f" 2>/dev/null; fi;`,
+      `   fd=$(echo "$d" | tr '-' '.'); f="${logDir}/${prefix}.$\{fd}.log"; fgz="$\{f}.gz";`,
+      `   if [ -f "$f" ]; then grep ${grepOpts} '${pattern}' "$f" 2>/dev/null;`,
+      `   elif [ -f "$fgz" ]; then zgrep ${grepOpts} '${pattern}' "$fgz" 2>/dev/null; fi;`,
       `   d=$(date -d "$d + 1 day" +%Y-%m-%d); done`,
       `) | tail -${maxLines}`,
     ].join("\n");
@@ -193,26 +204,30 @@ export function buildHttpdLogSearchCommand(params: HttpdLogSearchParams): string
   if (date) {
     if (date === "today") {
       const dated = `${logDir}/${prefix}.$(date +%Y.%m.%d).log`;
+      const gz = `${dated}.gz`;
       return (
         `if [ -f ${dated} ]; then grep ${grepOpts} '${pattern}' ${dated} | tail -${maxLines};` +
-        ` else newest=$(ls -t ${logDir}/${prefix}*.log 2>/dev/null | head -1);` +
-        `   if [ -n "$newest" ]; then grep ${grepOpts} '${pattern}' "$newest" | tail -${maxLines};` +
+        ` elif [ -f ${gz} ]; then zgrep ${grepOpts} '${pattern}' ${gz} | tail -${maxLines};` +
+        ` else newest=$(ls -t ${logDir}/${prefix}*.log* 2>/dev/null | head -1);` +
+        `   if [ -n "$newest" ]; then zgrep ${grepOpts} '${pattern}' "$newest" | tail -${maxLines};` +
         `   else echo 'No log files found in ${logDir} for ${prefix}'; fi; fi`
       );
     }
     // Convert YYYY-MM-DD to YYYY.MM.DD for the filename
     const fileDate = date.replace(/-/g, ".");
     const dated = `${logDir}/${prefix}.${fileDate}.log`;
+    const gz = `${dated}.gz`;
     return (
       `if [ -f ${dated} ]; then grep ${grepOpts} '${pattern}' ${dated} | tail -${maxLines};` +
+      ` elif [ -f ${gz} ]; then zgrep ${grepOpts} '${pattern}' ${gz} | tail -${maxLines};` +
       ` else echo 'Log file not found: ${dated}'; fi`
     );
   }
 
-  // No date specified — search the newest available log file
+  // No date specified — search the newest available log file (plain or gzipped)
   return (
-    `newest=$(ls -t ${logDir}/${prefix}*.log 2>/dev/null | head -1);` +
-    ` if [ -n "$newest" ]; then grep ${grepOpts} '${pattern}' "$newest" | tail -${maxLines};` +
+    `newest=$(ls -t ${logDir}/${prefix}*.log* 2>/dev/null | head -1);` +
+    ` if [ -n "$newest" ]; then zgrep ${grepOpts} '${pattern}' "$newest" | tail -${maxLines};` +
     ` else echo 'No log files found in ${logDir} for ${prefix}'; fi`
   );
 }

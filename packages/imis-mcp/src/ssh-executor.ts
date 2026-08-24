@@ -60,9 +60,17 @@ function shellEscape(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
-/** Get the SSH username. Checks IMIS_SSH_USER env, falls back to current user + _a. */
+/** Derive an SSH username from an explicit override or an OS username. */
+export function deriveSshUser(
+  osUsername: string,
+  configuredUsername: string | undefined,
+): string {
+  return configuredUsername ?? `${osUsername.toLowerCase()}_a`;
+}
+
+/** Get the configured SSH username, or derive a lowercase `_a` account name. */
 function getSshUser(): string {
-  return loadEnvVar("IMIS_SSH_USER") ?? `${userInfo().username}_a`;
+  return deriveSshUser(userInfo().username, loadEnvVar("IMIS_SSH_USER"));
 }
 
 /**
