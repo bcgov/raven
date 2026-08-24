@@ -13,7 +13,7 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@github/copilot-sdk": "^0.3.0",
+    "@github/copilot-sdk": "^1.0.9",
     "@nrs/auth": "*",
     "@nrs/bitbucket-mcp": "*",
     "@nrs/jira-mcp": "*",

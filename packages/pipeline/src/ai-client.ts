@@ -5,11 +5,30 @@ import { PiScrubber } from "@nrs/auth";
 const scrubber = new PiScrubber();
 
 let client: CopilotClient | undefined;
-let defaultModel = "claude-sonnet-4.6";
+let defaultModel = "claude-sonnet-5";
 
 /** Set the model to use for AI calls. */
 export function setModel(model: string): void {
   defaultModel = model;
+}
+
+export const DEFAULT_AI_TIMEOUT_MS = 120_000;
+const MIN_AI_TIMEOUT_MS = 60_000;
+const MAX_AI_TIMEOUT_MS = 600_000;
+
+/**
+ * Per-call AI timeout. Live backlog runs showed legitimate planning calls
+ * exceeding the old hard-coded 120s regardless of model tier, so the
+ * ceiling is operator-tunable via RAVEN_AI_TIMEOUT_MS — clamped to
+ * [60s, 600s] so a typo can't hang a scheduled run indefinitely or make
+ * every call fail instantly.
+ */
+export function aiTimeoutMs(): number {
+  const raw = process.env["RAVEN_AI_TIMEOUT_MS"];
+  if (!raw) return DEFAULT_AI_TIMEOUT_MS;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n)) return DEFAULT_AI_TIMEOUT_MS;
+  return Math.min(MAX_AI_TIMEOUT_MS, Math.max(MIN_AI_TIMEOUT_MS, n));
 }
 
 /** Get or create the Copilot client. */
@@ -67,9 +86,10 @@ export async function askAI(
   // Collect the response
   let responseText = "";
   const done = new Promise<void>((resolve, reject) => {
+    const timeoutMs = aiTimeoutMs();
     const timeout = setTimeout(() => {
-      reject(new Error("AI response timed out after 120s"));
-    }, 120_000);
+      reject(new Error(`AI response timed out after ${Math.round(timeoutMs / 1000)}s`));
+    }, timeoutMs);
 
     session.on("assistant.message", (event: AssistantMessageEvent) => {
       responseText = event.data.content;
@@ -89,7 +109,9 @@ export async function askAI(
     await session.send({ prompt: scrubbedPrompt });
     await done;
   } finally {
-    try { await session.destroy(); } catch { /* best-effort cleanup */ }
+    // deleteSession (not disconnect): sessions are single-use here, and
+    // disconnect would leave each one's state on disk to accumulate.
+    try { await c.deleteSession(session.sessionId); } catch { /* best-effort cleanup */ }
   }
 
   return responseText;

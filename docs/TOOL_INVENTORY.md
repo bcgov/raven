@@ -15,12 +15,12 @@
 
 | | Count |
 |---|---|
-| MCP servers | **15** |
-| Tools registered locally (in-process) | **187** |
-| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 187 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
-| **Tools advertised to the AI when everything is connected** | **~193** |
-| Mutating / write tools | **~64** (63 local + ~1 via Jarvis) |
-| Read-only tools | **~129** |
+| MCP servers | **17** |
+| Tools registered locally (in-process) | **230** |
+| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 230 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
+| **Tools advertised to the AI when everything is connected** | **~236** |
+| Mutating / write tools | **~79** (78 local + ~1 via Jarvis) |
+| Read-only tools | **~157** |
 | Non-server packages | `auth`, `pipeline`, `server-ui`, `raven-cli` |
 
 Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share one SiteMinder/Basic-Auth session; Server Monitor, IMIS, Azure DevOps, Sonar, Jenkins, Artifactory, RFC Buddy, and Jarvis authenticate separately via `~/.raven/.env`.
@@ -43,9 +43,11 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 | Jenkins | `jenkins` | 19 | 15 | 34 |
 | RFC Buddy | `rfcbuddy` | 0 | 1 | 1 |
 | Artifactory | `artifactory` | 12 | 7 | 19 |
-| **Subtotal (local)** | | **124** | **63** | **187** |
+| SharePoint | `sharepoint` | 9 | 0 | 9 |
+| GitHub | `github` | 19 | 15 | 34 |
+| **Subtotal (local)** | | **152** | **78** | **230** |
 | Jarvis (remote proxy) | `jarvis` | ~5 | ~1 | ~6 |
-| **Advertised total** | | **~129** | **~64** | **~193** |
+| **Advertised total** | | **~157** | **~79** | **~236** |
 
 ## Servers and tools
 
@@ -114,6 +116,17 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 #### artifactory-mcp — 19 tools (12 read / 7 write)
 - **Read:** `artifactory_ping`, `artifactory_get_version`, `artifactory_list_repositories`, `artifactory_get_item_info`, `artifactory_list_folder`, `artifactory_get_item_properties`, `artifactory_get_item_stats`, `artifactory_search_artifacts`, `artifactory_search_items`, `artifactory_list_builds`, `artifactory_list_build_runs`, `artifactory_get_build_info`
 - **Write:** `artifactory_download_artifact`, `artifactory_upload_artifact`, `artifactory_copy_item`, `artifactory_move_item`, `artifactory_delete_item`, `artifactory_set_item_properties`, `artifactory_delete_item_properties`
+
+### Microsoft 365
+
+#### sharepoint-mcp — 9 tools (read-only)
+`search_sharepoint`, `list_sites`, `get_site`, `list_items`, `list_folder`, `get_file_info`, `read_document`, `read_page`, `download_file`
+
+### GitHub platform / security
+
+#### github-mcp — 34 tools (19 read / 15 write)
+- **Read:** `github_health`, `github_config`, `security_get_sarif_upload_status`, `security_list_code_scanning_alerts`, `security_get_code_scanning_alert`, `security_get_code_scanning_alert_instances`, `security_get_code_scanning_autofix_status`, `security_list_secret_scanning_alerts`, `security_get_secret_scanning_alert`, `security_list_dependabot_alerts`, `security_get_dependabot_alert`, `issue_search`, `pr_get`, `repo_get_security_configuration`, `repo_get_rulesets`, `repo_get_security_summary`, `org_list_security_alerts`, `org_security_summary`, `org_find_repositories_missing_security_controls`
+- **Write:** `security_publish_sarif`, `security_update_code_scanning_alert`, `security_create_code_scanning_autofix`, `security_commit_code_scanning_autofix`, `security_update_secret_scanning_alert`, `security_update_dependabot_alert`, `issue_create`, `issue_update`, `issue_close`, `issue_add_comment`, `pr_create`, `pr_update`, `pr_request_review`, `pr_comment`, `pr_merge`
 
 ### Remote proxy (data egress)
 
@@ -212,6 +225,18 @@ If dedicated Jenkins credentials are omitted, the server falls back to the cache
 | `RAVEN_ARTIFACTORY_MAX_TRANSFER_BYTES` | optional | no | artifactory | maximum upload/download size (default 512 MiB) |
 | `RAVEN_ARTIFACTORY_DOWNLOAD_TIMEOUT_MS` | optional | no | artifactory | maximum download duration in milliseconds (default 1800000) |
 | `RAVEN_ARTIFACTORY_DOWNLOAD_REDIRECT_HOSTS` | optional | no | artifactory | comma-separated exact HTTPS storage hosts approved for credential-free direct downloads |
+
+### SharePoint
+| Variable | Required? | Sensitive | Used by | Purpose |
+|----------|-----------|:---------:|---------|---------|
+| `SHAREPOINT_URL` | required for sharepoint | no | sharepoint | SharePoint Online tenant base URL |
+| `SHAREPOINT_DEFAULT_SITE` | optional | no | sharepoint | default server-relative site path when a tool call omits `sitePath` |
+| `SHAREPOINT_SESSION_TTL` | optional | no | sharepoint | cached FedAuth/rtFa session lifetime in seconds (default 28800 = 8h) |
+| `SPO_FEDAUTH` / `SPO_RTFA` | optional | **yes** | sharepoint | pre-captured session cookies; skips the `raven-auth --sharepoint` browser login when both are set |
+| `RAVEN_SHAREPOINT_DOWNLOAD_DIR` | optional | no | sharepoint | protected download destination (default `~/.raven/sharepoint-downloads`) |
+| `RAVEN_SHAREPOINT_MAX_DOWNLOAD_BYTES` | optional | no | sharepoint | maximum `download_file` size (default 512 MiB) |
+| `RATE_LIMIT_SPO_BURST` | optional | no | sharepoint | token-bucket burst capacity for the SPO host limiter (default 10) |
+| `RATE_LIMIT_SPO_RPS` | optional | no | sharepoint | token-bucket sustained requests/sec for the SPO host limiter (default 4) |
 
 ### Server UI + tuning
 | Variable | Required? | Sensitive | Used by | Purpose |

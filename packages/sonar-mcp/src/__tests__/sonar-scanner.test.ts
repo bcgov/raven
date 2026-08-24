@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { runScan, isValidSonarScanner, parseSonarConfig, getMergedSonarProps, hasDotNetCode } from "../sonar-scanner.js";
 import spawn from "cross-spawn";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { EventEmitter } from "events";
 
 vi.mock("cross-spawn", () => {
@@ -240,8 +241,32 @@ describe("MSBuild/DotNet detection and execution tests", () => {
       expect(res).toBe(true);
     });
 
+    it("stops scanning after the first matching file", () => {
+      vi.mocked(readdirSync).mockReturnValue(["first.cs", "second.cs"] as any);
+      vi.mocked(statSync).mockReturnValue({ isDirectory: () => false } as any);
+
+      expect(hasDotNetCode("/some/dir")).toBe(true);
+      expect(statSync).toHaveBeenCalledTimes(1);
+    });
+
+    it("stops code detection after the first matching file", () => {
+      vi.mocked(readdirSync).mockReturnValue(["my-app.cs", "another-app.cs"] as any);
+      vi.mocked(statSync).mockReturnValue({ isDirectory: () => false } as any);
+
+      expect(hasDotNetCode("/some/dir")).toBe(true);
+      expect(statSync).toHaveBeenCalledTimes(1);
+    });
+
     it("returns true if csproj file is present", () => {
       vi.mocked(readdirSync).mockReturnValue(["MyApp.csproj"] as any);
+      vi.mocked(statSync).mockReturnValue({ isDirectory: () => false } as any);
+
+      const res = hasDotNetCode("/some/dir");
+      expect(res).toBe(true);
+    });
+
+    it("returns true if slnx file is present", () => {
+      vi.mocked(readdirSync).mockReturnValue(["MyApp.slnx"] as any);
       vi.mocked(statSync).mockReturnValue({ isDirectory: () => false } as any);
 
       const res = hasDotNetCode("/some/dir");
@@ -370,6 +395,188 @@ describe("MSBuild/DotNet detection and execution tests", () => {
       );
     });
 
+    it("passes a discovered slnx solution to the dotnet build and test steps", async () => {
+      const spawnedChildren: MockChildProcess[] = [];
+      vi.mocked(spawn).mockImplementation(() => {
+        const child = new MockChildProcess();
+        spawnedChildren.push(child);
+        return child as any;
+      });
+      vi.mocked(existsSync).mockImplementation((path: any) =>
+        String(path).includes("SonarScanner.MSBuild.exe"),
+      );
+      vi.mocked(readdirSync).mockImplementation((path: any) =>
+        path === "/my/dotnet-app" ? ["MyApp.slnx"] as any : [] as any,
+      );
+      vi.mocked(statSync).mockReturnValue({ isDirectory: () => false } as any);
+
+      const scanPromise = runScan({
+        projectKey: "dotnet-project",
+        branch: "main",
+        projectDir: "/my/dotnet-app",
+        serverUrl: "https://sonar.example.com",
+        token: "sonar-tok-456",
+        useMsBuild: true,
+        runTests: true,
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnedChildren.length).toBe(1);
+      spawnedChildren[0].emit("close", 0);
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnedChildren.length).toBe(2);
+      expect(spawn).toHaveBeenNthCalledWith(
+        2,
+        "dotnet",
+        ["build", join("/my/dotnet-app", "MyApp.slnx")],
+        expect.any(Object),
+      );
+      spawnedChildren[1].emit("close", 0);
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnedChildren.length).toBe(3);
+      expect(spawn).toHaveBeenNthCalledWith(
+        3,
+        "dotnet",
+        [
+          "test",
+          join("/my/dotnet-app", "MyApp.slnx"),
+          "--results-directory",
+          join("/my/dotnet-app", "TestResults"),
+          "--collect:XPlat Code Coverage",
+          "--logger",
+          "trx",
+          "--",
+          "DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover",
+        ],
+        expect.any(Object),
+      );
+      spawnedChildren[2].emit("close", 0);
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnedChildren.length).toBe(4);
+      spawnedChildren[3].emit("close", 0);
+
+      await expect(scanPromise).resolves.toMatchObject({ success: true, exitCode: 0 });
+    });
+
+    it("rejects ambiguous recursive solution discovery with solutionFile guidance", async () => {
+      vi.mocked(existsSync).mockImplementation((path: any) =>
+        String(path).includes("SonarScanner.MSBuild.exe"),
+      );
+      vi.mocked(readdirSync).mockReturnValue(["First.slnx", "Second.slnx"] as any);
+      vi.mocked(statSync).mockReturnValue({ isDirectory: () => false } as any);
+
+      await expect(
+        runScan({
+          projectKey: "dotnet-project",
+          branch: "main",
+          projectDir: "/my/dotnet-app",
+          serverUrl: "https://sonar.example.com",
+          token: "sonar-tok-456",
+          useMsBuild: true,
+        }),
+      ).rejects.toThrow(
+        'Multiple .slnx files were found under "/my/dotnet-app". Provide solutionFile to select the solution used for the scan.',
+      );
+      expect(spawn).not.toHaveBeenCalled();
+    });
+
+    it("treats an explicit solutionFile as MSBuild input when useMsBuild is omitted", async () => {
+      const spawnedChildren: MockChildProcess[] = [];
+      const solutionFile = "/repo/build/Jarvis.slnx";
+      vi.mocked(spawn).mockImplementation(() => {
+        const child = new MockChildProcess();
+        spawnedChildren.push(child);
+        return child as any;
+      });
+      vi.mocked(existsSync).mockImplementation((path: any) =>
+        String(path).replaceAll("\\", "/") === solutionFile ||
+        String(path).includes("SonarScanner.MSBuild.exe"),
+      );
+      vi.mocked(readdirSync).mockReturnValue([] as any);
+
+      const scanPromise = runScan({
+        projectKey: "dotnet-project",
+        branch: "main",
+        projectDir: "/repo",
+        solutionFile,
+        serverUrl: "https://sonar.example.com",
+        token: "sonar-tok-456",
+        runTests: true,
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnedChildren.length).toBe(1);
+      expect(spawn).toHaveBeenNthCalledWith(
+        1,
+        expect.stringContaining("SonarScanner.MSBuild.exe"),
+        expect.arrayContaining(["begin"]),
+        expect.any(Object),
+      );
+      spawnedChildren[0].emit("close", 0);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnedChildren.length).toBe(2);
+      expect(spawn).toHaveBeenNthCalledWith(
+        2,
+        "dotnet",
+        ["build", solutionFile],
+        expect.any(Object),
+      );
+      spawnedChildren[1].emit("close", 0);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnedChildren.length).toBe(3);
+      expect(spawn).toHaveBeenNthCalledWith(
+        3,
+        "dotnet",
+        [
+          "test",
+          solutionFile,
+          "--results-directory",
+          join("/repo", "TestResults"),
+          "--collect:XPlat Code Coverage",
+          "--logger",
+          "trx",
+          "--",
+          "DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover",
+        ],
+        expect.any(Object),
+      );
+      spawnedChildren[2].emit("close", 0);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnedChildren.length).toBe(4);
+      spawnedChildren[3].emit("close", 0);
+
+      await expect(scanPromise).resolves.toMatchObject({ success: true, exitCode: 0 });
+    });
+
+    it("honors useMsBuild false even when solutionFile is provided", async () => {
+      const child = new MockChildProcess();
+      vi.mocked(spawn).mockReturnValue(child as any);
+      vi.mocked(existsSync).mockReturnValue(false);
+
+      const scanPromise = runScan({
+        projectKey: "dotnet-project",
+        branch: "main",
+        projectDir: "/repo",
+        solutionFile: "/repo/build/Jarvis.slnx",
+        serverUrl: "https://sonar.example.com",
+        token: "sonar-tok-456",
+        useMsBuild: false,
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawn).toHaveBeenCalledWith(
+        "sonar-scanner",
+        expect.any(Array),
+        expect.any(Object),
+      );
+      child.emit("close", 0);
+
+      await expect(scanPromise).resolves.toMatchObject({ success: true, exitCode: 0 });
+    });
+
     it("terminates 3-step sequence early if step 1 fails", async () => {
       const spawnedChildren: MockChildProcess[] = [];
       vi.mocked(spawn).mockImplementation(() => {
@@ -407,6 +614,7 @@ describe("MSBuild/DotNet detection and execution tests", () => {
       // Verify that it only spawned step 1 and was not called again
       expect(spawn).toHaveBeenCalledTimes(1);
     });
+
   });
 
   describe("runScan with Node.js/Fallback support", () => {
@@ -482,6 +690,59 @@ describe("MSBuild/DotNet detection and execution tests", () => {
       );
     });
 
+    it("runs external sibling Node tests and includes their LCOV path", async () => {
+      const spawnedChildren: MockChildProcess[] = [];
+      const siblingTestsDir = resolve("/my/node-app", "..", "tests");
+      vi.mocked(spawn).mockImplementation(() => {
+        const child = new MockChildProcess();
+        spawnedChildren.push(child);
+        return child as any;
+      });
+      vi.mocked(existsSync).mockImplementation((path: any) => {
+        const normalizedPath = String(path).replaceAll("\\", "/");
+        return normalizedPath === siblingTestsDir.replaceAll("\\", "/") ||
+          normalizedPath.includes("package.json");
+      });
+      vi.mocked(readFileSync).mockImplementation((path: any) =>
+        String(path).includes("package.json")
+          ? JSON.stringify({ scripts: { test: "vitest run" } })
+          : "",
+      );
+      vi.mocked(readdirSync).mockReturnValue([] as any);
+
+      const scanPromise = runScan({
+        projectKey: "node-project",
+        branch: "main",
+        projectDir: "/my/node-app",
+        serverUrl: "https://sonar.example.com",
+        token: "sonar-tok-012",
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnedChildren.length).toBe(1);
+      expect(spawn).toHaveBeenNthCalledWith(
+        1,
+        process.platform === "win32" ? "npm.cmd" : "npm",
+        ["test"],
+        expect.objectContaining({ cwd: siblingTestsDir }),
+      );
+      spawnedChildren[0].emit("close", 0);
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(spawnedChildren.length).toBe(2);
+      expect(spawn).toHaveBeenNthCalledWith(
+        2,
+        "sonar-scanner",
+        expect.arrayContaining([
+          "-Dsonar.javascript.lcov.reportPaths=../tests/coverage/lcov.info,coverage/lcov.info,**/coverage/lcov.info",
+        ]),
+        expect.objectContaining({ cwd: "/my/node-app" }),
+      );
+      spawnedChildren[1].emit("close", 0);
+
+      await expect(scanPromise).resolves.toMatchObject({ success: true, exitCode: 0 });
+    });
+
     it("terminates normal scan sequence early if npm tests fail", async () => {
       const spawnedChildren: MockChildProcess[] = [];
       vi.mocked(spawn).mockImplementation(() => {
@@ -525,4 +786,3 @@ describe("MSBuild/DotNet detection and execution tests", () => {
     });
   });
 });
-

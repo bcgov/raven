@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
 
 // ---------------------------------------------------------------------------
 // extractKeyword (triage.ts)
@@ -168,7 +169,14 @@ describe("selectErrorMatchingTicket", () => {
 // Prevents command injection in git commit messages.
 // ---------------------------------------------------------------------------
 
-import { shellEscape, inferRepoSlug, applyPatchByReplacement } from "../src/steps/implement.js";
+import {
+  shellEscape,
+  inferRepoSlug,
+  applyPatchByReplacement,
+  newFilePaths,
+  recordBranchBase,
+  recordedBranchBase,
+} from "../src/steps/implement.js";
 
 describe("shellEscape", () => {
   it("prevents command injection via single quote breakout", () => {
@@ -389,6 +397,138 @@ describe("applyPatchByReplacement", () => {
 });
 
 // ---------------------------------------------------------------------------
+// newFilePaths (implement.ts)
+// The line-level fallback applier can't create files at all — so any patch
+// with a new-file hunk must reject the fallback outright, rather than only
+// rejecting when the declared-new path happens to be missing on disk (a
+// patch that declares an EXISTING file as new would otherwise slip through
+// with its hunk silently dropped).
+// ---------------------------------------------------------------------------
+
+describe("newFilePaths", () => {
+  it("returns the new-file path for a /dev/null -> b/<path> pair", () => {
+    const patch = [
+      "--- /dev/null",
+      "+++ b/src/test/java/FooTest.java",
+      "@@ -0,0 +1,1 @@",
+      "+public class FooTest {}",
+    ].join("\n");
+
+    expect(newFilePaths(patch)).toEqual(["src/test/java/FooTest.java"]);
+  });
+
+  it("returns the new-file path even when that path already exists on disk", () => {
+    // No disk check — the fallback applier can never create files, so ANY
+    // new-file hunk disqualifies it, regardless of what's already there.
+    const patch = [
+      "--- /dev/null",
+      "+++ b/src/test/java/FooTest.java",
+      "@@ -0,0 +1,1 @@",
+      "+public class FooTest {}",
+    ].join("\n");
+
+    expect(newFilePaths(patch)).toEqual(["src/test/java/FooTest.java"]);
+  });
+
+  it("returns [] for a modify-only patch (--- a/)", () => {
+    const patch = [
+      "--- a/src/main/java/Foo.java",
+      "+++ b/src/main/java/Foo.java",
+      "@@ -1,1 +1,1 @@",
+      "-a",
+      "+b",
+    ].join("\n");
+
+    expect(newFilePaths(patch)).toEqual([]);
+  });
+
+  it("returns multiple new-file paths for a patch adding several files", () => {
+    const patch = [
+      "--- /dev/null",
+      "+++ b/src/test/java/FooTest.java",
+      "@@ -0,0 +1,1 @@",
+      "+t1",
+      "--- /dev/null",
+      "+++ b/.github/workflows/ci.yml",
+      "@@ -0,0 +1,1 @@",
+      "+name: ci",
+    ].join("\n");
+
+    expect(newFilePaths(patch)).toEqual(["src/test/java/FooTest.java", ".github/workflows/ci.yml"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recordBranchBase / recordedBranchBase (implement.ts)
+// A reused bugfix branch is only safe to reuse when it was created against
+// the SAME requested base as the current run. This is decided by comparing
+// a base string recorded at branch-creation time against what's requested
+// now — NOT by asking git whether the base ref's CURRENT tip is an ancestor
+// of the branch (that check is wrong: ensureRepoClone pulls the base every
+// run, so an unrelated commit landing on the base after the branch was cut
+// would make a healthy, same-base branch look "wrongly based" and get
+// destructively recreated on an ordinary retry).
+// ---------------------------------------------------------------------------
+
+function makeBranchBaseFixture(): string {
+  const dir = mkdtempSync(join(tmpdir(), "raven-branchbase-fixture-"));
+  execFileSync("git", ["init", "-q"], { cwd: dir });
+  writeFileSync(join(dir, "a.txt"), "1");
+  execFileSync("git", ["add", "-A"], { cwd: dir });
+  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "c1"], { cwd: dir });
+  execFileSync("git", ["branch", "-m", "main"], { cwd: dir });
+  return dir;
+}
+
+describe("recordBranchBase / recordedBranchBase", () => {
+  it("round-trips the recorded base for a branch", () => {
+    const dir = makeBranchBaseFixture();
+    try {
+      execFileSync("git", ["checkout", "-b", "bugfix/x"], { cwd: dir, stdio: "pipe" });
+      recordBranchBase(dir, "bugfix/x", "main");
+      expect(recordedBranchBase(dir, "bugfix/x")).toBe("main");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns undefined for a branch whose base was never recorded", () => {
+    const dir = makeBranchBaseFixture();
+    try {
+      execFileSync("git", ["checkout", "-b", "bugfix/unrecorded"], { cwd: dir, stdio: "pipe" });
+      expect(recordedBranchBase(dir, "bugfix/unrecorded")).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a same-base retry still matches after an unrelated commit lands on the base (regression: the old ancestry check would have flagged this as a mismatch)", () => {
+    const dir = makeBranchBaseFixture();
+    try {
+      execFileSync("git", ["checkout", "-b", "bugfix/x"], { cwd: dir, stdio: "pipe" });
+      recordBranchBase(dir, "bugfix/x", "main");
+
+      // An unrelated commit lands on main AFTER the branch was cut. Under
+      // `git merge-base --is-ancestor main bugfix/x`, main's NEW tip is no
+      // longer an ancestor of bugfix/x's unchanged tip, so that check would
+      // now report "not based on main" for a perfectly healthy branch.
+      execFileSync("git", ["checkout", "main"], { cwd: dir, stdio: "pipe" });
+      writeFileSync(join(dir, "b.txt"), "2");
+      execFileSync("git", ["add", "-A"], { cwd: dir });
+      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "c2 unrelated"], { cwd: dir });
+
+      const recorded = recordedBranchBase(dir, "bugfix/x");
+      // Same requested base on a retry: match.
+      expect(recorded === "main").toBe(true);
+      // A genuinely different requested base: mismatch.
+      expect(recorded === "feature/x").toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // run-state.ts
 // Tests that pipeline state survives across runs for crash recovery.
 // ---------------------------------------------------------------------------
@@ -478,6 +618,33 @@ describe("run-state", () => {
 import { getMapping, setMapping, loadRepoMap } from "../src/repo-map.js";
 
 describe("repo-map", () => {
+  // Point the cache at a throwaway file: these tests used to write fixture
+  // entries into the operator's real ~/.raven/repo-map.json on every run.
+  let repoMapDir: string;
+  let savedRepoMapPath: string | undefined;
+
+  beforeEach(() => {
+    savedRepoMapPath = process.env["RAVEN_REPO_MAP_PATH"];
+    repoMapDir = mkdtempSync(join(tmpdir(), "raven-repomap-"));
+    process.env["RAVEN_REPO_MAP_PATH"] = join(repoMapDir, "repo-map.json");
+  });
+
+  afterEach(() => {
+    if (savedRepoMapPath === undefined) delete process.env["RAVEN_REPO_MAP_PATH"];
+    else process.env["RAVEN_REPO_MAP_PATH"] = savedRepoMapPath;
+    rmSync(repoMapDir, { recursive: true, force: true });
+  });
+
+  it("writes to the overridden path, never the operator's real cache", () => {
+    setMapping("SOS", "some-component", {
+      bitbucketProject: "CWM",
+      bitbucketRepo: "cwm-generic-lib",
+      discoveredAt: new Date().toISOString(),
+    });
+    expect(existsSync(process.env["RAVEN_REPO_MAP_PATH"]!)).toBe(true);
+    expect(Object.keys(loadRepoMap())).toEqual(["SOS/some-component"]);
+  });
+
   it("returns null for an app/component that has never been mapped", () => {
     const result = getMapping("NONEXISTENT", "fake-component-" + Date.now());
     expect(result).toBeNull();

@@ -13,8 +13,10 @@ import {
   BitbucketClient,
   CodeSearchNotAvailableError,
 } from "./bitbucket-client.js";
+import { sliceFileContent } from "./file-slice.js";
 
-const MAX_FILE_CHARS = 10000;
+/** Schema ceiling for read_file maxChars — also gates the truncation hint. */
+const READ_FILE_MAX_CHARS = 200_000;
 
 /**
  * Create and configure the Bitbucket MCP server.
@@ -208,7 +210,7 @@ IMPORTANT: Bitbucket project keys often differ from Jira keys. If a key returns 
 
   server.tool(
     "read_file",
-    "Read the content of a file from a Bitbucket repository. Returns the raw file content.\n\nIMPORTANT: Always search the newest release branch (e.g., release/*) or a feature branch if available, rather than the default branch. Use list_branches first to find the most recent branch. Always include the branch name and file path when referencing results to the user.",
+    "Read the content of a file from a Bitbucket repository. Returns the file content with line endings normalized to \\n. Large files can be read in full by paging with startLine/endLine, or by raising maxChars.\n\nIMPORTANT: Always search the newest release branch (e.g., release/*) or a feature branch if available, rather than the default branch. Use list_branches first to find the most recent branch. Always include the branch name and file path when referencing results to the user.",
     {
       projectKey: z.string().describe("Bitbucket project key"),
       repoSlug: z.string().describe("Repository slug"),
@@ -217,24 +219,71 @@ IMPORTANT: Bitbucket project keys often differ from Jira keys. If a key returns 
         .string()
         .optional()
         .describe("Branch or commit (defaults to default branch)"),
+      startLine: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .describe("First line to return (1-based, inclusive). Defaults to 1."),
+      endLine: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .describe("Last line to return (1-based, inclusive). Defaults to the end of the file."),
+      maxChars: z
+        .number()
+        .min(1000)
+        .max(READ_FILE_MAX_CHARS)
+        .default(50_000)
+        .describe("Truncation cap to avoid context overflow on huge files (default 50000)"),
     },
     { readOnlyHint: true },
-    async ({ projectKey, repoSlug, filePath, at }) => {
+    async ({ projectKey, repoSlug, filePath, at, startLine, endLine, maxChars }) => {
       try {
         const bb = await getClient();
-        let content = await bb.readFile(projectKey, repoSlug, filePath, at);
+        const content = await bb.readFile(projectKey, repoSlug, filePath, at);
 
-        if (content.length > MAX_FILE_CHARS) {
-          content =
-            content.slice(0, MAX_FILE_CHARS) +
-            `\n\n... [TRUNCATED at ${MAX_FILE_CHARS} chars, file is ${content.length} chars total]`;
+        const slice = sliceFileContent(content, { startLine, endLine, maxChars });
+        if (!slice.ok) {
+          if (slice.reason === "invalid-range") {
+            return {
+              content: [{ type: "text", text: slice.message }],
+              isError: true,
+            };
+          }
+          // past-eof: informational, mirroring blame_file
+          return {
+            content: [{ type: "text", text: `${slice.message} (${filePath})` }],
+          };
+        }
+
+        const range =
+          slice.totalLines > 0
+            ? ` | **Lines:** ${slice.firstLine}–${slice.lastLine} of ${slice.totalLines}`
+            : "";
+        const out = [
+          `### ${filePath}\n**Repo:** ${projectKey}/${repoSlug} | **Branch:** ${at ?? "default"}${range}\n\`\`\`\n${slice.text}\n\`\`\``,
+        ];
+        if (slice.truncated) {
+          out.push(
+            slice.partialLastLine
+              ? maxChars >= READ_FILE_MAX_CHARS
+                ? `\n_TRUNCATED at ${maxChars} chars: line ${slice.lastLine} is longer than the maximum maxChars (file is ${slice.totalChars} chars, ${slice.totalLines} lines). Use clone_repo to read this file locally._`
+                : `\n_TRUNCATED at ${maxChars} chars: line ${slice.lastLine} is longer than maxChars (file is ${slice.totalChars} chars, ${slice.totalLines} lines). Re-call with startLine=${slice.lastLine} and a larger maxChars to read it in full._`
+              : `\n_TRUNCATED at ${maxChars} chars (file is ${slice.totalChars} chars, ${slice.totalLines} lines). Re-call with startLine=${slice.nextStartLine} to continue._`
+          );
+        } else if (slice.nextStartLine !== undefined) {
+          out.push(
+            `\n_File continues beyond line ${slice.lastLine} (${slice.totalLines} lines total). Re-call with startLine=${slice.nextStartLine} to continue._`
+          );
         }
 
         return {
           content: [
             {
               type: "text",
-              text: `### ${filePath}\n**Repo:** ${projectKey}/${repoSlug} | **Branch:** ${at ?? "default"}\n\`\`\`\n${content}\n\`\`\``,
+              text: out.join("\n"),
             },
           ],
         };

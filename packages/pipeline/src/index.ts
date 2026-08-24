@@ -3,6 +3,8 @@
 import { parseArgs } from "node:util";
 import type { CliArgs } from "./types.js";
 import { runPipeline, runPipelineWatch, runJiraBacklog } from "./orchestrator.js";
+import { isValidBranchName } from "./branch-validation.js";
+import { MAX_COOLDOWN_HOURS } from "./processed-errors.js";
 
 function printUsage(): void {
   console.log(`
@@ -24,11 +26,18 @@ Options:
   --jira-project         Jira project key (default: same as --app)
   --bitbucket-project    Bitbucket project key (default: same as --app)
   --bitbucket-repo       Bitbucket repo slug (default: inferred from component)
+  --branch               Source branch to plan against and target the PR at
+                         (default: repo default branch; use when the deployed
+                         build comes from a feature/release branch)
+  --cooldown-hours <N>   Don't re-triage an error signature seen within the
+                         last N hours (default: 168; 0 disables; max 720 —
+                         the store prunes entries after 30 days). Keeps
+                         scheduled runs from re-commenting on known errors.
   --resume               Resume the last run for this app/component
   --fresh                Ignore saved state, start from scratch
   --skip-tests           Skip test execution (when tests need unavailable infrastructure)
   --verbose              Enable verbose logging
-  --model                AI model to use (default: claude-sonnet-4.6)
+  --model                AI model to use (default: claude-sonnet-5)
   --help                 Show this help message
 
 Watch mode (continuous):
@@ -49,12 +58,21 @@ Examples:
 }
 
 /**
- * Parse a numeric CLI flag value; reject NaN. parseInt("abc", 10) returns
- * NaN and silently flowed through to the orchestrator before, where the
- * later `?? defaults` checks couldn't distinguish "user typed garbage"
- * from "user didn't pass the flag".
+ * Parse a numeric CLI flag value; reject anything that isn't a whole
+ * integer token. parseInt("abc", 10) returns NaN and silently flowed
+ * through to the orchestrator before, where the later `?? defaults` checks
+ * couldn't distinguish "user typed garbage" from "user didn't pass the
+ * flag" — but parseInt also silently accepts a partial match like
+ * "12hours" (parses as 12) or "1.5" (parses as 1), which Number.isFinite
+ * doesn't catch. Requiring the whole trimmed token to be digits closes
+ * that gap.
  */
 function parseIntFlag(name: string, raw: string): number {
+  if (!/^-?\d+$/.test(raw.trim())) {
+    console.error(`Error: --${name} must be an integer (got "${raw}").\n`);
+    printUsage();
+    process.exit(1);
+  }
   const n = parseInt(raw, 10);
   if (!Number.isFinite(n)) {
     console.error(`Error: --${name} must be an integer (got "${raw}").\n`);
@@ -78,6 +96,8 @@ function parseCliArgs(): CliArgs | null {
         "bitbucket-project": { type: "string" },
         "jira-project": { type: "string" },
         "bitbucket-repo": { type: "string" },
+        branch: { type: "string" },
+        "cooldown-hours": { type: "string" },
         resume: { type: "boolean", default: false },
         fresh: { type: "boolean", default: false },
         "skip-tests": { type: "boolean", default: false },
@@ -110,6 +130,22 @@ function parseCliArgs(): CliArgs | null {
       printUsage();
       process.exit(1);
     }
+    if (values.branch !== undefined && !isValidBranchName(values.branch)) {
+      console.error(`Error: --branch is not a valid git branch name (got "${values.branch}").\n`);
+      printUsage();
+      process.exit(1);
+    }
+    const cooldownHours = values["cooldown-hours"]
+      ? parseIntFlag("cooldown-hours", values["cooldown-hours"])
+      : undefined;
+    if (cooldownHours !== undefined && (cooldownHours < 0 || cooldownHours > MAX_COOLDOWN_HOURS)) {
+      console.error(
+        `Error: --cooldown-hours must be between 0 and ${MAX_COOLDOWN_HOURS} ` +
+        `(the processed-error store prunes entries after 30 days).\n`
+      );
+      printUsage();
+      process.exit(1);
+    }
 
     return {
       server: values.server,
@@ -122,6 +158,8 @@ function parseCliArgs(): CliArgs | null {
       jiraProject: values["jira-project"],
       bitbucketProject: values["bitbucket-project"],
       bitbucketRepo: values["bitbucket-repo"],
+      branch: values["branch"],
+      cooldownHours,
       model: values.model,
       resume: values.resume ?? false,
       fresh: values.fresh ?? false,

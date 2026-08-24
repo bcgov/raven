@@ -22,7 +22,9 @@
     "packages/sonar-mcp",
     "packages/jenkins-mcp",
     "packages/rfcbuddy-mcp",
-    "packages/artifactory-mcp"
+    "packages/artifactory-mcp",
+    "packages/sharepoint-mcp",
+    "packages/github-mcp"
   ],
   "scripts": {
     "build": "tsc --build",
@@ -33,16 +35,12 @@
     "gen-inventory:check": "npm run build && node scripts/gen-inventory.mjs --check"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20.16.0 <21 || >=22.3.0"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
-    "@types/node": "^25.2.3",
-    "typescript": "^5.9.3",
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.8"
-  },
-  "dependencies": {
-    "oracledb": "^6.10.0",
-    "vscode-jsonrpc": "^8.2.1"
   }
 }

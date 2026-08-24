@@ -195,6 +195,7 @@ packages/
   jarvis-mcp/           # Jarvis application inventory (dynamic remote proxy)
   rfcbuddy-mcp/         # RFC Buddy (RFC search)
   artifactory-mcp/      # JFrog Artifactory artifacts, build-info, and guarded transfers
+  github-mcp/           # GitHub GHAS security (SARIF, alerts), issues, PRs; allow-list gated
 ```
 
 Every MCP server follows the same pattern:
@@ -255,7 +256,7 @@ RAVEN excludes broad administrative and arbitrary-execution capabilities. The re
 
 ### 4.3 Write Tools Are Narrow and Auditable
 
-Of the 181 locally-registered tools, 60 are conservatively classified as writes (the rest are read-only). The table below is illustrative; see [TOOL_INVENTORY.md](TOOL_INVENTORY.md) for the complete read/write split. Jenkins config exports, Jenkins artifact downloads, and Artifactory downloads count as writes because they create protected local files.
+Of the 221 locally-registered tools, 78 are conservatively classified as writes (the rest are read-only). The table below is illustrative; see [TOOL_INVENTORY.md](TOOL_INVENTORY.md) for the complete read/write split. Jenkins config exports, Jenkins artifact downloads, and Artifactory downloads count as writes because they create protected local files.
 
 | Tool | What It Does | What It Cannot Do |
 |------|-------------|------------------|
@@ -275,6 +276,8 @@ Of the 181 locally-registered tools, 60 are conservatively classified as writes 
 | `artifactory_upload_artifact` / `artifactory_download_artifact` | Streams one file through protected local directories with incremental checksums | Cannot accept arbitrary local paths; downloads are staged exclusively and installed only after verification, and overwrite is disabled on Windows |
 | `artifactory_copy_item` / `artifactory_move_item` | Dry-runs by default, then copies or moves an artifact after exact confirmation | Cannot choose another host or bypass Artifactory permissions |
 | `artifactory_delete_item` | Deletes one file after exact-path and current SHA-256 confirmation | Refuses folders and stale/missing checksums |
+| `security_publish_sarif` | Uploads SARIF findings to GitHub code scanning after allow-list check and `confirm: true` | Cannot target repos outside `GITHUB_REPOSITORY_ALLOWLIST`; cannot delete or dismiss alerts it did not create |
+| `pr_merge` (GitHub) | Merges a PR only when `GITHUB_ENABLE_MERGE=true` AND `confirm: true` | Disabled by default; cannot bypass branch protection or the caller's GitHub permissions |
 
 Every write operation is subject to the **authenticated user's permissions** in the target system. If the user doesn't have permission to create issues in a Jira project, the tool call will fail — the MCP server cannot escalate privileges.
 
@@ -311,6 +314,8 @@ Credentials are stored in `~/.raven/.env` with restricted file permissions (`chm
 ├── JENKINS_USER          (optional dedicated Jenkins username)
 ├── JENKINS_TOKEN         (optional dedicated Jenkins API token)
 ├── RAVEN_JENKINS_*_DIR   (protected config, download, and secret directories)
+├── GITHUB_TOKEN          (GitHub PAT; security_events scope for GHAS tools)
+├── GITHUB_REPOSITORY_ALLOWLIST (required repo allow-list for all GitHub tools)
 └── RAVEN_SCRUB_PI        (PI scrubbing toggle)
 ```
 
@@ -396,6 +401,7 @@ Every MCP server instantiates a `PiScrubber` and applies it consistently:
 - **Health:** All person references in health analysis output
 - **Assets:** Object attribute values containing personal information
 - **Server Monitor:** No PI expected in logs/configs, but credential patterns are scrubbed
+- **GitHub:** Issue/PR titles and bodies, advisory summaries, reviewer and resolver names; secret scanning tools never return secret values at all
 
 ### 7.5 Enabling PI Scrubbing
 
@@ -602,7 +608,7 @@ To address specific fears directly:
 
 ### 11.1 "Can the AI delete a database?"
 
-**No.** RAVEN has no database tools. There are no SQL connections, no ORM, no database client libraries. The `oracledb` dependency in the root `package.json` is used only by standalone analysis scripts (not MCP tools). No MCP server imports or uses it.
+**No.** RAVEN has no database tools. There are no SQL connections, no ORM, no database client libraries, and no database driver dependencies.
 
 ### 11.2 "Can the AI steal sensitive information?"
 

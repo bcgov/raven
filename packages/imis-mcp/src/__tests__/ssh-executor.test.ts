@@ -9,6 +9,7 @@ import {
   getSshAuthMode,
   buildConnectOpts,
   sshExec,
+  deriveSshUser,
   type SshAuthMode,
 } from "../ssh-executor.js";
 
@@ -175,6 +176,16 @@ describe("getSshAuthMode", () => {
   it("does NOT match a partial IPv4 prefix", () => {
     const mode = getSshAuthMode("192.168.1.10", existingKey, "192");
     expect(mode).toEqual({ kind: "password" });
+  });
+});
+
+describe("deriveSshUser", () => {
+  it("returns IMIS_SSH_USER verbatim when set", () => {
+    expect(deriveSshUser("JSMITH", "svc_proxy_a")).toBe("svc_proxy_a");
+  });
+
+  it("lowercases a mixed-case Windows OS username when no override is configured", () => {
+    expect(deriveSshUser("JSMITH", undefined)).toBe("jsmith_a");
   });
 });
 

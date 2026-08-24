@@ -202,6 +202,30 @@ describe("buildHttpdLogSearchCommand", () => {
     const cmd = buildHttpdLogSearchCommand({ ...base, domain: "default" });
     expect(cmd).toContain("default-access");
   });
+
+  it("falls back to .log.gz with zgrep for a specific date (cold archives)", () => {
+    const cmd = buildHttpdLogSearchCommand({ ...base, subdir: "cold", date: "2026-04-01" });
+    expect(cmd).toContain("portalext.example.gov.bc.ca-access.2026.04.01.log.gz");
+    expect(cmd).toContain("zgrep");
+    expect(cmd).toContain("/sw_ux/httpd01/logs/cold/");
+  });
+
+  it("uses a .log* glob and zgrep for the newest file (matches .log and .log.gz)", () => {
+    const cmd = buildHttpdLogSearchCommand({ ...base, subdir: "cold" });
+    expect(cmd).toContain("*.log*");
+    expect(cmd).toContain("zgrep");
+  });
+
+  it("probes .log.gz siblings in date-range mode", () => {
+    const cmd = buildHttpdLogSearchCommand({
+      ...base,
+      subdir: "cold",
+      dateFrom: "2026-04-01",
+      dateTo: "2026-04-03",
+    });
+    expect(cmd).toContain(".gz");
+    expect(cmd).toContain("zgrep");
+  });
 });
 
 describe("searchLogs (stdout/stderr selection)", () => {

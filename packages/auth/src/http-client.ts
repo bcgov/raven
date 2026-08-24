@@ -2,7 +2,8 @@ import type { SessionManager } from "./session-manager.js";
 import type { AuthenticatedFetch } from "./types.js";
 import { wrapFetchWithLimits, atlassianLimiterOpts } from "./rate-limit.js";
 
-function setCookie(headers: Headers, name: string, value: string): void {
+/** Set or replace a cookie in a request Headers object's Cookie header (case-insensitive, no duplicates). */
+export function setCookieHeader(headers: Headers, name: string, value: string): void {
   const parts = (headers.get("Cookie") ?? "")
     .split(";")
     .map((part) => part.trim())
@@ -105,7 +106,7 @@ export async function createAuthenticatedFetch(
     const currentCookie = await sessionManager.getSession();
 
     const headers = new Headers(init?.headers);
-    setCookie(headers, "SMSESSION", currentCookie);
+    setCookieHeader(headers, "SMSESSION", currentCookie);
     headers.set("User-Agent", sessionManager.userAgent);
 
     const response = await limitedFetch(url, {
@@ -121,7 +122,7 @@ export async function createAuthenticatedFetch(
       const freshCookie = await sessionManager.getSession();
 
       const retryHeaders = new Headers(init?.headers);
-      setCookie(retryHeaders, "SMSESSION", freshCookie);
+      setCookieHeader(retryHeaders, "SMSESSION", freshCookie);
       retryHeaders.set("User-Agent", sessionManager.userAgent);
 
       const retryResponse = await limitedFetch(url, {

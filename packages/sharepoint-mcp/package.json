@@ -1,0 +1,28 @@
+{
+  "name": "@nrs/sharepoint-mcp",
+  "version": "0.1.0",
+  "description": "SharePoint Online MCP server for RAVEN suite",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "bin": {
+    "raven-sharepoint-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@nrs/auth": "*",
+    "mammoth": "^1.12.1",
+    "turndown": "^7.2.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/turndown": "^5.0.5"
+  }
+}

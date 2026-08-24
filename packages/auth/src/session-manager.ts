@@ -10,34 +10,10 @@ import {
   clearCachedSession,
 } from "./cookie-cache.js";
 import type { AuthConfig, AuthResult } from "./types.js";
+import { BROWSER_USER_AGENT } from "./browser-ua.js";
 
 const DEFAULT_CACHE_PATH = join(homedir(), ".workflow-suite", "session.json");
 const DEFAULT_TTL = 1500; // 25 minutes
-
-/** User-agent string, selected by host OS so SiteMinder does not get a mismatched UA. */
-function buildUserAgent(): string {
-  switch (process.platform) {
-    case "win32":
-      return (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-        "AppleWebKit/537.36 (KHTML, like Gecko) " +
-        "Chrome/131.0.0.0 Safari/537.36"
-      );
-    case "linux":
-      return (
-        "Mozilla/5.0 (X11; Linux x86_64) " +
-        "AppleWebKit/537.36 (KHTML, like Gecko) " +
-        "Chrome/131.0.0.0 Safari/537.36"
-      );
-    default: // darwin and others
-      return (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
-        "AppleWebKit/537.36 (KHTML, like Gecko) " +
-        "Chrome/131.0.0.0 Safari/537.36"
-      );
-  }
-}
-const BROWSER_USER_AGENT = buildUserAgent();
 
 /**
  * Manages SMSESSION cookie lifecycle: cache, refresh, and browser-based capture.
@@ -138,10 +114,44 @@ const { chromium } = require('playwright');
   const page = await context.newPage();
   let smsessionValue = null;
 
-  await page.goto(
-    ${JSON.stringify(targetUrl + "/rest/api/space?limit=1")},
-    { waitUntil: 'networkidle', timeout: 120000 }
-  );
+  // Entra's device-auth hop (device.login.microsoftonline.com) intermittently
+  // drops the first connection in automated Chromium with
+  // net::ERR_SOCKET_NOT_CONNECTED; a plain reload succeeds. Auto-retry failed
+  // main-frame navigations so the user never has to refresh the error page.
+  let navRetries = 0;
+  page.on('requestfailed', (request) => {
+    try {
+      if (!request.isNavigationRequest()) return;
+      if (request.frame() !== page.mainFrame()) return;
+      const failure = request.failure();
+      if (failure && failure.errorText === 'net::ERR_ABORTED') return;
+      if (navRetries >= 3) return;
+      navRetries += 1;
+      setTimeout(() => { page.reload().catch(() => {}); }, 750);
+    } catch {}
+  });
+
+  try {
+    await page.goto(
+      ${JSON.stringify(targetUrl + "/rest/api/space?limit=1")},
+      { waitUntil: 'networkidle', timeout: 120000 }
+    );
+  } catch (navErr) {
+    const navMsg = navErr && navErr.message ? String(navErr.message) : String(navErr);
+    const isTransientNet = navMsg.indexOf('net::ERR_') !== -1;
+    const isTimeout = navErr && navErr.name === 'TimeoutError';
+    if (!isTransientNet && !isTimeout) {
+      // Real failure (closed browser, crashed renderer, bad URL): fail fast
+      // with the script's JSON error contract instead of polling pointlessly.
+      await browser.close().catch(() => {});
+      console.log(JSON.stringify({ status: 'error', message: 'Navigation failed: ' + navMsg.split('\\n')[0] }));
+      return;
+    }
+    // net::ERR_* drops are reloaded by the requestfailed handler above, and a
+    // goto timeout can coexist with a login the user already completed
+    // (networkidle may never fire on a chatty login page) — the SMSESSION
+    // poll below is the authoritative success signal for both, so keep going.
+  }
 
   const startTime = Date.now();
   while (Date.now() - startTime < 120000) {

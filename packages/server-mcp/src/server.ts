@@ -171,7 +171,7 @@ export function createServerMonitoringServer(): McpServer {
   server.tool(
     "search_httpd_logs",
     "Search Apache httpd access or error logs on NR reverse proxy servers (DMZ or internal). " +
-    "Logs are stored under /sw_ux/httpd01/logs/hot (active) or cold (older rotated files). " +
+    "Logs are stored under /sw_ux/httpd01/logs/hot (active) or cold (older gzip-compressed .log.gz files, searched transparently). " +
     "Each virtual-host domain has its own log files named {domain}-{access|error}.{YYYY.MM.DD}.log. " +
     "These servers do not require sudo — the _A account has direct read access. " +
     "Set sudoUser to empty in servers.conf for these servers.",

@@ -2,6 +2,68 @@ import type { JiraClient } from "@nrs/jira-mcp/client";
 import { askAI } from "../ai-client.js";
 import { startSpinner, stopSpinner } from "../spinner.js";
 import type { ErrorInfo, PipelineContext, TriageResult } from "../types.js";
+import { createHash } from "node:crypto";
+import { markProcessed, storePathFor } from "../processed-errors.js";
+
+/**
+ * JQL for "is this error already tracked?".
+ *
+ * Deliberately unbounded by age: the status filter already excludes resolved
+ * work, so an unresolved ticket describing the same error is a duplicate no
+ * matter when it was raised. A previous `created >= -90d` window meant a
+ * long-open ticket (e.g. one raised months earlier for an error still
+ * occurring in PROD) went unseen and would have been filed a second time.
+ */
+export function buildDuplicateJql(project: string, keyword: string): string {
+  return `project = ${project} AND text ~ "${keyword}" AND status NOT IN (Done, Closed, Resolved) ORDER BY created DESC`;
+}
+
+/**
+ * Stable label identifying the defect a pipeline-created ticket tracks.
+ *
+ * Keyword search alone cannot reliably find the pipeline's own earlier
+ * tickets: the keyword is derived from whatever the log line and stack trace
+ * looked like at the time, and that drifts between releases (a real miss:
+ * one run keyed on the logger class, an earlier ticket for the same defect
+ * recorded only the exception type). The fingerprint is derived from the
+ * error signature instead, so it survives that drift.
+ *
+ * Deliberately excludes the server: the cooldown store is per-environment
+ * (suppression windows are), but one defect seen in TEST and PROD is still
+ * one bug and belongs on one ticket.
+ */
+export function ticketFingerprint(app: string, component: string, dedupeKey: string): string {
+  const digest = createHash("sha256")
+    .update(`${app}|${component}|${dedupeKey}`)
+    .digest("hex")
+    .slice(0, 10);
+  return `raven-fp-${digest}`;
+}
+
+/** Exact-match duplicate search over the fingerprint label. */
+export function buildFingerprintJql(project: string, fingerprint: string): string {
+  return `project = ${project} AND labels = "${fingerprint}" AND status NOT IN (Done, Closed, Resolved) ORDER BY created DESC`;
+}
+
+/**
+ * Decide what a search hit means.
+ *
+ * Only an exact fingerprint match suppresses ticket creation. A keyword hit
+ * is too weak to act on: `text ~ "SomeClass"` matches any open ticket whose
+ * description merely discusses that class, so treating it as a duplicate
+ * both comments on unrelated work and leaves the real error untracked
+ * (observed live — an error matched an open feature ticket about tiling).
+ * Keyword hits are surfaced on the new ticket as "possibly related" instead,
+ * leaving the judgement to a human.
+ */
+export function decideDuplicate(
+  matchedBy: "fingerprint" | "keyword" | null,
+  ticketKey: string | undefined,
+): { isDuplicate: boolean; relatedKey?: string } {
+  if (matchedBy === "fingerprint" && ticketKey) return { isDuplicate: true };
+  if (matchedBy === "keyword" && ticketKey) return { isDuplicate: false, relatedKey: ticketKey };
+  return { isDuplicate: false };
+}
 
 const TRIAGE_SYSTEM_PROMPT = `You are a senior Java developer triaging production errors for BC Government applications.
 Analyze the error and provide a JSON response with these fields:
@@ -29,6 +91,8 @@ export async function triage(
   const duplicatesFound: Array<{ errorIdx: number; ticketKey: string }> = [];
   let topError = ctx.errors[0]!;
   let triageResult: TriageResult | null = null;
+  /** Ticket a keyword search matched — surfaced for a human, never acted on. */
+  let relatedKey: string | undefined;
 
   for (let errIdx = 0; errIdx < ctx.errors.length; errIdx++) {
     const currentError = ctx.errors[errIdx]!;
@@ -59,15 +123,28 @@ export async function triage(
       console.log(`[TRIAGE] Root cause: ${triageResult.rootCause.slice(0, 200)}`);
     }
 
-    // Search for existing Jira tickets
+    // Search for existing Jira tickets. The fingerprint label is exact and
+    // survives log-text drift, so it is tried first; the keyword search then
+    // covers tickets raised by people (which carry no fingerprint).
     const keyword = extractKeyword(currentError.message, currentError.stackTrace);
-    const jql = `project = ${ctx.jiraProject} AND text ~ "${keyword}" AND status NOT IN (Done, Closed, Resolved) AND created >= -90d ORDER BY created DESC`;
-    console.log(`[TRIAGE] Searching Jira: ${jql}`);
+    const fingerprint = ticketFingerprint(ctx.app, ctx.component, currentError.dedupeKey);
 
     let searchResults: { issues: Array<{ key: string; fields: { summary: string; status: { name: string }; created: string } }>; total: number };
+    let matchedBy: "fingerprint" | "keyword" | null = null;
     try {
       startSpinner("Searching Jira for duplicates...");
-      searchResults = await jiraClient.searchIssues(jql, 5);
+      console.log(`[TRIAGE] Searching Jira by fingerprint: ${fingerprint}`);
+      searchResults = await jiraClient.searchIssues(
+        buildFingerprintJql(ctx.jiraProject, fingerprint), 5
+      );
+      if (searchResults.issues.length > 0) {
+        matchedBy = "fingerprint";
+      } else {
+        const jql = buildDuplicateJql(ctx.jiraProject, keyword);
+        console.log(`[TRIAGE] No fingerprint match — searching by keyword: ${jql}`);
+        searchResults = await jiraClient.searchIssues(jql, 5);
+        if (searchResults.issues.length > 0) matchedBy = "keyword";
+      }
       stopSpinner();
     } catch (e) {
       stopSpinner();
@@ -75,7 +152,16 @@ export async function triage(
       searchResults = { issues: [], total: 0 };
     }
 
-    if (searchResults.issues.length > 0 && !ctx.forceNew) {
+    const decision = decideDuplicate(matchedBy, searchResults.issues[0]?.key);
+    if (decision.relatedKey) {
+      relatedKey = decision.relatedKey;
+      console.log(
+        `[TRIAGE] Keyword matched ${decision.relatedKey} (${searchResults.issues[0]!.fields.summary}) — ` +
+        `too weak to treat as a duplicate; noting it as possibly related and continuing`
+      );
+    }
+
+    if (decision.isDuplicate && !ctx.forceNew) {
       const existing = searchResults.issues[0]!;
       console.log(
         `[TRIAGE] Duplicate found: ${existing.key} — ${existing.fields.summary}`
@@ -90,6 +176,11 @@ export async function triage(
             `AI analysis: ${triageResult.rootCause}`
         );
         console.log(`[TRIAGE] Added comment to ${existing.key}`);
+        markProcessed(
+          currentError.dedupeKey,
+          existing.key,
+          storePathFor(ctx.server, ctx.app, ctx.component)
+        );
       }
 
       if (errIdx < ctx.errors.length - 1) {
@@ -160,6 +251,12 @@ export async function triage(
     ? `h3. Regression\nThis error was previously tracked in ${regressionRef} (now resolved). It may have regressed or resurfaced.\n\n`
     : "";
 
+  // A keyword hit is a hint, not a verdict — the text search matches any
+  // ticket that merely discusses the same class, so a human decides.
+  const relatedNote = relatedKey
+    ? `h3. Possibly Related\nA keyword search also matched ${relatedKey}. It may cover the same defect, or may simply mention the same code — worth a look before duplicating effort.\n\n`
+    : "";
+
   startSpinner("Creating Jira ticket...");
   const issueResponse = await jiraClient.createIssue({
     project: { key: ctx.jiraProject },
@@ -171,6 +268,7 @@ export async function triage(
       `*Occurrences:* ${topError.occurrences}\n` +
       `*Severity:* ${triageResult.severity}\n\n` +
       regressionNote +
+      relatedNote +
       `h3. Root Cause Analysis\n` +
       `${triageResult.rootCause}\n\n` +
       `h3. Stack Trace\n` +
@@ -178,12 +276,21 @@ export async function triage(
       `_Created by RAVEN Autonomous Pipeline_`,
     issuetype: { name: "Bug" },
     priority: { name: severityToPriority(triageResult.severity) },
-    labels: ["raven-pipeline", "auto-detected"],
+    labels: [
+      "raven-pipeline",
+      "auto-detected",
+      ticketFingerprint(ctx.app, ctx.component, topError.dedupeKey),
+    ],
   });
 
   stopSpinner();
   ctx.ticketKey = issueResponse.key;
   console.log(`[TRIAGE] Created ticket: ${ctx.ticketKey}`);
+  markProcessed(
+    topError.dedupeKey,
+    ctx.ticketKey,
+    storePathFor(ctx.server, ctx.app, ctx.component)
+  );
 }
 
 /**

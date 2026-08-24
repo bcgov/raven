@@ -10,9 +10,7 @@
  */
 import type { Response } from "express";
 import { createTransport, type Transporter } from "nodemailer";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
+import { loadEnvVar } from "@nrs/auth";
 import { runDashboard, getJvmHeap } from "@nrs/server-mcp/client";
 import { getServerConfig } from "./server-config.js";
 import {
@@ -280,19 +278,6 @@ function fireAlert(
 
 // ── SMTP email delivery ───────────────────────────────────────────
 
-/** Load a named variable from env or ~/.raven/.env. */
-function loadEnvVar(name: string): string | undefined {
-  const fromEnv = process.env[name];
-  if (fromEnv) return fromEnv;
-  try {
-    const content = readFileSync(join(homedir(), ".raven", ".env"), "utf-8");
-    const re = new RegExp(`^${name}=(.+)$`, "m");
-    const match = content.match(re);
-    return match?.[1]?.trim().replace(/^["']|["']$/g, "");
-  } catch {
-    return undefined;
-  }
-}
 
 /** Lazy-initialized SMTP transporter. */
 let smtpTransport: Transporter | null = null;

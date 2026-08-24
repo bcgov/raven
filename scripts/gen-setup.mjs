@@ -23,3 +23,7 @@ process.env.SERVER_TOOLS_BIN = dir;
 const csv = join(dir, "imis-servers.csv");
 writeFileSync(csv, "");
 process.env.IMIS_CSV_PATH = csv;
+
+// sharepoint-mcp: SpoSessionManager falls back to this same default already,
+// but set it explicitly so the generator never depends on that default.
+process.env.SHAREPOINT_URL ??= "https://example.sharepoint.com";
