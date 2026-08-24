@@ -5,7 +5,7 @@ export const GENESIS_HASH = "0".repeat(64);
 
 /**
  * Deterministic JSON: object keys sorted recursively, arrays in order,
- * undefined properties dropped (JSON.stringify semantics).
+ * undefined properties dropped, and toJSON() honoured (JSON.stringify semantics).
  */
 export function canonicalJson(value: unknown): string {
   return JSON.stringify(sortKeys(value));
@@ -14,6 +14,10 @@ export function canonicalJson(value: unknown): string {
 function sortKeys(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortKeys);
   if (value && typeof value === "object") {
+    // Call toJSON() if it exists, like JSON.stringify does
+    if (typeof (value as any).toJSON === "function") {
+      return sortKeys((value as any).toJSON());
+    }
     const out: Record<string, unknown> = {};
     for (const key of Object.keys(value as object).sort()) {
       const v = (value as Record<string, unknown>)[key];

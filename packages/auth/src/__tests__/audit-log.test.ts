@@ -11,6 +11,17 @@ describe("canonicalJson", () => {
   it("drops undefined properties like JSON.stringify", () => {
     expect(canonicalJson({ a: undefined, b: "x" })).toBe('{"b":"x"}');
   });
+
+  it("honours toJSON() on Date and Buffer", () => {
+    const result = canonicalJson({
+      t: new Date("2026-08-24T00:00:00Z"),
+      b: Buffer.from("hi"),
+    });
+    // Buffer.toJSON() produces {type: "Buffer", data: [...]}, sorted keys give data, then type
+    expect(result).toBe(
+      '{"b":{"data":[104,105],"type":"Buffer"},"t":"2026-08-24T00:00:00.000Z"}'
+    );
+  });
 });
 
 describe("hashRecord", () => {
