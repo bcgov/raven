@@ -39,6 +39,9 @@ export {
   keychainService,
   readKeychainRecord,
   writeKeychainRecord,
+  KEYCHAIN_KEY_PATTERN,
+  setKeychainEntry,
+  deleteKeychainEntry,
 } from "./load-env.js";
 export type { KeychainExec } from "./load-env.js";
 export { authCliPath } from "./auth-cli-path.js";

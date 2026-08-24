@@ -203,6 +203,44 @@ export function writeKeychainRecord(
   });
 }
 
+/** Keys stored in the keychain blob are environment-variable names. */
+export const KEYCHAIN_KEY_PATTERN = /^[A-Z][A-Z0-9_]*$/;
+
+/**
+ * Set one key in the keychain blob, creating the item if needed. Other keys
+ * are preserved. Throws on an invalid key, an empty value, or a write failure.
+ */
+export function setKeychainEntry(
+  key: string,
+  value: string,
+  exec: KeychainExec = execFileSync as unknown as KeychainExec,
+): void {
+  if (!KEYCHAIN_KEY_PATTERN.test(key)) {
+    throw new Error(`Invalid keychain key "${key}": expected an UPPER_SNAKE_CASE name.`);
+  }
+  if (!value) {
+    throw new Error(`Refusing to store an empty value for ${key}.`);
+  }
+  const record = readKeychainRecord(exec) ?? {};
+  record[key] = value;
+  writeKeychainRecord(record, exec);
+}
+
+/**
+ * Remove one key from the keychain blob. Returns true when the key existed.
+ * Never creates the item; a missing item or key is not an error.
+ */
+export function deleteKeychainEntry(
+  key: string,
+  exec: KeychainExec = execFileSync as unknown as KeychainExec,
+): boolean {
+  const record = readKeychainRecord(exec);
+  if (!record || !(key in record)) return false;
+  delete record[key];
+  writeKeychainRecord(record, exec);
+  return true;
+}
+
 /**
  * Read the RAVEN credential blob from the macOS login keychain and merge it
  * into process.env. Values are only written when the key is NOT already

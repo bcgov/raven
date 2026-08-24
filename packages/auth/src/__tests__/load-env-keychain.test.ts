@@ -5,6 +5,8 @@ import {
   loadKeychain,
   readKeychainRecord,
   writeKeychainRecord,
+  setKeychainEntry,
+  deleteKeychainEntry,
 } from "../load-env.js";
 
 const TEST_KEYS = ["RAVEN_TEST_KC_A", "RAVEN_TEST_KC_B", "RAVEN_KEYCHAIN_SERVICE"];
@@ -94,7 +96,6 @@ describe("loadKeychain", () => {
   });
 });
 
-
 describe("readKeychainRecord", () => {
   const saved: Record<string, string | undefined> = {};
 
@@ -176,5 +177,68 @@ describe("writeKeychainRecord", () => {
       throw new Error("User interaction is not allowed.");
     });
     expect(() => writeKeychainRecord({ A: "1" }, exec)).toThrow(/User interaction/);
+  });
+});
+
+/** A fake `security` that keeps one blob in memory across find/add calls. */
+function fakeSecurity(initial: Record<string, string> | null) {
+  let stored = initial ? encodeKeychainBlob(initial) : null;
+  const exec = vi.fn((_cmd: string, args: string[], opts: { input?: string }) => {
+    if (args[0] === "find-generic-password") {
+      if (stored === null) throw new Error("not found");
+      return stored + "\n";
+    }
+    if (args[0] === "-i") {
+      stored = opts.input!.trim().split(" ").pop()!;
+      return "";
+    }
+    throw new Error(`unexpected args ${args.join(" ")}`);
+  });
+  return { exec, current: () => (stored === null ? null : decodeKeychainBlob(stored)) };
+}
+
+describe("setKeychainEntry", () => {
+  it("adds a key to an existing record, preserving the others", () => {
+    const kc = fakeSecurity({ ATLASSIAN_PASSWORD: "p" });
+    setKeychainEntry("RAVEN_DB_PASSWORD_CWM_DEV", "s3cret", kc.exec);
+    expect(kc.current()).toEqual({ ATLASSIAN_PASSWORD: "p", RAVEN_DB_PASSWORD_CWM_DEV: "s3cret" });
+  });
+
+  it("creates the record when the keychain item does not exist yet", () => {
+    const kc = fakeSecurity(null);
+    setKeychainEntry("RAVEN_DB_PASSWORD_X", "v", kc.exec);
+    expect(kc.current()).toEqual({ RAVEN_DB_PASSWORD_X: "v" });
+  });
+
+  it("overwrites an existing value", () => {
+    const kc = fakeSecurity({ K: "old" });
+    setKeychainEntry("K", "new", kc.exec);
+    expect(kc.current()).toEqual({ K: "new" });
+  });
+
+  it("rejects an invalid key or empty value without touching the keychain", () => {
+    const kc = fakeSecurity({ K: "v" });
+    expect(() => setKeychainEntry("bad-key", "v", kc.exec)).toThrow(/key/i);
+    expect(() => setKeychainEntry("K", "", kc.exec)).toThrow(/value/i);
+    expect(kc.exec).not.toHaveBeenCalled();
+  });
+});
+
+describe("deleteKeychainEntry", () => {
+  it("removes the key and returns true", () => {
+    const kc = fakeSecurity({ A: "1", B: "2" });
+    expect(deleteKeychainEntry("A", kc.exec)).toBe(true);
+    expect(kc.current()).toEqual({ B: "2" });
+  });
+
+  it("returns false and writes nothing when the key is absent", () => {
+    const kc = fakeSecurity({ B: "2" });
+    expect(deleteKeychainEntry("A", kc.exec)).toBe(false);
+    expect(kc.exec.mock.calls.filter((c) => c[1][0] === "-i")).toHaveLength(0);
+  });
+
+  it("returns false when there is no keychain item at all", () => {
+    const kc = fakeSecurity(null);
+    expect(deleteKeychainEntry("A", kc.exec)).toBe(false);
   });
 });
