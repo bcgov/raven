@@ -144,7 +144,7 @@ These ship in `packages/` but register no MCP tools:
 
 | Package | Role |
 |---------|------|
-| `auth` | Shared library: Basic-Auth / SiteMinder session, PI scrubbing, HTTP clients, rate-limiting |
+| `auth` | Shared library: Basic-Auth / SiteMinder session, PI scrubbing, HTTP clients, rate-limiting, hash-chained audit log (`AuditLog`, `~/.raven/audit/<stream>.<YYYY-MM>.jsonl`) |
 | `pipeline` | Autonomous DevOps CLI (`raven-pipeline`) — detects prod errors, triages with AI, opens PRs |
 | `server-ui` | Express web dashboard for server monitoring (`http://localhost:3777`) |
 | `raven-cli` | CLI interface (in progress) |

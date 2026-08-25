@@ -85,3 +85,18 @@ export type {
   SpoAuthConfig,
   SpoAuthResult,
 } from "./types.js";
+export {
+  AuditLog,
+  GENESIS_HASH,
+  canonicalJson,
+  hashRecord,
+  newAuditId,
+  listAuditFiles,
+  verifyAuditFile,
+} from "./audit-log.js";
+export type {
+  AuditLogOptions,
+  AuditRecord,
+  AuditVerifyResult,
+  AuditTailResult,
+} from "./audit-log.js";
