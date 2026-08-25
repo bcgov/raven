@@ -11,7 +11,6 @@ import {
   readdirSync,
   readFileSync,
   readSync,
-  renameSync,
   statSync,
   unlinkSync,
   writeSync,
@@ -24,44 +23,58 @@ export const GENESIS_HASH = "0".repeat(64);
 
 /**
  * Deterministic JSON: object keys sorted recursively, arrays kept in their
- * original order, undefined properties dropped, and toJSON() honoured
- * (JSON.stringify semantics).
+ * original order, undefined / function / symbol properties dropped, and
+ * `toJSON(key)` honoured with JSON.stringify's key semantics (`""` at the
+ * root, the property name inside an object, the index as a string inside
+ * an array).
  *
- * Key order is `Object.keys(value).sort()` — plain string / UTF-16 code-point
- * order. This is NOT the order JavaScript itself uses for integer-like own
- * keys (which it iterates numerically first); a re-implementation in another
- * language must sort keys as strings, not as numbers, to reproduce the same
- * output and therefore the same hash.
+ * Keys are emitted in plain string (UTF-16 code unit) order, so
+ * `{ "10": 1, "2": 2 }` becomes `{"10":1,"2":2}`. This deliberately differs
+ * from JavaScript's own enumeration order (integer-like keys first,
+ * ascending numerically): the serialiser builds the string itself instead
+ * of handing a sorted copy to `JSON.stringify`, which would re-impose the
+ * numeric order. A re-implementation in another language must sort keys as
+ * strings, not as numbers, to reproduce the same output and hash.
  *
- * Throws on `undefined` (the return type is `string`, and
- * `JSON.stringify(undefined)` is not one). Also throws on a circular
- * reference or a `BigInt` anywhere in `value`, same as `JSON.stringify`.
+ * Throws on `undefined` at the root (the return type is `string`), and on a
+ * circular reference or a `BigInt` anywhere in `value`, same as
+ * `JSON.stringify`.
  */
 export function canonicalJson(value: unknown): string {
-  if (value === undefined) throw new Error("canonicalJson: cannot canonicalise undefined");
-  return JSON.stringify(sortKeys(value));
+  const out = canon(value, "", []);
+  if (out === undefined) throw new Error("canonicalJson: cannot canonicalise undefined");
+  return out;
 }
 
-function sortKeys(value: unknown): unknown {
+function canon(value: unknown, key: string, ancestors: object[]): string | undefined {
   if (value && typeof value === "object" && typeof (value as any).toJSON === "function") {
-    // Call toJSON() first, like JSON.stringify does — this must be checked
-    // before Array.isArray so an array subclass with its own toJSON() is
-    // canonicalised the same way JSON.stringify would serialise it.
-    return sortKeys((value as any).toJSON());
+    // Checked before Array.isArray so an array subclass with its own toJSON()
+    // is canonicalised the way JSON.stringify would serialise it.
+    value = (value as { toJSON(k: string): unknown }).toJSON(key);
   }
-  if (Array.isArray(value)) return value.map(sortKeys);
-  if (value && typeof value === "object") {
-    // Object.create(null): an own "__proto__" key on `value` must be
-    // canonicalised as ordinary data, not reinterpreted as a prototype
-    // assignment on `out`.
-    const out: Record<string, unknown> = Object.create(null);
-    for (const key of Object.keys(value as object).sort()) {
-      const v = (value as Record<string, unknown>)[key];
-      if (v !== undefined) out[key] = sortKeys(v);
+  if (value instanceof Number || value instanceof String || value instanceof Boolean) {
+    value = value.valueOf();
+  }
+  if (typeof value === "bigint") throw new TypeError("canonicalJson: cannot serialise a BigInt");
+  if (value === undefined || typeof value === "function" || typeof value === "symbol") return undefined;
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (ancestors.includes(value)) throw new TypeError("canonicalJson: converting circular structure to JSON");
+  ancestors.push(value);
+  try {
+    if (Array.isArray(value)) {
+      return "[" + value.map((v, i) => canon(v, String(i), ancestors) ?? "null").join(",") + "]";
     }
-    return out;
+    // Object.keys() already excludes symbols and non-enumerable properties;
+    // an own "__proto__" key is ordinary data here, never a prototype write.
+    const parts: string[] = [];
+    for (const k of Object.keys(value).sort()) {
+      const item = canon((value as Record<string, unknown>)[k], k, ancestors);
+      if (item !== undefined) parts.push(JSON.stringify(k) + ":" + item);
+    }
+    return "{" + parts.join(",") + "}";
+  } finally {
+    ancestors.pop();
   }
-  return value;
 }
 
 /** Chain hash: sha256(prevHash + "\n" + canonicalJson(record)). `record` must not contain `hash`. */
@@ -83,6 +96,8 @@ export interface AuditLogOptions {
   dir?: string;
   /** Injectable clock for tests. */
   clock?: () => Date;
+  /** How long `append()` waits for a busy lock before failing; default 5 s. */
+  lockTimeoutMs?: number;
 }
 
 export type AuditRecord<T extends object = Record<string, unknown>> = T & {
@@ -119,9 +134,10 @@ function readAuditLines(file: string): string[] {
 }
 
 /**
- * Release a lock file iff its content still equals `token`. If it does not
- * (a waiter reclaimed it as stale and holds it now), the lock is left
- * alone — unlinking it here would delete someone else's live lock.
+ * Release a lock file iff its content still equals `token`. A live holder's
+ * lock is never reclaimed by anyone else (see withFileLock), so in normal
+ * operation the content is always ours; the check guards against an
+ * operator deleting and some other process recreating the file meanwhile.
  *
  * @internal — exported for tests only.
  */
@@ -133,26 +149,116 @@ export function releaseLock(lock: string, token: string): void {
   }
 }
 
+const TOKEN_RE = /^(\d+)-[0-9a-f]{16}$/;
+
+/** Owner pid encoded in a lock token (`<pid>-<16 hex>`); null if malformed. */
+function lockOwnerPid(content: string): number | null {
+  const m = TOKEN_RE.exec(content);
+  return m ? Number(m[1]) : null;
+}
+
+/** True when a process with this pid exists. EPERM means it exists but is not ours. */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 /**
- * Exclusive lock via atomic create of `<file>.lock`, tagged with a random
- * token so only the current holder can release it. A lock older than
- * LOCK_STALE_MS is treated as abandoned (crashed process) and reclaimed by
- * a waiter; the original holder's eventual release then finds a token that
- * is no longer its own and leaves the reclaimed lock alone (see
- * releaseLock). This still allows two writers to overlap if one single
- * append takes longer than LOCK_STALE_MS to complete — a `verify()` pass
- * over the chain detects the resulting break.
- *
- * Stale reclaim uses rename-then-unlink rather than a plain unlink:
- * `renameSync` is atomic, so of several waiters that all see the same stale
- * lock, only one's rename can succeed — the rest get ENOENT (the source is
- * already gone) and simply retry. A plain stat-then-unlink would let two
- * waiters both decide the lock is stale, and the second unlink would then
- * delete the fresh lock the first waiter had just created.
+ * Decide whether a lock (or reclaim-guard) file is abandoned. A file whose
+ * token names a live process is never abandoned, however old it is — a
+ * holder that is merely slow or suspended keeps its lock, and waiters time
+ * out naming its pid instead of overlapping with it. A file whose token
+ * names a dead process is abandoned. A file with no valid token (the holder
+ * crashed between create and write) is abandoned once it is older than
+ * LOCK_STALE_MS. Returns the content observed, so the caller can make its
+ * unlink conditional on that exact content; null when not abandoned or
+ * already gone.
  */
-async function withFileLock<R>(file: string, fn: () => R): Promise<R> {
+function abandonedLockContent(path: string): string | null {
+  let content: string;
+  let mtimeMs: number;
+  try {
+    content = readFileSync(path, "utf-8");
+    mtimeMs = statSync(path).mtimeMs;
+  } catch {
+    return null; // vanished — the caller loops and retries
+  }
+  const pid = lockOwnerPid(content);
+  if (pid !== null) return pidAlive(pid) ? null : content;
+  return Date.now() - mtimeMs > LOCK_STALE_MS ? content : null;
+}
+
+/**
+ * Remove an abandoned lock, serialised through a reclaim guard
+ * (`<lock>.reclaim`, created with O_EXCL). Only the guard holder may unlink
+ * a lock, and it unlinks only if the lock still holds the exact content it
+ * judged abandoned. Together these close the two-waiter race: without the
+ * guard, waiter B could read the dead token, then waiter A unlinks it and
+ * creates a fresh lock, and B's unlink would delete A's live lock. With the
+ * guard, A cannot unlink while B holds it, and B's content check sees A's
+ * fresh token (tokens are random, so a new lock never repeats a dead one).
+ *
+ * The guard can itself be abandoned only if a reclaimer dies inside this
+ * function — a window of microseconds — and is then cleared by the same
+ * liveness rule; a second death inside *that* window is not guarded.
+ */
+function reclaimAbandonedLock(lock: string, guard: string, observed: string, token: string): void {
+  let gfd: number;
+  try {
+    gfd = openSync(guard, "wx", 0o600);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    const staleGuard = abandonedLockContent(guard);
+    if (staleGuard !== null) releaseLock(guard, staleGuard);
+    return; // another waiter is reclaiming — retry after the sleep
+  }
+  try {
+    writeSync(gfd, token);
+  } catch (err) {
+    closeSync(gfd);
+    try {
+      unlinkSync(guard);
+    } catch {
+      /* best effort — do not mask the original error */
+    }
+    throw err;
+  }
+  closeSync(gfd);
+  try {
+    // While the guard is held nobody else unlinks the lock, and while the
+    // lock path exists nobody can create at it (O_EXCL), so a content match
+    // here means the same dead holder's file — unlinking it is safe.
+    releaseLock(lock, observed);
+  } finally {
+    releaseLock(guard, token);
+  }
+}
+
+/**
+ * Exclusive lock via atomic create of `<file>.lock`, tagged with
+ * `<pid>-<random>` so only the current holder can release it. A lock whose
+ * owner is still alive is never reclaimed, however old — the holder may
+ * just be suspended — so two live writers can never both hold the lock.
+ * A lock whose owner has died (or that carries no valid token and is older
+ * than LOCK_STALE_MS) is reclaimed under a reclaim guard; see
+ * reclaimAbandonedLock for why that is race-free. Waiters give up after
+ * `timeoutMs` with an error naming the owner pid, so an operator can decide
+ * whether that process is really gone and delete the file by hand.
+ *
+ * Liveness is checked with `process.kill(pid, 0)`, which only means
+ * something for processes on this machine: the audit directory must be on
+ * a local filesystem. A dead holder's pid that the OS has already reused
+ * keeps the lock "alive" until the operator removes it — the timeout error
+ * says which pid to check.
+ */
+async function withFileLock<R>(file: string, timeoutMs: number, fn: () => R): Promise<R> {
   const lock = file + ".lock";
-  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  const guard = lock + ".reclaim";
+  const deadline = Date.now() + timeoutMs;
   const token = `${process.pid}-${randomBytes(8).toString("hex")}`;
   for (;;) {
     let fd: number;
@@ -160,20 +266,20 @@ async function withFileLock<R>(file: string, fn: () => R): Promise<R> {
       fd = openSync(lock, "wx", 0o600);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-      try {
-        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) {
-          const reclaimed = `${lock}.stale-${token}`;
-          try {
-            renameSync(lock, reclaimed);
-            unlinkSync(reclaimed);
-          } catch {
-            /* another waiter reclaimed it first, or it is already gone */
-          }
+      const abandoned = abandonedLockContent(lock);
+      if (abandoned !== null) reclaimAbandonedLock(lock, guard, abandoned, token);
+      if (Date.now() > deadline) {
+        let owner = "an unknown process";
+        try {
+          const pid = lockOwnerPid(readFileSync(lock, "utf-8"));
+          if (pid !== null) owner = `pid ${pid}`;
+        } catch {
+          /* lock vanished at the last moment — report it generically */
         }
-      } catch {
-        /* lock vanished before the stat — loop and retry */
+        throw new Error(
+          `Audit log lock timeout: ${lock} is held by ${owner}. If that process is gone, delete the lock file and retry.`
+        );
       }
-      if (Date.now() > deadline) throw new Error(`Audit log lock timeout: ${lock}`);
       await sleep(10);
       continue;
     }
@@ -229,7 +335,8 @@ function readLastHash(file: string): string | null {
       if (n !== buf.length) {
         throw new Error(`Audit log ${file}: short read (${n} of ${buf.length} bytes) while checking the tail.`);
       }
-      const lines = splitAuditLines(buf.toString("utf-8"));
+      const text = buf.toString("utf-8");
+      const lines = splitAuditLines(text);
       const last = lines[lines.length - 1];
       if (last === undefined) {
         if (start === 0) return null;
@@ -256,6 +363,16 @@ function readLastHash(file: string): string | null {
       if (typeof hash !== "string" || !/^[0-9a-f]{64}$/.test(hash)) {
         throw new Error(`Audit log ${file} last record has no valid hash; refusing to append.`);
       }
+      // A torn write can leave a complete record with no trailing newline;
+      // the next O_APPEND would glue the next record onto that line, which
+      // is permanent corruption. Whitespace after a newline-terminated line
+      // is fine; a last record not followed by "\n" is not.
+      const trailing = /\S(\s*)$/.exec(text)?.[1] ?? "";
+      if (!trailing.includes("\n")) {
+        throw new Error(
+          `Audit log ${file} ends with an unterminated last line (no trailing newline); refusing to append so the next record cannot be glued onto it. Confirm the line is complete, add the newline by hand, and retry — the chain stays verifiable.`
+        );
+      }
       return hash;
     }
   } finally {
@@ -269,6 +386,12 @@ export interface AuditVerifyResult {
   ok: boolean;
   /** 1-based line number of the first record that fails the chain. */
   firstBreak?: number;
+  /**
+   * `hash` of the last record when the chain verifies and the file is not
+   * empty. A local chain cannot detect removal of its newest records, so
+   * note this value somewhere outside the audit directory if that matters.
+   */
+  headHash?: string;
 }
 
 export interface AuditTailResult<T extends object> {
@@ -303,14 +426,24 @@ export function verifyAuditFile(file: string): AuditVerifyResult {
     }
     prevHash = hash as string;
   }
-  return { file, records: lines.length, ok: true };
+  return lines.length === 0
+    ? { file, records: 0, ok: true }
+    : { file, records: lines.length, ok: true, headHash: prevHash };
 }
 
 /**
  * Append-only, hash-chained audit log. One JSONL file per calendar month
  * (`${dir}/${stream}.${YYYY-MM}.jsonl`); each line's `hash` binds it to the
- * previous line's `hash`, so an edit, deletion, reorder, or truncation is
- * detectable by {@link verifyAuditFile} / {@link AuditLog.verify}.
+ * previous line's `hash`.
+ *
+ * What the chain guarantees: {@link verifyAuditFile} / {@link AuditLog.verify}
+ * detect any edit, insertion, reordering, or deletion of a record that has
+ * a later record after it. What it cannot guarantee: removal of the newest
+ * record(s) — a cut at the tail leaves every remaining link valid — and
+ * deletion of a whole monthly file, because each file starts from
+ * GENESIS_HASH. Detecting those needs a reference kept outside the audit
+ * directory: note the `headHash` and `records` that `verify()` reports, and
+ * the list of monthly files, somewhere the writer cannot reach.
  *
  * Recovery: the library never truncates, deletes, or rewrites an audit
  * file — a corrupt or partial trailing line makes `append()` fail closed
@@ -332,6 +465,7 @@ export class AuditLog<T extends object = Record<string, unknown>> {
   readonly dir: string;
   readonly stream: string;
   private readonly clock: () => Date;
+  private readonly lockTimeoutMs: number;
 
   constructor(opts: AuditLogOptions) {
     if (!/^[a-z0-9][a-z0-9-]*$/.test(opts.stream)) {
@@ -340,6 +474,7 @@ export class AuditLog<T extends object = Record<string, unknown>> {
     this.stream = opts.stream;
     this.dir = opts.dir ?? join(homedir(), ".raven", "audit");
     this.clock = opts.clock ?? (() => new Date());
+    this.lockTimeoutMs = opts.lockTimeoutMs ?? LOCK_TIMEOUT_MS;
   }
 
   /** `${dir}/${stream}.${YYYY-MM}.jsonl` for the given date (UTC month). */
@@ -371,7 +506,7 @@ export class AuditLog<T extends object = Record<string, unknown>> {
     if (process.platform !== "win32" && (statSync(this.dir).mode & 0o077) !== 0) {
       chmodSync(this.dir, 0o700);
     }
-    return withFileLock(file, () => {
+    return withFileLock(file, this.lockTimeoutMs, () => {
       const prevHash = readLastHash(file) ?? GENESIS_HASH;
       const { id, ts, hash: _hash, prevHash: _prevHash, ...rest } = record as Record<string, unknown>;
       const base = {

@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { createHash } from "node:crypto";
-import { fork } from "node:child_process";
+import { fork, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   mkdtempSync,
@@ -51,6 +51,34 @@ describe("canonicalJson", () => {
   it("canonicalises an own __proto__ key as data instead of reassigning the prototype", () => {
     const out = canonicalJson(JSON.parse('{"__proto__":{"x":1},"a":1}'));
     expect(out).toBe('{"__proto__":{"x":1},"a":1}');
+  });
+
+  it("sorts integer-like keys as strings, not numerically", () => {
+    // JSON.stringify would emit {"2":2,"10":1} for this object whatever the
+    // insertion order; the documented (and hashed) form is string order.
+    expect(canonicalJson({ "10": 1, "2": 2 })).toBe('{"10":1,"2":2}');
+    expect(canonicalJson({ a: { "3": [], "10": 0, "-1": 1 } })).toBe('{"a":{"-1":1,"10":0,"3":[]}}');
+  });
+
+  it("passes the property key / array index / root key to toJSON like JSON.stringify", () => {
+    const keyed = { toJSON: (k: string) => `key=${k}` };
+    const value = { p: keyed, arr: [keyed, keyed] };
+    expect(canonicalJson(value)).toBe(JSON.stringify(value, Object.keys(value).sort()));
+    expect(canonicalJson(value)).toBe('{"arr":["key=0","key=1"],"p":"key=p"}');
+    expect(canonicalJson(keyed)).toBe('"key="');
+  });
+
+  it("throws on a circular reference and on BigInt, like JSON.stringify", () => {
+    const loop: Record<string, unknown> = { a: 1 };
+    loop["self"] = loop;
+    expect(() => canonicalJson(loop)).toThrow(/circular/);
+    expect(() => canonicalJson({ n: 1n })).toThrow(/BigInt/);
+  });
+
+  it("unwraps primitive wrapper objects and drops functions like JSON.stringify", () => {
+    expect(canonicalJson({ n: new Number(3), s: new String("x"), f: () => 1, b: new Boolean(false) })).toBe(
+      '{"b":false,"n":3,"s":"x"}'
+    );
   });
 
   it("throws for undefined", () => {
@@ -253,17 +281,109 @@ describe("AuditLog.append", () => {
     expect(verifyAuditFile(file)).toMatchObject({ records: 2, ok: false, firstBreak: 2 });
   });
 
-  it("reclaims a lock older than 30s and leaves no lock file behind", async () => {
+  it("verifies a record whose nested toJSON depends on its key", async () => {
+    // The hash is computed from the live object (toJSON(key) called by
+    // canonicalJson) and the line is written by JSON.stringify (toJSON(key)
+    // called by V8); both must agree or the record can never re-verify.
+    const dir = tmpDir();
+    const log = new AuditLog<{ payload: unknown }>({ stream: "s", dir, clock: AUG });
+    await log.append({ payload: { inner: { toJSON: (k: string) => `seen:${k}` } } });
+    const file = log.fileFor(AUG());
+    expect(readLines(file)[0]).toMatchObject({ payload: { inner: "seen:inner" } });
+    expect(verifyAuditFile(file)).toMatchObject({ records: 1, ok: true });
+  });
+
+  it("rejects a complete last record that lacks its trailing newline", async () => {
+    const dir = tmpDir();
+    const log = new AuditLog({ stream: "s", dir, clock: AUG });
+    await log.append({ n: 1 });
+    const file = log.fileFor(AUG());
+    const text = readFileSync(file, "utf-8");
+    expect(text.endsWith("\n")).toBe(true);
+    writeFileSync(file, text.slice(0, -1)); // torn write: JSON intact, newline lost
+    await expect(log.append({ n: 2 })).rejects.toThrow(/unterminated last line/);
+    expect(readFileSync(file, "utf-8")).toBe(text.slice(0, -1)); // nothing glued on
+    expect(verifyAuditFile(file)).toMatchObject({ records: 1, ok: true });
+  });
+
+  it("still appends after whitespace that follows a terminated last line", async () => {
+    const dir = tmpDir();
+    const log = new AuditLog({ stream: "s", dir, clock: AUG });
+    await log.append({ n: 1 });
+    const file = log.fileFor(AUG());
+    const { appendFileSync } = await import("node:fs");
+    appendFileSync(file, "  \n\r\n");
+    const rec = await log.append({ n: 2 });
+    expect(rec.prevHash).not.toBe(GENESIS_HASH);
+    expect(verifyAuditFile(file)).toMatchObject({ records: 2, ok: true });
+  });
+});
+
+describe("AuditLog lock reclamation", () => {
+  /** A pid that certainly belonged to a process which has already exited. */
+  function deadPid(): number {
+    const child = spawnSync(process.execPath, ["-e", "0"]);
+    expect(child.status).toBe(0);
+    return child.pid!;
+  }
+
+  it("reclaims a lock whose owner process is dead, however fresh the file", async () => {
     const dir = tmpDir();
     const log = new AuditLog({ stream: "s", dir, clock: AUG });
     const lockPath = log.fileFor(AUG()) + ".lock";
-    writeFileSync(lockPath, "foreign-token");
+    writeFileSync(lockPath, `${deadPid()}-0123456789abcdef`);
+    const rec = await log.append({ n: 1 });
+    expect(rec.prevHash).toBe(GENESIS_HASH);
+    expect(existsSync(lockPath)).toBe(false);
+    expect(existsSync(lockPath + ".reclaim")).toBe(false);
+  });
+
+  it("reclaims a lock with no valid token once it is older than 30s", async () => {
+    const dir = tmpDir();
+    const log = new AuditLog({ stream: "s", dir, clock: AUG });
+    const lockPath = log.fileFor(AUG()) + ".lock";
+    writeFileSync(lockPath, ""); // holder crashed between create and token write
     const past = new Date(Date.now() - 31_000);
     utimesSync(lockPath, past, past);
     const rec = await log.append({ n: 1 });
     expect(rec.prevHash).toBe(GENESIS_HASH);
     expect(existsSync(lockPath)).toBe(false);
-    expect(readdirSync(dir).some((f) => f.includes(".stale-"))).toBe(false);
+    expect(readdirSync(dir).some((f) => f.includes(".stale-") || f.endsWith(".reclaim"))).toBe(false);
+  });
+
+  it("never reclaims a lock whose owner is alive, and names the pid on timeout", async () => {
+    const dir = tmpDir();
+    const log = new AuditLog({ stream: "s", dir, clock: AUG, lockTimeoutMs: 100 });
+    const lockPath = log.fileFor(AUG()) + ".lock";
+    writeFileSync(lockPath, `${process.pid}-0123456789abcdef`); // a live process, but not this call
+    const past = new Date(Date.now() - 600_000);
+    utimesSync(lockPath, past, past); // ten minutes old — age alone must not make it stale
+    await expect(log.append({ n: 1 })).rejects.toThrow(new RegExp(`held by pid ${process.pid}`));
+    expect(existsSync(lockPath)).toBe(true);
+    expect(readdirSync(dir).filter((f) => f.endsWith(".jsonl"))).toEqual([]);
+  });
+
+  it("waits while another live waiter holds the reclaim guard", async () => {
+    const dir = tmpDir();
+    const log = new AuditLog({ stream: "s", dir, clock: AUG, lockTimeoutMs: 100 });
+    const lockPath = log.fileFor(AUG()) + ".lock";
+    writeFileSync(lockPath, `${deadPid()}-0123456789abcdef`);
+    writeFileSync(lockPath + ".reclaim", `${process.pid}-fedcba9876543210`); // live reclaimer mid-flight
+    await expect(log.append({ n: 1 })).rejects.toThrow(/lock timeout/);
+    expect(existsSync(lockPath)).toBe(true); // not touched without the guard
+    expect(existsSync(lockPath + ".reclaim")).toBe(true);
+  });
+
+  it("clears a reclaim guard left behind by a dead reclaimer and proceeds", async () => {
+    const dir = tmpDir();
+    const log = new AuditLog({ stream: "s", dir, clock: AUG });
+    const lockPath = log.fileFor(AUG()) + ".lock";
+    writeFileSync(lockPath, `${deadPid()}-0123456789abcdef`);
+    writeFileSync(lockPath + ".reclaim", `${deadPid()}-fedcba9876543210`);
+    const rec = await log.append({ n: 1 });
+    expect(rec.prevHash).toBe(GENESIS_HASH);
+    expect(existsSync(lockPath)).toBe(false);
+    expect(existsSync(lockPath + ".reclaim")).toBe(false);
   });
 });
 
@@ -291,9 +411,21 @@ describe("AuditLog.verify", () => {
     return { dir, log, file: log.fileFor(AUG()) };
   }
 
+  it("reports the head hash of a verified non-empty file", async () => {
+    const dir = tmpDir();
+    const log = new AuditLog({ stream: "s", dir, clock: AUG });
+    await log.append({ n: 1 });
+    const last = await log.append({ n: 2 });
+    const [result] = await log.verify();
+    expect(result).toMatchObject({ records: 2, ok: true, headHash: last.hash });
+    const empty = join(dir, "s.2026-07.jsonl");
+    writeFileSync(empty, "");
+    expect(verifyAuditFile(empty)).toEqual({ file: empty, records: 0, ok: true });
+  });
+
   it("reports ok for an untouched file", async () => {
     const { log } = await threeRecords();
-    expect(await log.verify()).toEqual([{ file: log.fileFor(AUG()), records: 3, ok: true }]);
+    expect(await log.verify()).toMatchObject([{ file: log.fileFor(AUG()), records: 3, ok: true }]);
   });
 
   it("detects an edited line (1-based)", async () => {
