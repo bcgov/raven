@@ -123,6 +123,8 @@ RAVEN_SCRUB_PI=true
 
 > **Special characters in values:** if a value contains `#` (or starts/ends with a quote character), wrap the whole value in double quotes — for example `ATLASSIAN_PASSWORD="p@ss#word"`. An unquoted `#` starts a comment and silently truncates the value, which breaks authentication. Quoted and unquoted values are both accepted everywhere.
 
+> **OS-encrypted storage:** instead of the plain-text file, an interactive setup script can store credentials OS-encrypted — `scripts/setup-credentials.ps1` on Windows (DPAPI) or `scripts/setup-credentials-mac.mjs` on macOS (login keychain).
+
 Optional Jira setting for Epic Link writes:
 
 ```env

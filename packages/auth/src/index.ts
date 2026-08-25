@@ -30,7 +30,22 @@ export {
   clearCachedSession,
 } from "./cookie-cache.js";
 export { PiScrubber } from "./pi-scrubber.js";
-export { loadEnv, loadEnvVar } from "./load-env.js";
+export {
+  loadEnv,
+  loadEnvVar,
+  loadKeychain,
+  encodeKeychainBlob,
+  decodeKeychainBlob,
+  keychainService,
+  readKeychainRecord,
+  writeKeychainRecord,
+  KEYCHAIN_KEY_PATTERN,
+  KEYCHAIN_ACCOUNT,
+  setKeychainEntry,
+  deleteKeychainEntry,
+  KeychainReadError,
+} from "./load-env.js";
+export type { KeychainExec } from "./load-env.js";
 export { authCliPath } from "./auth-cli-path.js";
 export {
   loadServerConfig,

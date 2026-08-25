@@ -11,16 +11,19 @@ import { execFileSync } from "node:child_process";
  * (e.g. from .mcp.json or the shell) always take precedence.
  *
  * On Windows, if ~/.raven/.env.dpapi exists (a DPAPI-encrypted JSON file
- * created by scripts/setup-credentials.ps1) it is decrypted first. The
- * plain-text ~/.raven/.env is still loaded afterwards as a fallback, so
- * both mechanisms can coexist.
+ * created by scripts/setup-credentials.ps1) it is decrypted first. On
+ * macOS, the login keychain item written by scripts/setup-credentials-mac.mjs
+ * is read first. The plain-text ~/.raven/.env is still loaded afterwards as
+ * a fallback, so both mechanisms can coexist.
  *
  * Call this once at server startup before initialising any clients.
  */
 export function loadEnv(): void {
-  // 1. Try DPAPI-encrypted credentials on Windows first.
+  // 1. Try OS-encrypted credentials first.
   if (process.platform === "win32") {
     loadDpapi();
+  } else if (process.platform === "darwin") {
+    loadKeychain();
   }
 
   // 2. Fall back to plain-text .env (values already set are NOT overwritten).
@@ -115,6 +118,210 @@ function warnUnquotedHashes(envPath: string): void {
     }
   } catch {
     // File missing or unreadable — nothing to warn about.
+  }
+}
+
+/** Keychain item coordinates; the service can be overridden for testing. */
+export const KEYCHAIN_ACCOUNT = "credentials";
+const DEFAULT_KEYCHAIN_SERVICE = "raven";
+
+/** Encode a credential record as the base64 JSON blob stored in the keychain. */
+export function encodeKeychainBlob(record: Record<string, string>): string {
+  return Buffer.from(JSON.stringify(record), "utf-8").toString("base64");
+}
+
+/**
+ * Decode the keychain blob back into a credential record. Non-string values
+ * are dropped. Throws on malformed input — readKeychainRecord() wraps the
+ * throw as KeychainReadError; loadKeychain() swallows it.
+ */
+export function decodeKeychainBlob(blob: string): Record<string, string> {
+  const parsed = JSON.parse(Buffer.from(blob.trim(), "base64").toString("utf-8")) as unknown;
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("Keychain blob is not a JSON object");
+  }
+  const record: Record<string, string> = {};
+  for (const [key, val] of Object.entries(parsed)) {
+    if (typeof val === "string") record[key] = val;
+  }
+  return record;
+}
+
+/** Minimal execFileSync shape so tests can inject a fake `security` binary. */
+export type KeychainExec = (
+  cmd: string,
+  args: string[],
+  opts: { encoding?: "utf-8"; timeout?: number; stdio?: unknown; input?: string },
+) => string;
+
+const SECURITY_BIN = "/usr/bin/security";
+
+/** Keychain service name; RAVEN_KEYCHAIN_SERVICE overrides it for testing. */
+export function keychainService(): string {
+  const value = process.env["RAVEN_KEYCHAIN_SERVICE"] || DEFAULT_KEYCHAIN_SERVICE;
+  if (!/^[A-Za-z0-9._-]+$/.test(value)) {
+    throw new Error("RAVEN_KEYCHAIN_SERVICE must match /^[A-Za-z0-9._-]+$/");
+  }
+  return value;
+}
+
+/**
+ * Thrown by readKeychainRecord() when the keychain item exists but cannot be
+ * read: the keychain is locked and the unlock prompt was dismissed, access
+ * was denied, `security` timed out, or the stored blob is corrupt. Distinct
+ * from "item does not exist" (which readKeychainRecord reports as null) so
+ * callers never mistake a transient read failure for an empty record.
+ */
+export class KeychainReadError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "KeychainReadError";
+  }
+}
+
+/** True when a `security` failure means "no such item" (errSecItemNotFound). */
+function isKeychainItemNotFound(err: unknown): boolean {
+  const status = (err as { status?: number } | null | undefined)?.status;
+  if (status === 44) return true;
+  const message = err instanceof Error ? err.message : String(err);
+  return /could not be found/i.test(message);
+}
+
+/**
+ * Read the RAVEN credential blob from the login keychain. Returns null ONLY
+ * when the item does not exist. Any other read failure (locked keychain,
+ * access denied, `security` unavailable) or a corrupt/malformed blob throws
+ * KeychainReadError instead — treating those as "no credentials stored"
+ * would let a caller like setKeychainEntry silently overwrite every stored
+ * credential with just the one new key.
+ */
+export function readKeychainRecord(
+  exec: KeychainExec = execFileSync as unknown as KeychainExec,
+): Record<string, string> | null {
+  const service = keychainService(); // throws before exec on an invalid service name
+  let output: string;
+  try {
+    output = exec(
+      SECURITY_BIN,
+      ["find-generic-password", "-s", service, "-a", KEYCHAIN_ACCOUNT, "-w"],
+      {
+        encoding: "utf-8",
+        timeout: 10_000,
+        // Suppress stderr so security warnings don't leak to stdout (MCP stdio transport)
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    );
+  } catch (err) {
+    if (isKeychainItemNotFound(err)) return null;
+    const message = err instanceof Error ? err.message : String(err);
+    throw new KeychainReadError(
+      `Keychain item exists but could not be read (locked, access denied, or corrupt): ${message}`,
+    );
+  }
+  try {
+    return decodeKeychainBlob(output);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new KeychainReadError(
+      `Keychain item exists but could not be read (locked, access denied, or corrupt): ${message}`,
+    );
+  }
+}
+
+/** `security -i` reads each command through a 4096-byte buffer (measured: 4095-byte chunks). */
+const SECURITY_MAX_LINE = 4095;
+
+/**
+ * Replace the RAVEN credential blob in the login keychain. Uses `security -i`
+ * so the blob travels on stdin, never in the process argument list where any
+ * same-user process could momentarily see it. Throws on failure.
+ *
+ * `security -i` executes stdin in SECURITY_MAX_LINE-byte chunks: an oversized
+ * command line would have its first chunk run (replacing the item with a
+ * truncated, undecodable blob) before the tail fails. To avoid destroying
+ * stored credentials, the full line is measured and rejected before `security`
+ * is invoked at all.
+ */
+export function writeKeychainRecord(
+  record: Record<string, string>,
+  exec: KeychainExec = execFileSync as unknown as KeychainExec,
+): void {
+  const service = keychainService(); // throws before exec on an invalid service name
+  const blob = encodeKeychainBlob(record);
+  const line = `add-generic-password -U -s ${service} -a ${KEYCHAIN_ACCOUNT} -w ${blob}\n`;
+  const lineBytes = Buffer.byteLength(line, "utf-8");
+  if (lineBytes > SECURITY_MAX_LINE) {
+    throw new Error(
+      `Keychain record too large (${lineBytes} bytes; security -i accepts at most ${SECURITY_MAX_LINE} per command). Remove unused entries.`,
+    );
+  }
+  exec(SECURITY_BIN, ["-i"], {
+    encoding: "utf-8",
+    timeout: 10_000,
+    input: line,
+    stdio: ["pipe", "ignore", "ignore"],
+  });
+}
+
+/** Keys stored in the keychain blob are environment-variable names. */
+export const KEYCHAIN_KEY_PATTERN = /^[A-Z][A-Z0-9_]*$/;
+
+/**
+ * Set one key in the keychain blob, creating the item if needed. Other keys
+ * are preserved. Throws on an invalid key, an empty value, or a write failure.
+ * Not safe for concurrent writers (read-modify-write); only the interactive
+ * CLI writes, MCP servers never do.
+ */
+export function setKeychainEntry(
+  key: string,
+  value: string,
+  exec: KeychainExec = execFileSync as unknown as KeychainExec,
+): void {
+  if (!KEYCHAIN_KEY_PATTERN.test(key)) {
+    throw new Error(`Invalid keychain key "${key}": expected an UPPER_SNAKE_CASE name.`);
+  }
+  if (!value) {
+    throw new Error(`Refusing to store an empty value for ${key}.`);
+  }
+  const record = readKeychainRecord(exec) ?? {};
+  record[key] = value;
+  writeKeychainRecord(record, exec);
+}
+
+/**
+ * Remove one key from the keychain blob. Returns true when the key existed.
+ * Never creates the item; a missing item or key is not an error.
+ */
+export function deleteKeychainEntry(
+  key: string,
+  exec: KeychainExec = execFileSync as unknown as KeychainExec,
+): boolean {
+  const record = readKeychainRecord(exec);
+  if (!record || !(key in record)) return false;
+  delete record[key];
+  writeKeychainRecord(record, exec);
+  return true;
+}
+
+/**
+ * Read the RAVEN credential blob from the macOS login keychain and merge it
+ * into process.env. Values are only written when the key is NOT already
+ * set, preserving the explicit-env-var-wins contract. Silent no-op on any failure.
+ */
+export function loadKeychain(exec?: KeychainExec): void {
+  let record: Record<string, string> | null;
+  try {
+    record = readKeychainRecord(exec);
+  } catch {
+    // Locked keychain, access denied, `security` unavailable, or a corrupt
+    // blob — loadEnv() falls back to ~/.raven/.env, so stay silent here.
+    return;
+  }
+  if (!record) return;
+  for (const [key, val] of Object.entries(record)) {
+    if (KEYCHAIN_KEY_PATTERN.test(key) && !(key in process.env)) {
+      process.env[key] = val;
+    }
   }
 }
 
