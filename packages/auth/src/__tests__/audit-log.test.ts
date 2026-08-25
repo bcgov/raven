@@ -300,4 +300,16 @@ describe("AuditLog.verify", () => {
       ["s.2026-09.jsonl", true],
     ]);
   });
+
+  it("treats a null JSON line as a break", async () => {
+    const { file } = await threeRecords();
+    writeFileSync(file, readFileSync(file, "utf-8") + "null\n");
+    expect(verifyAuditFile(file)).toEqual({ file, records: 4, ok: false, firstBreak: 4 });
+  });
+
+  it("treats an array JSON line as a break", async () => {
+    const { file } = await threeRecords();
+    writeFileSync(file, readFileSync(file, "utf-8") + "[1,2]\n");
+    expect(verifyAuditFile(file)).toEqual({ file, records: 4, ok: false, firstBreak: 4 });
+  });
 });

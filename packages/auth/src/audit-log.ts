@@ -205,14 +205,18 @@ export function verifyAuditFile(file: string): AuditVerifyResult {
   const lines = readFileSync(file, "utf-8").split("\n").filter((l) => l.trim() !== "");
   let prevHash = GENESIS_HASH;
   for (let i = 0; i < lines.length; i++) {
-    let rec: Record<string, unknown>;
+    let rec: unknown;
     try {
-      rec = JSON.parse(lines[i]!) as Record<string, unknown>;
+      rec = JSON.parse(lines[i]!);
     } catch {
       return { file, records: lines.length, ok: false, firstBreak: i + 1 };
     }
-    const { hash, ...withoutHash } = rec;
-    if (rec["prevHash"] !== prevHash || hashRecord(prevHash, withoutHash) !== hash) {
+    if (typeof rec !== "object" || rec === null || Array.isArray(rec)) {
+      return { file, records: lines.length, ok: false, firstBreak: i + 1 };
+    }
+    const recObj = rec as Record<string, unknown>;
+    const { hash, ...withoutHash } = recObj;
+    if (recObj["prevHash"] !== prevHash || hashRecord(prevHash, withoutHash) !== hash) {
       return { file, records: lines.length, ok: false, firstBreak: i + 1 };
     }
     prevHash = hash as string;
