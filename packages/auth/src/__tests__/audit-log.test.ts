@@ -357,3 +357,17 @@ describe("AuditLog.tail", () => {
     expect(out).toEqual({ records: [], chainOk: true, breaks: [] });
   });
 });
+
+describe("AuditLog concurrency", () => {
+  it("two instances appending concurrently produce one valid chain", async () => {
+    const dir = tmpDir();
+    const a = new AuditLog<{ who: string; n: number }>({ stream: "s", dir, clock: AUG });
+    const b = new AuditLog<{ who: string; n: number }>({ stream: "s", dir, clock: AUG });
+    await Promise.all([
+      ...Array.from({ length: 25 }, (_, n) => a.append({ who: "a", n })),
+      ...Array.from({ length: 25 }, (_, n) => b.append({ who: "b", n })),
+    ]);
+    const [result] = await a.verify();
+    expect(result).toMatchObject({ records: 50, ok: true });
+  });
+});
