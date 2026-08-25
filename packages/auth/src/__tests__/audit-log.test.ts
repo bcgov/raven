@@ -313,3 +313,47 @@ describe("AuditLog.verify", () => {
     expect(verifyAuditFile(file)).toEqual({ file, records: 4, ok: false, firstBreak: 4 });
   });
 });
+
+describe("AuditLog.tail", () => {
+  it("returns newest first, honours limit, and reports chainOk", async () => {
+    const log = new AuditLog<{ n: number }>({ stream: "s", dir: tmpDir(), clock: AUG });
+    for (const n of [1, 2, 3, 4, 5]) await log.append({ n });
+    const out = await log.tail({ limit: 3 });
+    expect(out.records.map((r) => r.n)).toEqual([5, 4, 3]);
+    expect(out.chainOk).toBe(true);
+    expect(out.breaks).toEqual([]);
+  });
+
+  it("applies the filter before the limit", async () => {
+    const log = new AuditLog<{ n: number; tool: string }>({ stream: "s", dir: tmpDir(), clock: AUG });
+    for (const n of [1, 2, 3, 4]) await log.append({ n, tool: n % 2 ? "a" : "b" });
+    const out = await log.tail({ limit: 5, filter: (r) => r.tool === "a" });
+    expect(out.records.map((r) => r.n)).toEqual([3, 1]);
+  });
+
+  it("spans monthly files, newest month first", async () => {
+    const dir = tmpDir();
+    await new AuditLog<{ n: number }>({ stream: "s", dir, clock: AUG }).append({ n: 1 });
+    await new AuditLog<{ n: number }>({ stream: "s", dir, clock: SEP }).append({ n: 2 });
+    const out = await new AuditLog<{ n: number }>({ stream: "s", dir }).tail({ limit: 10 });
+    expect(out.records.map((r) => r.n)).toEqual([2, 1]);
+  });
+
+  it("flags a broken chain but still returns the readable records", async () => {
+    const log = new AuditLog<{ n: number }>({ stream: "s", dir: tmpDir(), clock: AUG });
+    for (const n of [1, 2, 3]) await log.append({ n });
+    const file = log.fileFor(AUG());
+    const lines = readFileSync(file, "utf-8").trim().split("\n");
+    lines[1] = lines[1].replace('"n":2', '"n":99');
+    writeFileSync(file, lines.join("\n") + "\n");
+    const out = await log.tail();
+    expect(out.chainOk).toBe(false);
+    expect(out.breaks).toEqual([{ file, line: 2 }]);
+    expect(out.records.map((r) => r.n)).toEqual([3, 99, 1]);
+  });
+
+  it("returns an empty result when nothing was logged", async () => {
+    const out = await new AuditLog({ stream: "s", dir: join(tmpDir(), "none") }).tail();
+    expect(out).toEqual({ records: [], chainOk: true, breaks: [] });
+  });
+});

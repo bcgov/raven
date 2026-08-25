@@ -200,6 +200,12 @@ export interface AuditVerifyResult {
   firstBreak?: number;
 }
 
+export interface AuditTailResult<T extends object> {
+  records: AuditRecord<T>[];
+  chainOk: boolean;
+  breaks: { file: string; line: number }[];
+}
+
 /** Recompute the chain of one file. Pure; safe to call on a live file. */
 export function verifyAuditFile(file: string): AuditVerifyResult {
   const lines = readFileSync(file, "utf-8").split("\n").filter((l) => l.trim() !== "");
@@ -285,5 +291,33 @@ export class AuditLog<T extends object = Record<string, unknown>> {
   async verify(file?: string): Promise<AuditVerifyResult[]> {
     const files = file ? [file] : listAuditFiles(this.dir, this.stream);
     return files.map(verifyAuditFile);
+  }
+
+  /** Most recent records, newest first. Reads newest monthly file backwards until `limit` is met. */
+  async tail(opts: { limit?: number; filter?: (r: AuditRecord<T>) => boolean } = {}): Promise<AuditTailResult<T>> {
+    const limit = Math.max(1, opts.limit ?? 20);
+    const filter = opts.filter ?? (() => true);
+    const files = listAuditFiles(this.dir, this.stream).reverse();
+    const records: AuditRecord<T>[] = [];
+    const breaks: { file: string; line: number }[] = [];
+    for (const file of files) {
+      const v = verifyAuditFile(file);
+      if (!v.ok && v.firstBreak !== undefined) breaks.push({ file, line: v.firstBreak });
+      const lines = readFileSync(file, "utf-8").split("\n").filter((l) => l.trim() !== "");
+      for (let i = lines.length - 1; i >= 0 && records.length < limit; i--) {
+        let rec: AuditRecord<T>;
+        try {
+          rec = JSON.parse(lines[i]!) as AuditRecord<T>;
+        } catch {
+          continue; // reported via breaks
+        }
+        if (typeof rec !== "object" || rec === null || Array.isArray(rec)) {
+          continue; // reported via breaks
+        }
+        if (filter(rec)) records.push(rec);
+      }
+      if (records.length >= limit) break;
+    }
+    return { records, chainOk: breaks.length === 0, breaks };
   }
 }
