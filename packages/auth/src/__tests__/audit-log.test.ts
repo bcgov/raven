@@ -1,5 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { createHash } from "node:crypto";
+import { fork } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   mkdtempSync,
   readFileSync,
@@ -9,10 +11,11 @@ import {
   chmodSync,
   existsSync,
   writeFileSync,
+  unlinkSync,
   utimesSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   GENESIS_HASH,
   canonicalJson,
@@ -114,6 +117,16 @@ function readLines(file: string): Record<string, unknown>[] {
   return readFileSync(file, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
 }
 
+describe("AuditLog constructor", () => {
+  it.each(["../x", "", "-a", "A", "a b"])("rejects an invalid stream name %j", (stream) => {
+    expect(() => new AuditLog({ stream, dir: tmpDir() })).toThrow();
+  });
+
+  it("accepts a valid stream name", () => {
+    expect(() => new AuditLog({ stream: "db-mcp", dir: tmpDir() })).not.toThrow();
+  });
+});
+
 describe("AuditLog.append", () => {
   it("writes one JSON line with ts, id, prevHash and hash", async () => {
     const dir = join(tmpDir(), "audit");
@@ -155,7 +168,7 @@ describe("AuditLog.append", () => {
     await new AuditLog({ stream: "s", dir, clock: AUG }).append({ n: 1 });
     const sep = await new AuditLog({ stream: "s", dir, clock: SEP }).append({ n: 2 });
     expect(sep.prevHash).toBe(GENESIS_HASH);
-    expect(listAuditFiles(dir, "s").map((f) => f.split("/").pop())).toEqual([
+    expect(listAuditFiles(dir, "s").map((f) => basename(f))).toEqual([
       "s.2026-08.jsonl",
       "s.2026-09.jsonl",
     ]);
@@ -169,7 +182,7 @@ describe("AuditLog.append", () => {
     expect(statSync(log.fileFor(AUG())).mode & 0o777).toBe(0o600);
   });
 
-  it.skipIf(process.platform === "win32")("rejects when the directory is not writable", async () => {
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("rejects when the directory is not writable", async () => {
     const dir = tmpDir();
     chmodSync(dir, 0o500);
     const log = new AuditLog({ stream: "s", dir: join(dir, "audit"), clock: AUG });
@@ -329,7 +342,7 @@ describe("AuditLog.verify", () => {
     await new AuditLog({ stream: "s", dir, clock: AUG }).append({ n: 1 });
     await new AuditLog({ stream: "s", dir, clock: SEP }).append({ n: 2 });
     const results = await new AuditLog({ stream: "s", dir }).verify();
-    expect(results.map((r) => [r.file.split("/").pop(), r.ok])).toEqual([
+    expect(results.map((r) => [basename(r.file), r.ok])).toEqual([
       ["s.2026-08.jsonl", true],
       ["s.2026-09.jsonl", true],
     ]);
@@ -393,7 +406,13 @@ describe("AuditLog.tail", () => {
 });
 
 describe("AuditLog concurrency", () => {
-  it("two instances appending concurrently produce one valid chain", async () => {
+  // `append` has no `await` before `withFileLock`, and its `fn` is
+  // synchronous, so under Node's single-threaded event loop the first
+  // `openSync(lock, "wx")` in a batch always wins — these 50 appends run
+  // strictly sequentially and never touch the EEXIST branch. That is a
+  // real, useful guarantee (two `AuditLog` instances in the same process
+  // never race), just not lock contention — hence the name.
+  it("sequential appends from two instances produce one valid chain", async () => {
     const dir = tmpDir();
     const a = new AuditLog<{ who: string; n: number }>({ stream: "s", dir, clock: AUG });
     const b = new AuditLog<{ who: string; n: number }>({ stream: "s", dir, clock: AUG });
@@ -403,5 +422,62 @@ describe("AuditLog concurrency", () => {
     ]);
     const [result] = await a.verify();
     expect(result).toMatchObject({ records: 50, ok: true });
+  });
+
+  it("waits for a foreign lock to be released rather than reclaiming it", async () => {
+    const dir = tmpDir();
+    const log = new AuditLog({ stream: "s", dir, clock: AUG });
+    const lockPath = log.fileFor(AUG()) + ".lock";
+    writeFileSync(lockPath, "foreign-token"); // fresh mtime — not stale, must be waited out
+    setTimeout(() => {
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        /* ignore */
+      }
+    }, 50);
+    const rec = await log.append({ n: 1 });
+    expect(rec.prevHash).toBe(GENESIS_HASH);
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
+  describe("across real processes", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    // Built by `npm run build` (tsc); CI always builds before testing
+    // (.github/workflows/ci.yml), so this only skips a local run of the
+    // focused test file without a prior build.
+    const distAuditLog = resolve(here, "../../dist/audit-log.js");
+    const workerPath = resolve(here, "helpers/audit-worker.mjs");
+
+    function runWorker(dir: string, who: string, n: number): Promise<void> {
+      return new Promise((res, reject) => {
+        const child = fork(workerPath, [dir, who, String(n)], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+        let stderr = "";
+        child.stderr?.on("data", (chunk) => {
+          stderr += chunk;
+        });
+        child.on("exit", (code) => {
+          if (code === 0) res();
+          else reject(new Error(`audit-worker ${who} exited ${code}: ${stderr}`));
+        });
+        child.on("error", reject);
+      });
+    }
+
+    it.skipIf(!existsSync(distAuditLog))(
+      "three concurrent processes appending produce one valid chain (run `npm run build` first if this is skipped)",
+      async () => {
+        const dir = tmpDir();
+        await Promise.all([
+          runWorker(dir, "a", 40),
+          runWorker(dir, "b", 40),
+          runWorker(dir, "c", 40),
+        ]);
+        const log = new AuditLog({ stream: "s", dir });
+        const [result] = await log.verify();
+        expect(result).toMatchObject({ records: 120, ok: true });
+      },
+      30_000
+    );
   });
 });
