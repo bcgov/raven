@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   chmodSync,
@@ -41,6 +42,17 @@ describe("canonicalJson", () => {
     // Buffer.toJSON() produces {type: "Buffer", data: [...]}, sorted keys give data, then type
     expect(result).toBe(
       '{"b":{"data":[104,105],"type":"Buffer"},"t":"2026-08-24T00:00:00.000Z"}'
+    );
+  });
+
+  it("canonicalises an own __proto__ key as data instead of reassigning the prototype", () => {
+    const out = canonicalJson(JSON.parse('{"__proto__":{"x":1},"a":1}'));
+    expect(out).toBe('{"__proto__":{"x":1},"a":1}');
+  });
+
+  it("throws for undefined", () => {
+    expect(() => canonicalJson(undefined)).toThrow(
+      "canonicalJson: cannot canonicalise undefined"
     );
   });
 });
@@ -207,6 +219,27 @@ describe("AuditLog.append", () => {
     expect(second.prevHash).toBe(first.hash);
   });
 
+  it("does not restart the chain when the tail window is entirely blank", async () => {
+    const dir = tmpDir();
+    const log = new AuditLog({ stream: "s", dir, clock: AUG });
+    const first = await log.append({ n: 1 });
+    const { appendFileSync } = await import("node:fs");
+    appendFileSync(log.fileFor(AUG()), "\n".repeat(70_000));
+    const second = await log.append({ n: 2 });
+    expect(second.prevHash).toBe(first.hash);
+  });
+
+  it("rejects a torn write and leaves the break visible to verify", async () => {
+    const dir = tmpDir();
+    const log = new AuditLog({ stream: "s", dir, clock: AUG });
+    await log.append({ n: 1 });
+    const { appendFileSync } = await import("node:fs");
+    const file = log.fileFor(AUG());
+    appendFileSync(file, '{"half":');
+    await expect(log.append({ n: 2 })).rejects.toThrow(/partial last line/);
+    expect(verifyAuditFile(file)).toMatchObject({ records: 2, ok: false, firstBreak: 2 });
+  });
+
   it("reclaims a lock older than 30s and leaves no lock file behind", async () => {
     const dir = tmpDir();
     const log = new AuditLog({ stream: "s", dir, clock: AUG });
@@ -217,6 +250,7 @@ describe("AuditLog.append", () => {
     const rec = await log.append({ n: 1 });
     expect(rec.prevHash).toBe(GENESIS_HASH);
     expect(existsSync(lockPath)).toBe(false);
+    expect(readdirSync(dir).some((f) => f.includes(".stale-"))).toBe(false);
   });
 });
 
