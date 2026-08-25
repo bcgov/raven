@@ -31,7 +31,7 @@ import {
   KEYCHAIN_ACCOUNT,
   KeychainReadError,
 } from "../packages/auth/dist/load-env.js";
-import { mask, seedDefaults } from "./setup-credentials-mac.lib.mjs";
+import { mask, seedDefaults, normalizeAnswer, validateRecord } from "./setup-credentials-mac.lib.mjs";
 
 /** Values from ~/.raven/.env, used as first-run defaults; {} when absent. */
 function readEnvFile() {
@@ -80,7 +80,7 @@ function createPrompter() {
             process.stdout.write("\n");
           }
           pending = null;
-          resolve(answer.trim());
+          resolve(normalizeAnswer(answer, { sensitive }));
         });
       });
     },
@@ -197,6 +197,18 @@ const SECTIONS = [
       ["JENKINS_PASSWORD", "Jenkins password (leave blank when using an API token)", true],
     ],
   },
+  {
+    header: "GitHub (leave blank to skip)",
+    note: "Required token scopes: security_events, issues, pull_requests, contents, metadata",
+    fields: [
+      ["GITHUB_TOKEN", "GitHub Personal Access Token (PAT)", true],
+      ["GITHUB_API_URL", "GitHub API URL (default: https://api.github.com)", false],
+      ["GITHUB_REPOSITORY_ALLOWLIST", "GitHub repository allow-list (e.g. bcgov/*)", false],
+      ["GITHUB_ENABLE_AUTOFIX", "Enable GitHub autofix tools? (true/false; default false)", false],
+      ["GITHUB_ENABLE_MERGE", "Enable GitHub PR merge tool? (true/false; default false)", false],
+      ["GITHUB_TIMEOUT_MS", "GitHub request timeout in ms (default 30000)", false],
+    ],
+  },
 ];
 
 const promptedKeys = SECTIONS.flatMap((s) => s.fields.map(([name]) => name));
@@ -219,6 +231,7 @@ for (const section of SECTIONS) {
   if (section.header) {
     console.log("");
     console.log(section.header);
+    if (section.note) console.log(section.note);
   }
   for (const [name, label, sensitive] of section.fields) {
     const hint = existing[name] ? " [keep existing]" : defaults[name] ? " [import from .env]" : "";
@@ -230,10 +243,11 @@ prompter.close();
 
 console.log("");
 
-if (!record.ATLASSIAN_BASE_URL || !record.ATLASSIAN_EMAIL || !record.ATLASSIAN_PASSWORD) {
-  console.error(
-    "Error: ATLASSIAN_BASE_URL, ATLASSIAN_EMAIL, and ATLASSIAN_PASSWORD are required."
-  );
+const validationErrors = validateRecord(record);
+if (validationErrors.length > 0) {
+  for (const message of validationErrors) {
+    console.error(`Error: ${message}`);
+  }
   process.exit(1);
 }
 

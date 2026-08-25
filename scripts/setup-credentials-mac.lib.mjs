@@ -21,3 +21,33 @@ export function seedDefaults(promptedKeys, envValues, keychainValues) {
   }
   return { ...defaults, ...keychainValues };
 }
+
+/**
+ * Normalize one prompt answer before it is stored. Sensitive answers
+ * (passwords, tokens) are kept verbatim — leading/trailing whitespace can be
+ * part of the real secret — except for a trailing "\r" that some terminals
+ * leave on the line; readline's `question` callback already strips the
+ * newline itself. Non-sensitive answers are trimmed as before.
+ */
+export function normalizeAnswer(answer, { sensitive = false } = {}) {
+  if (sensitive) {
+    return answer.endsWith("\r") ? answer.slice(0, -1) : answer;
+  }
+  return answer.trim();
+}
+
+/**
+ * Validation errors for the merged credential record, checked after every
+ * prompt has resolved so a value kept from the keychain (blank answer) is
+ * covered as well as one just typed. Returns an empty array when valid.
+ */
+export function validateRecord(record) {
+  const errors = [];
+  if (!record.ATLASSIAN_BASE_URL || !record.ATLASSIAN_EMAIL || !record.ATLASSIAN_PASSWORD) {
+    errors.push("ATLASSIAN_BASE_URL, ATLASSIAN_EMAIL, and ATLASSIAN_PASSWORD are required.");
+  }
+  if (record.GITHUB_TOKEN && !record.GITHUB_REPOSITORY_ALLOWLIST) {
+    errors.push("GITHUB_REPOSITORY_ALLOWLIST is required when configuring GITHUB_TOKEN.");
+  }
+  return errors;
+}
