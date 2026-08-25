@@ -192,6 +192,34 @@ function readLastHash(file: string): string | null {
   }
 }
 
+export interface AuditVerifyResult {
+  file: string;
+  records: number;
+  ok: boolean;
+  /** 1-based line number of the first record that fails the chain. */
+  firstBreak?: number;
+}
+
+/** Recompute the chain of one file. Pure; safe to call on a live file. */
+export function verifyAuditFile(file: string): AuditVerifyResult {
+  const lines = readFileSync(file, "utf-8").split("\n").filter((l) => l.trim() !== "");
+  let prevHash = GENESIS_HASH;
+  for (let i = 0; i < lines.length; i++) {
+    let rec: Record<string, unknown>;
+    try {
+      rec = JSON.parse(lines[i]!) as Record<string, unknown>;
+    } catch {
+      return { file, records: lines.length, ok: false, firstBreak: i + 1 };
+    }
+    const { hash, ...withoutHash } = rec;
+    if (rec["prevHash"] !== prevHash || hashRecord(prevHash, withoutHash) !== hash) {
+      return { file, records: lines.length, ok: false, firstBreak: i + 1 };
+    }
+    prevHash = hash as string;
+  }
+  return { file, records: lines.length, ok: true };
+}
+
 export class AuditLog<T extends object = Record<string, unknown>> {
   readonly dir: string;
   readonly stream: string;
@@ -247,5 +275,11 @@ export class AuditLog<T extends object = Record<string, unknown>> {
       }
       return full;
     });
+  }
+
+  /** Verify one file, or every file of this stream (ascending by month). */
+  async verify(file?: string): Promise<AuditVerifyResult[]> {
+    const files = file ? [file] : listAuditFiles(this.dir, this.stream);
+    return files.map(verifyAuditFile);
   }
 }

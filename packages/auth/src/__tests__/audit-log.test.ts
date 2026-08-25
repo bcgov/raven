@@ -20,6 +20,7 @@ import {
   AuditLog,
   listAuditFiles,
   releaseLock,
+  verifyAuditFile,
 } from "../audit-log.js";
 
 describe("canonicalJson", () => {
@@ -232,5 +233,71 @@ describe("releaseLock", () => {
     writeFileSync(lock, "foreign-token");
     releaseLock(lock, "my-token");
     expect(existsSync(lock)).toBe(true);
+  });
+});
+
+describe("AuditLog.verify", () => {
+  async function threeRecords() {
+    const dir = tmpDir();
+    const log = new AuditLog({ stream: "s", dir, clock: AUG });
+    for (const n of [1, 2, 3]) await log.append({ n });
+    return { dir, log, file: log.fileFor(AUG()) };
+  }
+
+  it("reports ok for an untouched file", async () => {
+    const { log } = await threeRecords();
+    expect(await log.verify()).toEqual([{ file: log.fileFor(AUG()), records: 3, ok: true }]);
+  });
+
+  it("detects an edited line (1-based)", async () => {
+    const { file } = await threeRecords();
+    const lines = readFileSync(file, "utf-8").trim().split("\n");
+    lines[1] = lines[1].replace('"n":2', '"n":99');
+    writeFileSync(file, lines.join("\n") + "\n");
+    expect(verifyAuditFile(file)).toEqual({ file, records: 3, ok: false, firstBreak: 2 });
+  });
+
+  it("detects a deleted line", async () => {
+    const { file } = await threeRecords();
+    const lines = readFileSync(file, "utf-8").trim().split("\n");
+    lines.splice(1, 1);
+    writeFileSync(file, lines.join("\n") + "\n");
+    expect(verifyAuditFile(file).firstBreak).toBe(2);
+  });
+
+  it("detects reordered lines", async () => {
+    const { file } = await threeRecords();
+    const lines = readFileSync(file, "utf-8").trim().split("\n");
+    [lines[1], lines[2]] = [lines[2], lines[1]];
+    writeFileSync(file, lines.join("\n") + "\n");
+    expect(verifyAuditFile(file).firstBreak).toBe(2);
+  });
+
+  it("detects a forged first record", async () => {
+    const { file } = await threeRecords();
+    const lines = readFileSync(file, "utf-8").trim().split("\n");
+    const first = JSON.parse(lines[0]);
+    first.prevHash = "1".repeat(64);
+    first.hash = hashRecord(first.prevHash, { ...first, hash: undefined });
+    lines[0] = JSON.stringify(first);
+    writeFileSync(file, lines.join("\n") + "\n");
+    expect(verifyAuditFile(file).firstBreak).toBe(1);
+  });
+
+  it("treats an unparsable line as a break", async () => {
+    const { file } = await threeRecords();
+    writeFileSync(file, readFileSync(file, "utf-8") + "{oops\n");
+    expect(verifyAuditFile(file)).toEqual({ file, records: 4, ok: false, firstBreak: 4 });
+  });
+
+  it("verifies every monthly file when no file is given", async () => {
+    const dir = tmpDir();
+    await new AuditLog({ stream: "s", dir, clock: AUG }).append({ n: 1 });
+    await new AuditLog({ stream: "s", dir, clock: SEP }).append({ n: 2 });
+    const results = await new AuditLog({ stream: "s", dir }).verify();
+    expect(results.map((r) => [r.file.split("/").pop(), r.ok])).toEqual([
+      ["s.2026-08.jsonl", true],
+      ["s.2026-09.jsonl", true],
+    ]);
   });
 });
