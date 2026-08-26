@@ -97,7 +97,7 @@ export async function createAuthenticatedFetch(
   // Wrap the global fetch with rate limiting. Session-management retries
   // (re-fetch on session expiry) sit OUTSIDE this so the limiter sees
   // exactly one outbound request per Atlassian round-trip.
-  const limitedFetch = wrapFetchWithLimits(fetch, atlassianLimiterOpts());
+  const limitedFetch = wrapFetchWithLimits(globalThis.fetch, atlassianLimiterOpts());
 
   const authenticatedFetch: AuthenticatedFetch = async (
     url: string,

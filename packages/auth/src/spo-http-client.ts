@@ -42,7 +42,7 @@ export async function createSpoFetch(
 
   // Session-expiry retries sit OUTSIDE the limiter so it sees exactly one
   // outbound request per SharePoint round-trip.
-  const limitedFetch = wrapFetchWithLimits(fetch, spoLimiterOpts());
+  const limitedFetch = wrapFetchWithLimits(globalThis.fetch, spoLimiterOpts());
 
   const buildHeaders = (init: RequestInit | undefined, cookies: { fedAuth: string; rtFa: string }): Headers => {
     const headers = new Headers(init?.headers);
