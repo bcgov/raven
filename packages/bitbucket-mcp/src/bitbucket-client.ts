@@ -382,6 +382,109 @@ export class BitbucketClient {
     return `${this.baseUrl}/scm/${projectKey.toLowerCase()}/${repoSlug}.git`;
   }
 
+  /** Base URL this client talks to (scheme + host + context path). */
+  getBaseUrl(): string {
+    return this.baseUrl;
+  }
+
+  /**
+   * Create a repository in a project. Bitbucket derives the slug from the
+   * name; the response carries it.
+   */
+  async createRepo(
+    projectKey: string,
+    name: string,
+    opts?: { description?: string; forkable?: boolean }
+  ): Promise<BitbucketRepo> {
+    const body: Record<string, unknown> = {
+      name,
+      scmId: "git",
+      forkable: opts?.forkable ?? true,
+    };
+    if (opts?.description !== undefined) body["description"] = opts.description;
+    const resp = await this.fetch(
+      this.apiUrl(`/projects/${encodeURIComponent(projectKey)}/repos`),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    );
+    if (!resp.ok) {
+      throw new Error(
+        `Failed to create repository "${name}" in ${projectKey} (${resp.status}): ${await resp.text()}`
+      );
+    }
+    return (await resp.json()) as BitbucketRepo;
+  }
+
+  /**
+   * What `filePath` is at `at` (branch/tag/commit): "FILE", "DIRECTORY", or
+   * null when it does not exist there. Uses browse?type=true, which returns
+   * only the type — no content download.
+   */
+  async fileType(
+    projectKey: string,
+    repoSlug: string,
+    filePath: string,
+    at?: string
+  ): Promise<"FILE" | "DIRECTORY" | null> {
+    const params = new URLSearchParams({ type: "true" });
+    if (at) params.set("at", at);
+    const encodedPath = filePath.split("/").map(encodeURIComponent).join("/");
+    const resp = await this.fetch(
+      this.apiUrl(
+        `/projects/${encodeURIComponent(projectKey)}/repos/${encodeURIComponent(repoSlug)}/browse/${encodedPath}?${params}`
+      )
+    );
+    if (resp.status === 404) return null;
+    if (!resp.ok) {
+      throw new Error(
+        `Failed to check ${filePath} (${resp.status}): ${await resp.text()}`
+      );
+    }
+    const data = (await resp.json()) as { type?: string };
+    return data.type === "DIRECTORY" ? "DIRECTORY" : "FILE";
+  }
+
+  /**
+   * Create or update ONE text file with one commit (Bitbucket's file-edit
+   * endpoint). `sourceCommitId` is the commit the caller last saw the file
+   * at and is REQUIRED by the server when the file already exists on the
+   * branch — the file-level optimistic lock. Omit it only when creating a
+   * new file.
+   */
+  async commitFile(
+    projectKey: string,
+    repoSlug: string,
+    filePath: string,
+    opts: {
+      branch: string;
+      content: string;
+      message: string;
+      sourceCommitId?: string;
+    }
+  ): Promise<BitbucketCommit> {
+    const form = new FormData();
+    form.set("branch", opts.branch);
+    form.set("content", opts.content);
+    form.set("message", opts.message);
+    if (opts.sourceCommitId) form.set("sourceCommitId", opts.sourceCommitId);
+    const encodedPath = filePath.split("/").map(encodeURIComponent).join("/");
+    const resp = await this.fetch(
+      this.apiUrl(
+        `/projects/${encodeURIComponent(projectKey)}/repos/${encodeURIComponent(repoSlug)}/browse/${encodedPath}`
+      ),
+      { method: "PUT", body: form }
+    );
+    if (!resp.ok) {
+      throw new Error(
+        `Failed to commit ${filePath} on ${opts.branch} (${resp.status}): ${await resp.text()}`
+      );
+    }
+    return (await resp.json()) as BitbucketCommit;
+  }
+
   // ---------------------------------------------------------------------------
   // Pull request review operations
   // ---------------------------------------------------------------------------

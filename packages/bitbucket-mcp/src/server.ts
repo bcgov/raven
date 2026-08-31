@@ -14,6 +14,7 @@ import {
   CodeSearchNotAvailableError,
 } from "./bitbucket-client.js";
 import { sliceFileContent } from "./file-slice.js";
+import { pushRepo } from "./git-push.js";
 
 /** Schema ceiling for read_file maxChars — also gates the truncation hint. */
 const READ_FILE_MAX_CHARS = 200_000;
@@ -33,7 +34,7 @@ export function createBitbucketServer(): McpServer {
       version: "0.1.0",
     },
     {
-      instructions: `You have access to tools for browsing Bitbucket repositories, reading files, viewing/reviewing pull requests, exploring commit history, blaming files, listing tags, and reading CI build status. Read tools (list_repos, browse_files, list_all_files, read_file, list_branches, list_pull_requests, read_pull_request, clone_repo, search_code, get_pr_diff, list_pr_comments, list_pr_commits, list_commits, get_commit, blame_file, list_tags, get_tag, get_build_status) let you browse and review. Write tools (create_branch, create_pull_request, add_pr_comment, review_pr, merge_pr, decline_pr, create_tag) let you act on the repo. IMPORTANT: You MUST use the write tools when the user asks you to perform these actions. Never refuse by claiming these tools are read-only — they are not. However, always confirm with the user before calling write tools, since these actions modify live Bitbucket content. merge_pr, decline_pr, and create_tag are especially visible/destructive — never invoke without explicit user confirmation. Keep API calls to a minimum: call list_branches first to find the newest release or feature branch, then browse or read files on that branch, then summarize for the user. After that flow, STOP calling tools. Never call the same tool twice with the same arguments.
+      instructions: `You have access to tools for browsing Bitbucket repositories, reading files, viewing/reviewing pull requests, exploring commit history, blaming files, listing tags, and reading CI build status. Read tools (list_repos, browse_files, list_all_files, read_file, list_branches, list_pull_requests, read_pull_request, clone_repo, search_code, get_pr_diff, list_pr_comments, list_pr_commits, list_commits, get_commit, blame_file, list_tags, get_tag, get_build_status) let you browse and review. Write tools (create_branch, create_pull_request, add_pr_comment, review_pr, merge_pr, decline_pr, create_tag, create_repo, commit_file, push_repo) let you act on the repo. IMPORTANT: You MUST use the write tools when the user asks you to perform these actions. Never refuse by claiming these tools are read-only — they are not. However, always confirm with the user before calling write tools, since these actions modify live Bitbucket content. merge_pr, decline_pr, create_tag, create_repo, commit_file, and push_repo are especially visible/destructive — never invoke without explicit user confirmation. push_repo pushes an existing local branch with git; commit_file commits one text file server-side without a clone; neither can force-push. Keep API calls to a minimum: call list_branches first to find the newest release or feature branch, then browse or read files on that branch, then summarize for the user. After that flow, STOP calling tools. Never call the same tool twice with the same arguments.
 
 IMPORTANT — Bitbucket project keys often differ from Jira project keys. If a project key returns a 404 "does not exist" error, try common variations before giving up:
 - The Jira key itself (e.g., "RRS")
@@ -48,6 +49,23 @@ If you encounter authentication errors (401 Unauthorized or "No valid SMSESSION 
   let client: BitbucketClient | null = null;
   let sessionManager: SessionManager | null = null;
   let usingBasicAuth = false;
+
+  /**
+   * Auth header for background git operations (clone/push), matching the
+   * active auth method. Callers must hand it to git via GIT_CONFIG_*
+   * environment variables, never argv, so credentials stay out of the
+   * process list. Call only after getClient() has resolved the auth mode.
+   */
+  async function buildGitAuthHeader(): Promise<string> {
+    if (usingBasicAuth) {
+      const email = process.env["ATLASSIAN_EMAIL"]!;
+      const password = process.env["ATLASSIAN_PASSWORD"]!;
+      return `Authorization: Basic ${btoa(`${email}:${password}`)}`;
+    }
+    const sm = await getSessionManager();
+    const cookie = await sm.getSession();
+    return `Cookie: SMSESSION=${cookie}`;
+  }
 
   async function getClient(): Promise<BitbucketClient> {
     if (!client) {
@@ -596,32 +614,26 @@ IMPORTANT: Bitbucket project keys often differ from Jira keys. If a key returns 
         }
 
         const cloneUrl = bb.getCloneUrl(projectKey, repoSlug);
+        const authHeader = await buildGitAuthHeader();
 
-        // Build auth header for git clone based on active auth method
-        let authHeader: string;
-        if (usingBasicAuth) {
-          const email = process.env["ATLASSIAN_EMAIL"]!;
-          const password = process.env["ATLASSIAN_PASSWORD"]!;
-          const credentials = btoa(`${email}:${password}`);
-          authHeader = `Authorization: Basic ${credentials}`;
-        } else {
-          const sm = await getSessionManager();
-          const cookie = await sm.getSession();
-          authHeader = `Cookie: SMSESSION=${cookie}`;
-        }
-
-        const args = [
-          "clone",
-          "-c",
-          `http.extraHeader=${authHeader}`,
-        ];
+        const args = ["clone"];
         if (shallow) args.push("--depth=1");
         args.push(cloneUrl, dest);
 
+        // The auth header travels via GIT_CONFIG_* environment variables,
+        // not argv — a `-c http.extraHeader=...` argument would expose the
+        // credentials in the process list for the whole clone.
         execFileSync("git", args, {
           encoding: "utf-8",
           timeout: 300_000, // 5 minutes
           stdio: ["ignore", "pipe", "pipe"],
+          env: {
+            ...process.env,
+            GIT_TERMINAL_PROMPT: "0",
+            GIT_CONFIG_COUNT: "1",
+            GIT_CONFIG_KEY_0: "http.extraHeader",
+            GIT_CONFIG_VALUE_0: authHeader,
+          },
         });
 
         return {
@@ -1203,6 +1215,138 @@ IMPORTANT: Always include the file path and repository when referencing results 
               text: `Error creating branch: ${safeErr(err)}`,
             },
           ],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "create_repo",
+    "Create a new repository in a Bitbucket project. Bitbucket derives the repo slug from the name. The new repository is empty.",
+    {
+      projectKey: z.string().describe("Bitbucket project key to create the repository in"),
+      name: z.string().describe("Repository name (the slug is derived from it)"),
+      description: z.string().optional().describe("Repository description"),
+      forkable: z.boolean().default(true).describe("Allow forks (default true)"),
+    },
+    { readOnlyHint: false },
+    async ({ projectKey, name, description, forkable }) => {
+      try {
+        const bb = await getClient();
+        const repo = await bb.createRepo(projectKey, name, { description, forkable });
+        const clone =
+          repo.links.clone?.find((l) => l.name === "http")?.href ??
+          bb.getCloneUrl(projectKey, repo.slug);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Repository created.\n\n**Slug:** ${repo.slug}\n**Project:** ${projectKey}\n**Clone URL:** ${clone}\n\nThe repository is empty — push an existing local branch with push_repo, or add a first file with commit_file.`,
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Error creating repository: ${safeErr(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "commit_file",
+    "Create or update ONE text file with a single commit, server-side (no local clone). When the file already exists on the branch, its tip commit is looked up and used as the optimistic lock, so a concurrent edit fails instead of being clobbered.",
+    {
+      projectKey: z.string().describe("Bitbucket project key"),
+      repoSlug: z.string().describe("Repository slug"),
+      filePath: z.string().describe("Path of the file in the repository"),
+      branch: z.string().describe("Branch to commit to"),
+      content: z.string().describe("Full new file content (text only)"),
+      message: z.string().describe("Commit message"),
+      sourceCommitId: z
+        .string()
+        .optional()
+        .describe("Commit the file was last read at; overrides the automatic tip lookup"),
+    },
+    { readOnlyHint: false },
+    async ({ projectKey, repoSlug, filePath, branch, content, message, sourceCommitId }) => {
+      try {
+        const bb = await getClient();
+        let source = sourceCommitId;
+        if (!source) {
+          const type = await bb.fileType(projectKey, repoSlug, filePath, `refs/heads/${branch}`);
+          if (type === "DIRECTORY") {
+            return {
+              content: [
+                { type: "text", text: `${filePath} is a directory on ${branch}; commit_file writes a single file.` },
+              ],
+              isError: true,
+            };
+          }
+          if (type === "FILE") {
+            const commits = await bb.listCommits(projectKey, repoSlug, {
+              path: filePath,
+              until: `refs/heads/${branch}`,
+              limit: 1,
+            });
+            source = commits.values[0]?.id;
+          }
+        }
+        const commit = await bb.commitFile(projectKey, repoSlug, filePath, {
+          branch,
+          content,
+          message,
+          ...(source ? { sourceCommitId: source } : {}),
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Committed ${filePath} to ${branch}.\n\n**Commit:** ${commit.displayId}\n**Message:** ${commit.message}`,
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Error committing file: ${safeErr(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "push_repo",
+    "Push one local branch to the configured Bitbucket host using git in the background. Never force-pushes. Refuses remotes on any other host, because the push injects the active Bitbucket credentials.",
+    {
+      dir: z.string().describe("Absolute path to the local repository root"),
+      branch: z
+        .string()
+        .optional()
+        .describe("Branch to push (default: the currently checked-out branch)"),
+      remote: z.string().default("origin").describe("Remote name (default origin)"),
+    },
+    { readOnlyHint: false },
+    async ({ dir, branch, remote }) => {
+      try {
+        const bb = await getClient();
+        const expectedHost = new URL(bb.getBaseUrl()).host;
+        const authHeader = await buildGitAuthHeader();
+        const result = pushRepo({ dir, branch, remote, expectedHost, authHeader });
+        const summary = result.output.trim();
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Pushed ${result.branch} to ${result.remoteUrl}${result.setUpstream ? " (upstream set)" : ""}.${summary ? `\n\n${summary}` : ""}`,
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Error pushing: ${safeErr(err)}` }],
           isError: true,
         };
       }
