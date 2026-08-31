@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { mkdtempSync, realpathSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pushRepo, type GitExec } from "../git-push.js";
+import { defaultGitExec, pushRepo, type GitExec } from "../git-push.js";
 
 const HOST = "bwa.example.gov.bc.ca";
 const AUTH = "Authorization: Basic Zm9vOmJhcg==";
@@ -234,6 +234,31 @@ describe("pushRepo", () => {
     };
     expect(() => pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec })).toThrow(
       /pre-receive hook declined/
+    );
+  });
+});
+
+describe("defaultGitExec (real git)", () => {
+  const opts = { cwd: repoDir(), timeoutMs: 30_000 };
+
+  it("returns stdout for plumbing commands", () => {
+    expect(defaultGitExec(["--version"], opts)).toContain("git version");
+  });
+
+  it("captures stderr on success — the stream git push reports on", () => {
+    // `git checkout -b` announces the switch on stderr with exit 0, the
+    // same shape as a push summary; execFileSync would return "" here.
+    const dir = repoDir();
+    defaultGitExec(["init", "-q"], { cwd: dir, timeoutMs: 30_000 });
+    const out = defaultGitExec(["checkout", "-b", "feature/x"], { cwd: dir, timeoutMs: 30_000 });
+    expect(out).toContain("feature/x");
+  });
+
+  it("throws with git's stderr on a non-zero exit", () => {
+    const dir = repoDir();
+    defaultGitExec(["init", "-q"], { cwd: dir, timeoutMs: 30_000 });
+    expect(() => defaultGitExec(["rev-parse", "--verify", "does-not-exist"], { cwd: dir, timeoutMs: 30_000 })).toThrow(
+      /exited with 128/
     );
   });
 });

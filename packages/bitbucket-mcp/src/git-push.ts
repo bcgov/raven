@@ -1,10 +1,12 @@
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
 /**
- * Injectable git runner for tests. Throws on a non-zero exit; the thrown
- * error's message should carry git's stderr. `env` entries are ADDED to the
+ * Injectable git runner for tests. Returns the command's stdout followed by
+ * its stderr — `git push` reports its summary on stderr while the plumbing
+ * commands answer on stdout, and callers get both. Throws on a non-zero
+ * exit with git's stderr in the message. `env` entries are ADDED to the
  * process environment for that invocation only.
  */
 export type GitExec = (
@@ -18,14 +20,30 @@ const PUSH_TIMEOUT_MS = 300_000; // 5 minutes, same ceiling as clone_repo
 const BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 const REMOTE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
-const defaultExec: GitExec = (args, opts) =>
-  execFileSync("git", args, {
+/**
+ * Real git runner. spawnSync rather than execFileSync: execFileSync returns
+ * only stdout, and `git push` writes its status summary to stderr, so the
+ * push result would always look empty.
+ *
+ * @internal — exported for tests only.
+ */
+export const defaultGitExec: GitExec = (args, opts) => {
+  const result = spawnSync("git", args, {
     cwd: opts.cwd,
     encoding: "utf-8",
     timeout: opts.timeoutMs,
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, ...opts.env },
   });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const detail = (result.stderr || result.stdout || "").trim();
+    throw new Error(
+      `git ${args[0]} exited with ${result.status ?? `signal ${result.signal}`}${detail ? `: ${detail}` : ""}`
+    );
+  }
+  return (result.stdout ?? "") + (result.stderr ?? "");
+};
 
 export interface PushRepoOptions {
   /** Absolute path to the local repository's top-level directory. */
@@ -74,7 +92,7 @@ export interface PushRepoResult {
  * command line, so they are not visible in the process list.
  */
 export function pushRepo(opts: PushRepoOptions): PushRepoResult {
-  const exec = opts.exec ?? defaultExec;
+  const exec = opts.exec ?? defaultGitExec;
   const run = (args: string[], env?: Record<string, string>): string =>
     exec(args, { cwd: opts.dir, env, timeoutMs: PUSH_TIMEOUT_MS });
 
