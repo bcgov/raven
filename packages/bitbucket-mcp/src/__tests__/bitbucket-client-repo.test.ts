@@ -99,6 +99,21 @@ describe("BitbucketClient.fileType", () => {
   });
 });
 
+describe("repository path validation", () => {
+  it("rejects dot and empty path segments before any request is sent", async () => {
+    const mockFetch = createMockFetch({ ok: true, status: 200, body: {} });
+    const client = new BitbucketClient(mockFetch as any, BASE);
+    for (const p of ["../secret.txt", "a/../../b", "a//b", "./a", "a/.", "/abs.txt"]) {
+      await expect(client.fileType("NRS", "repo", p)).rejects.toThrow(/path segment/);
+      await expect(
+        client.commitFile("NRS", "repo", p, { branch: "main", content: "x", message: "m" })
+      ).rejects.toThrow(/path segment/);
+      await expect(client.readFile("NRS", "repo", p)).rejects.toThrow(/path segment/);
+    }
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+});
+
 describe("BitbucketClient.commitFile", () => {
   const commit = {
     id: "a".repeat(40),

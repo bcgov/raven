@@ -29,6 +29,25 @@ const DEFAULT_BASE_URL =
     : "https://apps.example.gov.bc.ca/int/stash";
 
 /**
+ * Encode a repository-relative file path for a REST URL, one segment at a
+ * time. Rejects empty, ".", and ".." segments: encodeURIComponent leaves
+ * dots alone and fetch normalizes dot segments before sending, so a path
+ * like "a/../../PROJ/repos/other/browse/x" would otherwise address a
+ * DIFFERENT repository than the caller named.
+ */
+function encodeRepoPath(filePath: string): string {
+  const segments = filePath.split("/");
+  for (const s of segments) {
+    if (s === "" || s === "." || s === "..") {
+      throw new Error(
+        `Invalid path segment in "${filePath}": empty, "." and ".." segments are not allowed.`
+      );
+    }
+  }
+  return segments.map(encodeURIComponent).join("/");
+}
+
+/**
  * REST client for Bitbucket Data Center.
  * Uses /rest/api/1.0/ endpoints.
  */
@@ -77,9 +96,7 @@ export class BitbucketClient {
     const params = new URLSearchParams();
     if (at) params.set("at", at);
 
-    const encodedPath = path
-      ? `/${path.split("/").map(encodeURIComponent).join("/")}`
-      : "";
+    const encodedPath = path ? `/${encodeRepoPath(path)}` : "";
 
     const resp = await this.fetch(
       this.apiUrl(
@@ -146,10 +163,7 @@ export class BitbucketClient {
     const params = new URLSearchParams();
     if (at) params.set("at", at);
 
-    const encodedPath = filePath
-      .split("/")
-      .map(encodeURIComponent)
-      .join("/");
+    const encodedPath = encodeRepoPath(filePath);
 
     const resp = await this.fetch(
       this.apiUrl(
@@ -431,7 +445,7 @@ export class BitbucketClient {
   ): Promise<"FILE" | "DIRECTORY" | null> {
     const params = new URLSearchParams({ type: "true" });
     if (at) params.set("at", at);
-    const encodedPath = filePath.split("/").map(encodeURIComponent).join("/");
+    const encodedPath = encodeRepoPath(filePath);
     const resp = await this.fetch(
       this.apiUrl(
         `/projects/${encodeURIComponent(projectKey)}/repos/${encodeURIComponent(repoSlug)}/browse/${encodedPath}?${params}`
@@ -470,7 +484,7 @@ export class BitbucketClient {
     form.set("content", opts.content);
     form.set("message", opts.message);
     if (opts.sourceCommitId) form.set("sourceCommitId", opts.sourceCommitId);
-    const encodedPath = filePath.split("/").map(encodeURIComponent).join("/");
+    const encodedPath = encodeRepoPath(filePath);
     const resp = await this.fetch(
       this.apiUrl(
         `/projects/${encodeURIComponent(projectKey)}/repos/${encodeURIComponent(repoSlug)}/browse/${encodedPath}`
@@ -791,10 +805,7 @@ export class BitbucketClient {
     const blame: BitbucketBlameResponse["blame"] = [];
     let start = initialStart;
     let isLast = false;
-    const encodedPath = filePath
-      .split("/")
-      .map(encodeURIComponent)
-      .join("/");
+    const encodedPath = encodeRepoPath(filePath);
 
     // Track the last page's nextPageStart so callers can resume cleanly
     // when we cut off at maxLines rather than the natural EOF.

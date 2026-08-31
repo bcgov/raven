@@ -64,10 +64,14 @@ export interface PushRepoResult {
  * git worktree (not a subdirectory — pushing a parent repo by surprise is
  * an easy mistake); the branch and remote names must be plain (no leading
  * "-", no "+", no ":", so no force-push refspec can be smuggled in); the
- * remote's push URL must be HTTPS on `expectedHost`. The refspec is always
- * the explicit non-forcing `refs/heads/X:refs/heads/X` — there is no force
- * option at all. Credentials travel via GIT_CONFIG_* environment variables,
- * never on the command line, so they are not visible in the process list.
+ * remote must have exactly ONE push URL (git pushes to all of them, so a
+ * second URL would receive the code and credentials too), and it must be
+ * HTTPS on `expectedHost`. The refspec is always the explicit non-forcing
+ * `refs/heads/X:refs/heads/X` — there is no force option at all. The push
+ * runs --no-verify so the repository's local pre-push hook (arbitrary
+ * local code) never executes with the credential in its environment.
+ * Credentials travel via GIT_CONFIG_* environment variables, never on the
+ * command line, so they are not visible in the process list.
  */
 export function pushRepo(opts: PushRepoOptions): PushRepoResult {
   const exec = opts.exec ?? defaultExec;
@@ -104,7 +108,20 @@ export function pushRepo(opts: PushRepoOptions): PushRepoResult {
     throw new Error(`Refusing remote name "${remote}".`);
   }
 
-  const remoteUrl = run(["remote", "get-url", "--push", remote]).trim();
+  // `git push <remote>` sends to EVERY configured push URL, and the injected
+  // http.extraHeader applies to every HTTPS request of the invocation — a
+  // hidden second pushurl would receive both the code and the credentials.
+  // So: enumerate all push URLs, allow exactly one, validate it.
+  const pushUrls = run(["remote", "get-url", "--push", "--all", remote])
+    .split("\n")
+    .map((u) => u.trim())
+    .filter((u) => u !== "");
+  if (pushUrls.length !== 1) {
+    throw new Error(
+      `Remote "${remote}" has ${pushUrls.length} push URLs; refusing to push credentials to a multi-URL remote.`
+    );
+  }
+  const remoteUrl = pushUrls[0]!;
   let parsed: URL;
   try {
     parsed = new URL(remoteUrl);
@@ -126,7 +143,10 @@ export function pushRepo(opts: PushRepoOptions): PushRepoResult {
     setUpstream = true;
   }
 
-  const args = ["push"];
+  // --no-verify: the repository's local pre-push hook is arbitrary local
+  // code and would inherit the GIT_CONFIG_* environment carrying the
+  // credential header; this controlled push never runs it.
+  const args = ["push", "--no-verify"];
   if (setUpstream) args.push("--set-upstream");
   args.push(remote, `refs/heads/${branch}:refs/heads/${branch}`);
   const output = run(args, {

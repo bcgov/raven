@@ -15,6 +15,8 @@ function fakeGit(state: {
   toplevel: string;
   currentBranch?: string;
   remoteUrl?: string;
+  /** Additional configured push URLs beyond remoteUrl. */
+  extraPushUrls?: string[];
   hasUpstream?: boolean;
   pushOutput?: string;
 }) {
@@ -28,8 +30,10 @@ function fakeGit(state: {
       return state.currentBranch + "\n";
     }
     if (args[0] === "remote") {
-      if (!state.remoteUrl) throw new Error(`fatal: No such remote '${args[3]}'`);
-      return state.remoteUrl + "\n";
+      expect(args.slice(0, 3)).toEqual(["remote", "get-url", "--push"]);
+      expect(args).toContain("--all");
+      if (!state.remoteUrl) throw new Error(`fatal: No such remote '${args[4]}'`);
+      return [state.remoteUrl, ...(state.extraPushUrls ?? [])].join("\n") + "\n";
     }
     if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") {
       if (!state.hasUpstream) throw new Error("fatal: no upstream configured");
@@ -63,7 +67,26 @@ describe("pushRepo", () => {
       output: "Everything up-to-date",
     });
     const push = git.calls.at(-1)!;
-    expect(push.args).toEqual(["push", "origin", "refs/heads/feature/x:refs/heads/feature/x"]);
+    expect(push.args).toEqual([
+      "push",
+      "--no-verify",
+      "origin",
+      "refs/heads/feature/x:refs/heads/feature/x",
+    ]);
+  });
+
+  it("refuses a remote with more than one push URL and never runs push", () => {
+    const dir = repoDir();
+    const git = fakeGit({
+      toplevel: dir,
+      currentBranch: "main",
+      remoteUrl: `https://${HOST}/scm/nrs/repo.git`,
+      extraPushUrls: ["https://attacker.example.com/scm/x/mirror.git"],
+    });
+    expect(() => pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).toThrow(
+      /2 push URLs/
+    );
+    expect(git.calls.some((c) => c.args[0] === "push")).toBe(false);
   });
 
   it("passes credentials via GIT_CONFIG_* env, never argv", () => {
@@ -99,6 +122,7 @@ describe("pushRepo", () => {
     expect(result.setUpstream).toBe(true);
     expect(git.calls.at(-1)!.args).toEqual([
       "push",
+      "--no-verify",
       "--set-upstream",
       "origin",
       "refs/heads/new-branch:refs/heads/new-branch",
