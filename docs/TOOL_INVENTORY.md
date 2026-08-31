@@ -16,10 +16,10 @@
 | | Count |
 |---|---|
 | MCP servers | **17** |
-| Tools registered locally (in-process) | **230** |
-| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 230 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
-| **Tools advertised to the AI when everything is connected** | **~236** |
-| Mutating / write tools | **~79** (78 local + ~1 via Jarvis) |
+| Tools registered locally (in-process) | **233** |
+| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 233 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
+| **Tools advertised to the AI when everything is connected** | **~239** |
+| Mutating / write tools | **~82** (81 local + ~1 via Jarvis) |
 | Read-only tools | **~157** |
 | Non-server packages | `auth`, `pipeline`, `server-ui`, `raven-cli` |
 
@@ -31,7 +31,7 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 |--------|-----------------|-----:|------:|------:|
 | Jira | `jira` | 16 | 20 | 36 |
 | Confluence | `confluence` | 10 | 8 | 18 |
-| Bitbucket | `bitbucket` | 18 | 7 | 25 |
+| Bitbucket | `bitbucket` | 18 | 10 | 28 |
 | Assets (CMDB) | `assets` | 14 | 0 | 14 |
 | Overview | `overview` | 1 | 0 | 1 |
 | Health | `health` | 5 | 0 | 5 |
@@ -45,9 +45,9 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 | Artifactory | `artifactory` | 12 | 7 | 19 |
 | SharePoint | `sharepoint` | 9 | 0 | 9 |
 | GitHub | `github` | 19 | 15 | 34 |
-| **Subtotal (local)** | | **152** | **78** | **230** |
+| **Subtotal (local)** | | **152** | **81** | **233** |
 | Jarvis (remote proxy) | `jarvis` | ~5 | ~1 | ~6 |
-| **Advertised total** | | **~157** | **~79** | **~236** |
+| **Advertised total** | | **~157** | **~82** | **~239** |
 
 ## Servers and tools
 
@@ -61,9 +61,9 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 - **Read:** `search_confluence`, `read_pages`, `list_spaces`, `search_space`, `list_page_children`, `get_page_ancestors`, `list_attachments`, `get_labels`, `list_page_comments`, `search_cql`
 - **Write:** `create_page`, `update_page`, `upload_attachment`, `add_labels`, `remove_label`, `add_page_comment`, `delete_page`, `move_page`
 
-#### bitbucket-mcp — 25 tools (18 read / 7 write)
+#### bitbucket-mcp — 28 tools (18 read / 10 write)
 - **Read:** `list_repos`, `browse_files`, `read_file`, `list_all_files`, `list_branches`, `list_pull_requests`, `read_pull_request`, `clone_repo`, `search_code`, `get_pr_diff`, `list_pr_comments`, `list_pr_commits`, `list_commits`, `get_commit`, `blame_file`, `list_tags`, `get_tag`, `get_build_status`
-- **Write:** `create_pull_request`, `add_pr_comment`, `review_pr`, `merge_pr`, `decline_pr`, `create_branch`, `create_tag`
+- **Write:** `create_pull_request`, `add_pr_comment`, `review_pr`, `merge_pr`, `decline_pr`, `create_branch`, `create_repo`, `commit_file`, `push_repo`, `create_tag`
 
 #### assets-mcp — 14 tools (read-only)
 `search_assets`, `get_application`, `list_app_environments`, `get_app_people`, `get_app_technologies`, `find_apps_by_technology`, `find_apps_by_person`, `find_apps_by_org`, `get_app_connected_tickets`, `get_object`, `get_object_attributes`, `get_object_history`, `list_schemas`, `list_object_types`

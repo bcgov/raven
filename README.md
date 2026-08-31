@@ -14,7 +14,7 @@ RAVEN gives your local LLM direct access to our Atlassian tools via [MCP (Model 
 |--------|-----------------|
 | **Jira** | Search by JQL; read/create/update/comment/transition issues (Epic Link aware); log time; manage watchers, versions, and the sprint lifecycle; link issues |
 | **Confluence** | Search (CQL + filtered); navigate the space tree; read/create/update/delete/move pages as Markdown; manage attachments, labels, and comments |
-| **Bitbucket** | Browse/search code; review PRs end-to-end (diff, comment, approve, merge, decline); commit history and blame; tags; CI build status; create branches and PRs |
+| **Bitbucket** | Browse/search code; review PRs end-to-end (diff, comment, approve, merge, decline); commit history and blame; tags; CI build status; create branches, repos, and PRs; commit single files server-side; push local branches (host-pinned, never forced) |
 | **SharePoint** | Search, browse, and read BC Gov SharePoint Online project documentation — sites, document libraries, files (Word/PDF/images), and site pages (read-only) |
 | **Azure DevOps** | Work items (WIQL), repos and branches, pull requests, and build pipelines on on-prem Azure DevOps Server |
 | **Assets (CMDB)** | Query the Jira Assets CMDB — apps, environments, tech stacks, people, org portfolios; object/schema introspection |
