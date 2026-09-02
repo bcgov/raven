@@ -32,6 +32,7 @@ describe("BitbucketClient.createRepo", () => {
 
     const result = await client.createRepo("NRS", "My New Repo", {
       description: "A test repo",
+      defaultBranch: "main",
     });
 
     expect(result).toEqual(repo);
@@ -44,7 +45,24 @@ describe("BitbucketClient.createRepo", () => {
       scmId: "git",
       forkable: true,
       description: "A test repo",
+      defaultBranch: "main",
     });
+  });
+
+  it("reads and sets the default branch through the default-branch endpoint", async () => {
+    const get = createMockFetch({ ok: true, status: 200, body: { id: "refs/heads/master", displayId: "master", type: "BRANCH" } });
+    expect(await new BitbucketClient(get as any, BASE).getDefaultBranch("NRS", "repo")).toBe("master");
+    expect(get.mock.calls[0][0]).toBe(`${BASE}/rest/api/1.0/projects/NRS/repos/repo/default-branch`);
+
+    const put = createMockFetch({ ok: true, status: 204 });
+    await new BitbucketClient(put as any, BASE).setDefaultBranch("NRS", "repo", "main");
+    const [url, opts] = put.mock.calls[0];
+    expect(url).toBe(`${BASE}/rest/api/1.0/projects/NRS/repos/repo/default-branch`);
+    expect(opts.method).toBe("PUT");
+    expect(JSON.parse(opts.body)).toEqual({ id: "refs/heads/main" });
+
+    const fail = createMockFetch({ ok: false, status: 403, text: "nope" });
+    await expect(new BitbucketClient(fail as any, BASE).setDefaultBranch("NRS", "repo", "main")).rejects.toThrow(/default branch to main \(403\)/);
   });
 
   it("omits description when not given and honours forkable false", async () => {

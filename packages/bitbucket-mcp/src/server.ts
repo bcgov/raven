@@ -1239,18 +1239,28 @@ IMPORTANT: Always include the file path and repository when referencing results 
 
   server.tool(
     "create_repo",
-    "Create a new repository in a Bitbucket project. Bitbucket derives the repo slug from the name. The new repository is empty.",
+    "Create a new repository in a Bitbucket project. Bitbucket derives the repo slug from the name. The new repository is empty; its default branch is set to defaultBranch (main unless given) so the first commit_file or push_repo on that branch becomes what clones check out.",
     {
       projectKey: z.string().describe("Bitbucket project key to create the repository in"),
       name: z.string().describe("Repository name (the slug is derived from it)"),
       description: z.string().optional().describe("Repository description"),
       forkable: z.boolean().default(true).describe("Allow forks (default true)"),
+      defaultBranch: z
+        .string()
+        .default("main")
+        .describe("Branch HEAD points at; commit or push the first content to this branch (default main)"),
     },
     { readOnlyHint: false },
-    async ({ projectKey, name, description, forkable }) => {
+    async ({ projectKey, name, description, forkable, defaultBranch }) => {
       try {
         const bb = await getClient();
-        const repo = await bb.createRepo(projectKey, name, { description, forkable });
+        const repo = await bb.createRepo(projectKey, name, { description, forkable, defaultBranch });
+        // Bitbucket accepts defaultBranch at creation; verify, and set it
+        // explicitly if this instance ignored the field, so HEAD never
+        // dangles on the instance default once content lands elsewhere.
+        if ((await bb.getDefaultBranch(projectKey, repo.slug)) !== defaultBranch) {
+          await bb.setDefaultBranch(projectKey, repo.slug, defaultBranch);
+        }
         const clone =
           repo.links.clone?.find((l) => l.name === "http")?.href ??
           bb.getCloneUrl(projectKey, repo.slug);
@@ -1258,7 +1268,7 @@ IMPORTANT: Always include the file path and repository when referencing results 
           content: [
             {
               type: "text",
-              text: `Repository created.\n\n**Slug:** ${repo.slug}\n**Project:** ${projectKey}\n**Clone URL:** ${clone}\n\nThe repository is empty — push an existing local branch with push_repo, or add a first file with commit_file.`,
+              text: `Repository created.\n\n**Slug:** ${repo.slug}\n**Project:** ${projectKey}\n**Default branch:** ${defaultBranch}\n**Clone URL:** ${clone}\n\nThe repository is empty — add a first file with commit_file on ${defaultBranch}, or push an existing local branch named ${defaultBranch} with push_repo.`,
             },
           ],
         };

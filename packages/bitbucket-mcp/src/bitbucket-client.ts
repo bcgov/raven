@@ -427,12 +427,16 @@ export class BitbucketClient {
 
   /**
    * Create a repository in a project. Bitbucket derives the slug from the
-   * name; the response carries it.
+   * name; the response carries it. `defaultBranch` names the branch HEAD
+   * will point at: an empty repository otherwise inherits the instance
+   * default, and if the first commit lands on a differently named branch
+   * HEAD dangles, so clones check out nothing and the UI reports a missing
+   * default branch.
    */
   async createRepo(
     projectKey: string,
     name: string,
-    opts?: { description?: string; forkable?: boolean }
+    opts?: { description?: string; forkable?: boolean; defaultBranch?: string }
   ): Promise<BitbucketRepo> {
     const body: Record<string, unknown> = {
       name,
@@ -440,6 +444,7 @@ export class BitbucketClient {
       forkable: opts?.forkable ?? true,
     };
     if (opts?.description !== undefined) body["description"] = opts.description;
+    if (opts?.defaultBranch !== undefined) body["defaultBranch"] = opts.defaultBranch;
     const resp = await this.fetch(
       this.apiUrl(`/projects/${encodeURIComponent(projectKey)}/repos`),
       {
@@ -454,6 +459,38 @@ export class BitbucketClient {
       );
     }
     return (await resp.json()) as BitbucketRepo;
+  }
+
+  /** The repository's configured default branch (short name), whether or not it exists yet. */
+  async getDefaultBranch(projectKey: string, repoSlug: string): Promise<string | null> {
+    const resp = await this.fetch(
+      this.apiUrl(
+        `/projects/${encodeURIComponent(projectKey)}/repos/${encodeURIComponent(repoSlug)}/default-branch`
+      )
+    );
+    if (resp.status === 404) return null;
+    if (!resp.ok) {
+      throw new Error(`Failed to read default branch (${resp.status}): ${await resp.text()}`);
+    }
+    const data = (await resp.json()) as { displayId?: string; id?: string };
+    return data.displayId ?? data.id?.replace(/^refs\/heads\//, "") ?? null;
+  }
+
+  /** Point the repository's HEAD at `branch` (short name). Works on an empty repository. */
+  async setDefaultBranch(projectKey: string, repoSlug: string, branch: string): Promise<void> {
+    const resp = await this.fetch(
+      this.apiUrl(
+        `/projects/${encodeURIComponent(projectKey)}/repos/${encodeURIComponent(repoSlug)}/default-branch`
+      ),
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: `refs/heads/${branch}` }),
+      }
+    );
+    if (!resp.ok) {
+      throw new Error(`Failed to set default branch to ${branch} (${resp.status}): ${await resp.text()}`);
+    }
   }
 
   /**
