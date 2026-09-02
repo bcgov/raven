@@ -14,6 +14,7 @@ import {
 } from "./bitbucket-client.js";
 import { sliceFileContent } from "./file-slice.js";
 import { cloneRepo, pushRepo } from "./git-push.js";
+import { planCommitFile } from "./commit-file.js";
 
 /** Schema ceiling for read_file maxChars — also gates the truncation hint. */
 const READ_FILE_MAX_CHARS = 200_000;
@@ -1284,63 +1285,18 @@ IMPORTANT: Always include the file path and repository when referencing results 
     async ({ projectKey, repoSlug, filePath, branch, content, message, sourceCommitId }) => {
       try {
         const bb = await getClient();
-        if (!sourceCommitId) {
-          const type = await bb.fileType(projectKey, repoSlug, filePath, `refs/heads/${branch}`);
-          if (type === "DIRECTORY") {
-            return {
-              content: [
-                { type: "text", text: `${filePath} is a directory on ${branch}; commit_file writes a single file.` },
-              ],
-              isError: true,
-            };
-          }
-          if (type === "REF_MISSING") {
-            // The branch does not resolve. That is legitimate only for an
-            // empty repository (the bootstrap create_repo advertises). On a
-            // repository that already has branches it is a typo or a branch
-            // nobody created, and the file-edit endpoint must not be left to
-            // decide where the commit lands.
-            const branches = await bb.listBranches(projectKey, repoSlug, 1);
-            const example = branches.values[0]?.displayId;
-            if (example !== undefined) {
-              return {
-                content: [
-                  {
-                    type: "text",
-                    text: `Branch ${branch} does not exist in ${projectKey}/${repoSlug} (its branches include ${pi.scrubText(example)}). commit_file never creates branches; create it with create_branch first, or check the name.`,
-                  },
-                ],
-                isError: true,
-              };
-            }
-          }
-          if (type === "FILE") {
-            // Updating an existing file needs the revision the caller READ,
-            // not the tip looked up here: a tip lookup only guards the
-            // lookup-to-write window, and an edit that landed between the
-            // caller's read_file and now would be silently overwritten.
-            const commits = await bb.listCommits(projectKey, repoSlug, {
-              path: filePath,
-              until: `refs/heads/${branch}`,
-              limit: 1,
-            });
-            const tip = commits.values[0]?.id ?? "unknown";
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `${filePath} already exists on ${branch} (latest commit ${tip}). Pass sourceCommitId, the commit read_file reported for this file, so an edit made since that read is detected instead of overwritten. Passing ${tip} asserts that the current content is what you intend to replace.`,
-                },
-              ],
-              isError: true,
-            };
-          }
+        const plan = await planCommitFile(bb, { projectKey, repoSlug, filePath, branch, ...(sourceCommitId ? { sourceCommitId } : {}) });
+        if (!plan.ok) {
+          return {
+            content: [{ type: "text", text: pi.scrubText(plan.reason) }],
+            isError: true,
+          };
         }
         const commit = await bb.commitFile(projectKey, repoSlug, filePath, {
           branch,
           content,
           message,
-          ...(sourceCommitId ? { sourceCommitId } : {}),
+          ...(plan.sourceCommitId ? { sourceCommitId: plan.sourceCommitId } : {}),
         });
         return {
           content: [

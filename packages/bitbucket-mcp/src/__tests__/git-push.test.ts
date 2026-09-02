@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterAll, describe, it, expect, vi } from "vitest";
 import { existsSync, mkdtempSync, realpathSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -73,8 +73,15 @@ function fakeGit(state: {
   return { exec, calls };
 }
 
+const tempDirs: string[] = [];
+afterAll(() => {
+  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+});
+
 function repoDir(): string {
-  return realpathSync(mkdtempSync(join(tmpdir(), "raven-push-")));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "raven-push-")));
+  tempDirs.push(dir);
+  return dir;
 }
 
 describe("gitCredentialEnv", () => {
