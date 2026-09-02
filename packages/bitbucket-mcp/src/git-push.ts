@@ -82,19 +82,25 @@ function isForbiddenLocalKey(key: string, remote: string): boolean {
 
 /**
  * The COMPLETE environment for a git invocation that carries the Bitbucket
- * credential (push_repo, clone_repo), built from `base` (the process
- * environment by default). The header travels via GIT_CONFIG_* variables,
- * never argv, so it is not visible in the process list. The same variables
- * reset credential.helper and core.askpass and force http.sslVerify on,
- * and the DROPPED_ENV variables are removed: the injected header is the
- * only credential the invocation may use, so a 401 fails outright instead
- * of consulting — and exposing this environment to — a credential program
- * from any config scope or environment, and TLS is always verified. Git's
- * trace redaction is forced on so a debugging variable inherited from the
- * server cannot print the header.
+ * credential (push_repo, clone_repo) to `targetUrl`, built from `base`
+ * (the process environment by default). The header travels via
+ * GIT_CONFIG_* variables, never argv, so it is not visible in the process
+ * list. The same variables reset credential.helper and core.askpass, and
+ * the DROPPED_ENV variables are removed: the injected header is the only
+ * credential the invocation may use, so a 401 fails outright instead of
+ * consulting — and exposing this environment to — a credential program
+ * from any config scope or environment. TLS verification is forced on
+ * twice: the plain http.sslVerify, and http.<targetUrl>.sslVerify — git
+ * lets a URL-scoped key beat a plain one whatever the scope, so a
+ * `http.<host>.sslVerify=false` left in a global config (a TLS-inspecting
+ * proxy workaround, say) would otherwise win; the exact target URL is the
+ * most specific match possible, and command scope wins a tie. Git's trace
+ * redaction is forced on so a debugging variable inherited from the server
+ * cannot print the header.
  */
 export function gitCredentialEnv(
   authHeader: string,
+  targetUrl: string,
   base: NodeJS.ProcessEnv = process.env
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base };
@@ -103,7 +109,7 @@ export function gitCredentialEnv(
     ...env,
     GIT_TERMINAL_PROMPT: "0",
     GIT_TRACE_REDACT: "1",
-    GIT_CONFIG_COUNT: "4",
+    GIT_CONFIG_COUNT: "5",
     GIT_CONFIG_KEY_0: "http.extraHeader",
     GIT_CONFIG_VALUE_0: authHeader,
     GIT_CONFIG_KEY_1: "credential.helper",
@@ -112,6 +118,8 @@ export function gitCredentialEnv(
     GIT_CONFIG_VALUE_2: "",
     GIT_CONFIG_KEY_3: "http.sslVerify",
     GIT_CONFIG_VALUE_3: "true",
+    GIT_CONFIG_KEY_4: `http.${targetUrl}.sslVerify`,
+    GIT_CONFIG_VALUE_4: "true",
   };
 }
 
@@ -290,7 +298,8 @@ export function pushRepo(opts: PushRepoOptions): PushRepoResult {
       `Remote "${remote}" has ${pushUrls.length} push URLs; refusing to push credentials to a multi-URL remote.`
     );
   }
-  const parsed = pinnedHttpsUrl(pushUrls[0]!, opts.expectedHost, `Remote "${remote}"`);
+  const remoteUrl = pushUrls[0]!;
+  const parsed = pinnedHttpsUrl(remoteUrl, opts.expectedHost, `Remote "${remote}"`);
 
   // Repository-local config is arbitrary local state, exactly like the
   // hooks --no-verify skips. Refuse rather than override, so the user sees
@@ -318,7 +327,7 @@ export function pushRepo(opts: PushRepoOptions): PushRepoResult {
   const args = ["push", "--no-verify"];
   if (setUpstream) args.push("--set-upstream");
   args.push(remote, `refs/heads/${branch}:refs/heads/${branch}`);
-  const output = run(args, gitCredentialEnv(opts.authHeader));
+  const output = run(args, gitCredentialEnv(opts.authHeader, remoteUrl));
 
   return { branch, remote, remoteUrl: parsed.toString(), output, setUpstream };
 }
@@ -345,10 +354,12 @@ export interface CloneRepoOptions {
  * the credential would follow the rewrite. push_repo is protected by
  * re-reading the URL git will use; a clone has no remote to ask yet, so
  * this pre-checks the rules git will apply: it runs from a neutral
- * directory (no enclosing repository, hence no repository-local config —
- * the server's own cwd is not trusted) and refuses if any insteadOf prefix
- * in the remaining scopes matches the URL. The URL itself is pinned like a
- * push URL, and the clone runs with gitCredentialEnv. Returns git's output.
+ * directory — the temp directory, verified to be outside any repository,
+ * so no repository-local config applies (the server's own cwd is not
+ * trusted) — and refuses if any insteadOf prefix in the remaining scopes
+ * matches the URL, including the empty prefix, which git treats as
+ * matching every URL. The URL itself is pinned like a push URL, and the
+ * clone runs with gitCredentialEnv. Returns git's output.
  */
 export function cloneRepo(opts: CloneRepoOptions): string {
   const exec = opts.exec ?? defaultGitExec;
@@ -361,14 +372,26 @@ export function cloneRepo(opts: CloneRepoOptions): string {
   }
   pinnedHttpsUrl(opts.url, opts.expectedHost, "Clone URL");
 
+  let enclosing: string | null = null;
+  try {
+    enclosing = run(["rev-parse", "--show-toplevel"]).trim();
+  } catch {
+    // not inside a repository: the neutral directory is neutral
+  }
+  if (enclosing !== null) {
+    throw new Error(
+      `The temporary directory ${cwd} is inside the git repository ${enclosing}, whose local config would apply to the credentialed clone; point TMPDIR at a directory outside any repository.`
+    );
+  }
+
   const rewrites = parseScopedConfig(run(["config", "--list", "--show-scope"])).filter(
     (e) => e.key.toLowerCase().startsWith("url.") && e.key.toLowerCase().endsWith(".insteadof")
   );
   for (const rule of rewrites) {
-    if (rule.value !== "" && opts.url.startsWith(rule.value)) {
+    if (opts.url.startsWith(rule.value)) {
       const base = rule.key.slice("url.".length, -".insteadof".length);
       throw new Error(
-        `${rule.scope} git config rewrites ${rule.value} to ${base} (url.<base>.insteadOf); refusing to clone with credentials through a rewritten URL.`
+        `${rule.scope} git config rewrites ${rule.value === "" ? "every URL" : rule.value} to ${base} (url.<base>.insteadOf); refusing to clone with credentials through a rewritten URL.`
       );
     }
   }
@@ -376,5 +399,5 @@ export function cloneRepo(opts: CloneRepoOptions): string {
   const args = ["clone"];
   if (opts.shallow) args.push("--depth=1");
   args.push(opts.url, opts.dest);
-  return run(args, gitCredentialEnv(opts.authHeader));
+  return run(args, gitCredentialEnv(opts.authHeader, opts.url));
 }

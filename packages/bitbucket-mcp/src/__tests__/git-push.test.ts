@@ -29,12 +29,17 @@ function fakeGit(state: {
   hasUpstream?: boolean;
   pushOutput?: string;
   cloneOutput?: string;
+  /** Pretend the temp directory cloneRepo runs from sits inside a repository. */
+  cwdInsideRepo?: boolean;
 }) {
   const calls: { args: string[]; env?: NodeJS.ProcessEnv; cwd: string }[] = [];
   const exec: GitExec = (args, opts) => {
     calls.push({ args, env: opts.env, cwd: opts.cwd });
     const cmd = args.join(" ");
-    if (cmd === "rev-parse --show-toplevel") return state.toplevel + "\n";
+    if (cmd === "rev-parse --show-toplevel") {
+      if (opts.cwd === tmpdir() && !state.cwdInsideRepo) throw new Error("fatal: not a git repository");
+      return state.toplevel + "\n";
+    }
     if (cmd === "symbolic-ref --short HEAD") {
       if (!state.currentBranch) throw new Error("fatal: ref HEAD is not a symbolic ref");
       return state.currentBranch + "\n";
@@ -86,7 +91,7 @@ function repoDir(): string {
 
 describe("gitCredentialEnv", () => {
   it("injects the header and resets credential programs, TLS bypass and repo redirection", () => {
-    const env = gitCredentialEnv(AUTH, {
+    const env = gitCredentialEnv(AUTH, `https://${HOST}/scm/nrs/repo.git`, {
       PATH: "/bin",
       HTTPS_PROXY: "http://proxy.example:3128",
       GIT_ASKPASS: "/x",
@@ -101,7 +106,7 @@ describe("gitCredentialEnv", () => {
       HTTPS_PROXY: "http://proxy.example:3128", // the user's own proxy is kept
       GIT_TERMINAL_PROMPT: "0",
       GIT_TRACE_REDACT: "1",
-      GIT_CONFIG_COUNT: "4",
+      GIT_CONFIG_COUNT: "5",
       GIT_CONFIG_KEY_0: "http.extraHeader",
       GIT_CONFIG_VALUE_0: AUTH,
       GIT_CONFIG_KEY_1: "credential.helper",
@@ -110,6 +115,10 @@ describe("gitCredentialEnv", () => {
       GIT_CONFIG_VALUE_2: "",
       GIT_CONFIG_KEY_3: "http.sslVerify",
       GIT_CONFIG_VALUE_3: "true",
+      // A URL-scoped key beats a plain one in git, so a global
+      // http.<host>.sslVerify=false must be out-specified for the target.
+      GIT_CONFIG_KEY_4: `http.https://${HOST}/scm/nrs/repo.git.sslVerify`,
+      GIT_CONFIG_VALUE_4: "true",
     });
     for (const key of DROPPED) expect(env).not.toHaveProperty(key);
     expect(Object.values(env).join(" ")).not.toContain("/x");
@@ -167,7 +176,7 @@ describe("pushRepo", () => {
     pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
     const push = git.calls.at(-1)!;
     // clone_repo uses the same helper, so the two invocations cannot drift.
-    expect(push.env).toEqual(gitCredentialEnv(AUTH));
+    expect(push.env).toEqual(gitCredentialEnv(AUTH, `https://${HOST}/scm/nrs/repo.git`));
     expect(push.env?.["GIT_CONFIG_VALUE_0"]).toBe(AUTH);
     for (const call of git.calls) {
       expect(call.args.join(" ")).not.toContain("Basic");
@@ -387,12 +396,15 @@ describe("cloneRepo", () => {
     const git = fakeGit({ toplevel: "/unused", cloneOutput: "Cloning into 'clone'...\n" });
     const out = cloneRepo({ url: URL_OK, dest, shallow: true, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
     expect(out).toContain("Cloning");
-    expect(git.calls[0]!.args).toEqual(["config", "--list", "--show-scope"]);
-    expect(git.calls[0]!.env).toBeUndefined();
+    expect(git.calls.map((c) => c.args[0])).toEqual(["rev-parse", "config", "clone"]);
+    expect(git.calls[1]!.args).toEqual(["config", "--list", "--show-scope"]);
     const clone = git.calls.at(-1)!;
     expect(clone.args).toEqual(["clone", "--depth=1", URL_OK, dest]);
-    expect(clone.env).toEqual(gitCredentialEnv(AUTH));
-    for (const call of git.calls) expect(call.cwd).toBe(tmpdir()); // never the server's own cwd
+    expect(clone.env).toEqual(gitCredentialEnv(AUTH, URL_OK));
+    for (const call of git.calls) {
+      expect(call.cwd).toBe(tmpdir()); // never the server's own cwd
+      if (call.args[0] !== "clone") expect(call.env).toBeUndefined();
+    }
   });
 
   it("refuses when a url.*.insteadOf rule would rewrite the clone URL, and never runs clone", () => {
@@ -404,6 +416,25 @@ describe("cloneRepo", () => {
       cloneRepo({ url: URL_OK, dest: join(tmpdir(), "x"), shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec })
     ).toThrow(/insteadOf.*refusing to clone/);
     expect(git.calls.some((c) => c.args[0] === "clone")).toBe(false);
+  });
+
+  it("refuses an insteadOf rule with an EMPTY prefix, which git applies to every URL", () => {
+    const git = fakeGit({
+      toplevel: "/unused",
+      globalInsteadOf: { "https://attacker.example.com/": "" },
+    });
+    expect(() =>
+      cloneRepo({ url: URL_OK, dest: join(tmpdir(), "x"), shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec })
+    ).toThrow(/rewrites every URL to https:\/\/attacker\.example\.com\//);
+    expect(git.calls.some((c) => c.args[0] === "clone")).toBe(false);
+  });
+
+  it("refuses to run when the temp directory sits inside a repository", () => {
+    const git = fakeGit({ toplevel: "/home/u/dotfiles", cwdInsideRepo: true });
+    expect(() =>
+      cloneRepo({ url: URL_OK, dest: join(tmpdir(), "x"), shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec })
+    ).toThrow(/inside the git repository \/home\/u\/dotfiles/);
+    expect(git.calls.map((c) => c.args[0])).toEqual(["rev-parse"]);
   });
 
   it("ignores insteadOf rules whose prefix does not match the clone URL", () => {
@@ -487,7 +518,7 @@ describe("gitCredentialEnv (real git)", () => {
     rmSync(marker);
 
     // Guarded: the same inherited programs never run, and git fails instead.
-    const guarded = fill(gitCredentialEnv(AUTH, { ...process.env, GIT_ASKPASS: script, SSH_ASKPASS: script }));
+    const guarded = fill(gitCredentialEnv(AUTH, "https://example.invalid/x.git", { ...process.env, GIT_ASKPASS: script, SSH_ASKPASS: script }));
     expect(guarded.status).not.toBe(0);
     expect(existsSync(marker)).toBe(false);
     expect(guarded.stdout).not.toContain("secret");
