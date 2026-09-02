@@ -19,6 +19,15 @@ function lookups(state: {
 }
 
 describe("planCommitFile", () => {
+  it("refuses a full ref or malformed branch name before any lookup", async () => {
+    for (const branch of ["refs/heads/main", "", "-x", "a..b"]) {
+      const bb = lookups({ type: "FILE" });
+      const plan = await planCommitFile(bb, { ...T, branch, sourceCommitId: "b".repeat(40) });
+      expect(plan).toMatchObject({ ok: false, reason: expect.stringMatching(/Refusing branch name/) });
+      expect(bb.fileType).not.toHaveBeenCalled();
+    }
+  });
+
   it("passes an explicit sourceCommitId through without any lookup", async () => {
     const bb = lookups({ type: "FILE" });
     const plan = await planCommitFile(bb, { ...T, sourceCommitId: "b".repeat(40) });

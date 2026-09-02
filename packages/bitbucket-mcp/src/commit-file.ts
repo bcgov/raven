@@ -1,4 +1,5 @@
 import type { BitbucketClient } from "./bitbucket-client.js";
+import { isValidBranchName } from "./git-push.js";
 
 /** The subset of the client commit_file planning needs (mockable in tests). */
 export type CommitFileLookups = Pick<BitbucketClient, "fileType" | "listBranches" | "listCommits">;
@@ -22,6 +23,7 @@ export type CommitFilePlan =
  * optimistic lock. Pure orchestration over the client's read calls; the tool
  * handler renders the result and performs the write.
  *
+ * - A branch that is not a plain short name is refused up front.
  * - An explicit `sourceCommitId` is passed through untouched: the caller
  *   asserts which revision it read, and the server enforces it (409).
  * - A directory is refused.
@@ -37,6 +39,12 @@ export async function planCommitFile(
   bb: CommitFileLookups,
   t: CommitFileTarget
 ): Promise<CommitFilePlan> {
+  if (!isValidBranchName(t.branch)) {
+    return {
+      ok: false,
+      reason: `Refusing branch name "${t.branch}": pass a plain branch name such as main or release/3.4, not a full ref.`,
+    };
+  }
   if (t.sourceCommitId) return { ok: true, sourceCommitId: t.sourceCommitId };
 
   const type = await bb.fileType(t.projectKey, t.repoSlug, t.filePath, `refs/heads/${t.branch}`);

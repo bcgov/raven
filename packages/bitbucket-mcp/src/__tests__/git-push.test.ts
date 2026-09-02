@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, realpathSync, mkdirSync, readFileSync, rmSync,
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cloneRepo, defaultGitExec, gitCredentialEnv, pushRepo, type GitExec } from "../git-push.js";
+import { cloneRepo, defaultGitExec, gitCredentialEnv, isValidBranchName, pushRepo, type GitExec } from "../git-push.js";
 
 const HOST = "bwa.example.gov.bc.ca";
 const AUTH = "Authorization: Basic Zm9vOmJhcg==";
@@ -96,6 +96,23 @@ function repoDir(): string {
   return dir;
 }
 
+describe("isValidBranchName", () => {
+  it("accepts plain short branch names", () => {
+    for (const ok of ["main", "release/3.4", "feature/ABC-123_x.y", "v1.2.3", "a/b/c"]) {
+      expect(isValidBranchName(ok), ok).toBe(true);
+    }
+  });
+
+  it("refuses full refs, option or refspec shapes, and git-invalid names", () => {
+    for (const bad of [
+      "", "refs/heads/main", "-x", "+main", "a:b", "a b", "a..b", "a@{1}", "feature/", "a//b",
+      ".hidden", "a/.b", "x.lock", "a/b.lock", "main.", "a~b", "a^b", "a?b", "a*b", "a[b", "a\\b",
+    ]) {
+      expect(isValidBranchName(bad), JSON.stringify(bad)).toBe(false);
+    }
+  });
+});
+
 describe("gitCredentialEnv", () => {
   it("injects the header and resets credential programs, TLS bypass and repo redirection", () => {
     const env = gitCredentialEnv(AUTH, `https://${HOST}/scm/nrs/repo.git`, {
@@ -176,6 +193,7 @@ describe("pushRepo", () => {
     expect(push.args).toEqual([
       "push",
       "--no-verify",
+      "--no-follow-tags",
       "origin",
       "refs/heads/feature/x:refs/heads/feature/x",
     ]);
@@ -227,6 +245,7 @@ describe("pushRepo", () => {
     expect(git.calls.at(-1)!.args).toEqual([
       "push",
       "--no-verify",
+      "--no-follow-tags",
       "--set-upstream",
       "origin",
       "refs/heads/new-branch:refs/heads/new-branch",
@@ -361,7 +380,7 @@ describe("pushRepo", () => {
 
   it("refuses option- or refspec-shaped branch and remote names", () => {
     const dir = repoDir();
-    for (const branch of ["-danger", "+main", "a:b", "a b"]) {
+    for (const branch of ["-danger", "+main", "a:b", "a b", "refs/heads/main", "a..b", "feature/"]) {
       const git = fakeGit({
         toplevel: dir,
         remoteUrl: `https://${HOST}/scm/nrs/repo.git`,

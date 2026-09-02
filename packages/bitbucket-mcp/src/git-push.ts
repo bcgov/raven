@@ -30,6 +30,19 @@ const BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 const REMOTE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /**
+ * Is `name` a plain short branch name — git-valid, not a full ref, and not
+ * option- or refspec-shaped? Shared by push_repo, commit_file and
+ * create_repo so a value like `refs/heads/main` is refused before anything
+ * is written, rather than becoming `refs/heads/refs/heads/main` later.
+ */
+export function isValidBranchName(name: string): boolean {
+  if (!BRANCH_RE.test(name)) return false;
+  if (name.startsWith("refs/") || name.endsWith("/") || name.includes("//")) return false;
+  if (name.includes("..") || name.includes("@{") || name.endsWith(".")) return false;
+  return !name.split("/").some((s) => s.startsWith(".") || s.endsWith(".lock"));
+}
+
+/**
  * Shape a credential-bearing URL must have BEFORE any parser sees it:
  * `https://`, a plain hostname, an optional port, then a path — no
  * userinfo, no backslash, no whitespace. WHATWG `new URL()` and git/curl
@@ -255,7 +268,8 @@ export interface PushRepoResult {
  * Guards, in order: `dir` must be an absolute path to the top level of a
  * git worktree (not a subdirectory — pushing a parent repo by surprise is
  * an easy mistake); the branch and remote names must be plain (no leading
- * "-", no "+", no ":", so no force-push refspec can be smuggled in); the
+ * "-", no "+", no ":", not a full ref, so no force-push refspec can be
+ * smuggled in); the
  * remote must have exactly ONE push URL (git pushes to all of them, so a
  * second URL would receive the code and credentials too), and that URL must
  * be a plain `https://<expectedHost>/...` string — no userinfo, backslashes
@@ -296,7 +310,7 @@ export function pushRepo(opts: PushRepoOptions): PushRepoResult {
   }
 
   const branch = (opts.branch ?? run(["symbolic-ref", "--short", "HEAD"]).trim()).trim();
-  if (!BRANCH_RE.test(branch)) {
+  if (!isValidBranchName(branch)) {
     throw new Error(`Refusing branch name "${branch}".`);
   }
   const remote = opts.remote ?? "origin";
@@ -344,7 +358,9 @@ export function pushRepo(opts: PushRepoOptions): PushRepoResult {
   // --no-verify: the repository's local pre-push hook is arbitrary local
   // code and would inherit the GIT_CONFIG_* environment carrying the
   // credential header; this controlled push never runs it.
-  const args = ["push", "--no-verify"];
+  // --no-follow-tags: push.followTags in any config scope would otherwise
+  // add reachable annotated tags to what is meant to be a one-branch push.
+  const args = ["push", "--no-verify", "--no-follow-tags"];
   if (setUpstream) args.push("--set-upstream");
   args.push(remote, `refs/heads/${branch}:refs/heads/${branch}`);
   const output = run(args, gitCredentialEnv(opts.authHeader, remoteUrl));

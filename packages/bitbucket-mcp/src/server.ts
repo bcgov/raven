@@ -13,7 +13,7 @@ import {
   CodeSearchNotAvailableError,
 } from "./bitbucket-client.js";
 import { sliceFileContent } from "./file-slice.js";
-import { cloneRepo, pushRepo } from "./git-push.js";
+import { cloneRepo, isValidBranchName, pushRepo } from "./git-push.js";
 import { planCommitFile } from "./commit-file.js";
 
 /** Schema ceiling for read_file maxChars — also gates the truncation hint. */
@@ -1253,6 +1253,19 @@ IMPORTANT: Always include the file path and repository when referencing results 
     { readOnlyHint: false },
     async ({ projectKey, name, description, forkable, defaultBranch }) => {
       try {
+        // Validate before anything is written: a bad name would otherwise
+        // create the repository and then fail to point HEAD at it.
+        if (!isValidBranchName(defaultBranch)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Refusing default branch name "${defaultBranch}": pass a plain branch name such as main, not a full ref.`,
+              },
+            ],
+            isError: true,
+          };
+        }
         const bb = await getClient();
         const repo = await bb.createRepo(projectKey, name, { description, forkable, defaultBranch });
         // Bitbucket accepts defaultBranch at creation; verify, and set it
