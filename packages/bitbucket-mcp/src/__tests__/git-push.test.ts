@@ -40,9 +40,10 @@ function fakeGit(state: {
   const exec: GitExec = (args, opts) => {
     calls.push({ args, env: opts.env, cwd: opts.cwd });
     const cmd = args.join(" ");
-    if (cmd === "rev-parse --show-toplevel") {
-      if (opts.cwd === tmpdir() && !state.cwdInsideRepo) throw new Error("fatal: not a git repository");
-      return state.toplevel + "\n";
+    if (cmd === "rev-parse --show-toplevel") return state.toplevel + "\n";
+    if (cmd === "rev-parse --git-dir") {
+      if (!state.cwdInsideRepo) throw new Error("fatal: not a git repository");
+      return state.toplevel + "\n"; // a bare repository answers here too
     }
     if (cmd === "symbolic-ref --short HEAD") {
       if (!state.currentBranch) throw new Error("fatal: ref HEAD is not a symbolic ref");
@@ -518,7 +519,7 @@ describe("cloneRepo", () => {
     expect(git.calls.some((c) => c.args[0] === "clone")).toBe(false);
   });
 
-  it("refuses to run when the temp directory sits inside a repository", () => {
+  it("refuses to run when the temp directory sits inside a repository, bare ones included", () => {
     const git = fakeGit({ toplevel: "/home/u/dotfiles", cwdInsideRepo: true });
     expect(() =>
       cloneRepo({ url: URL_OK, dest: join(tmpdir(), "x"), shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec })
@@ -551,6 +552,15 @@ describe("cloneRepo", () => {
       cloneRepo({ url: URL_OK, dest: "relative", shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec })
     ).toThrow(/absolute path/);
     expect(git.calls).toHaveLength(0);
+  });
+});
+
+describe("cloneRepo neutral-directory probe (real git)", () => {
+  it("rev-parse --git-dir answers inside a bare repository, where --show-toplevel cannot", () => {
+    const bare = join(repoDir(), "bare.git");
+    defaultGitExec(["init", "-q", "--bare", bare], { cwd: tmpdir(), timeoutMs: 30_000 });
+    expect(() => defaultGitExec(["rev-parse", "--show-toplevel"], { cwd: bare, timeoutMs: 30_000 })).toThrow();
+    expect(defaultGitExec(["rev-parse", "--git-dir"], { cwd: bare, timeoutMs: 30_000 }).trim()).toBe(".");
   });
 });
 

@@ -1271,8 +1271,16 @@ IMPORTANT: Always include the file path and repository when referencing results 
         // Bitbucket accepts defaultBranch at creation; verify, and set it
         // explicitly if this instance ignored the field, so HEAD never
         // dangles on the instance default once content lands elsewhere.
-        if ((await bb.getDefaultBranch(projectKey, repo.slug)) !== defaultBranch) {
-          await bb.setDefaultBranch(projectKey, repo.slug, defaultBranch);
+        // The repository exists from here on, so a failure in this step is
+        // reported as a caveat with the slug, never as a failed creation
+        // that would invite a colliding retry.
+        let branchNote = `**Default branch:** ${defaultBranch}`;
+        try {
+          if ((await bb.getDefaultBranch(projectKey, repo.slug)) !== defaultBranch) {
+            await bb.setDefaultBranch(projectKey, repo.slug, defaultBranch);
+          }
+        } catch (err) {
+          branchNote = `**Default branch:** NOT confirmed as ${defaultBranch} (${safeErr(err)}); set it in Bitbucket before adding content`;
         }
         const clone =
           repo.links.clone?.find((l) => l.name === "http")?.href ??
@@ -1281,7 +1289,7 @@ IMPORTANT: Always include the file path and repository when referencing results 
           content: [
             {
               type: "text",
-              text: `Repository created.\n\n**Slug:** ${repo.slug}\n**Project:** ${projectKey}\n**Default branch:** ${defaultBranch}\n**Clone URL:** ${clone}\n\nThe repository is empty — add a first file with commit_file on ${defaultBranch}, or push an existing local branch named ${defaultBranch} with push_repo.`,
+              text: `Repository created.\n\n**Slug:** ${repo.slug}\n**Project:** ${projectKey}\n${branchNote}\n**Clone URL:** ${clone}\n\nThe repository is empty — add a first file with commit_file on ${defaultBranch}, or push an existing local branch named ${defaultBranch} with push_repo.`,
             },
           ],
         };
@@ -1362,8 +1370,15 @@ IMPORTANT: Always include the file path and repository when referencing results 
         const authHeader = await buildGitAuthHeader();
         const result = pushRepo({ dir, branch, remote, expectedHost, authHeader });
         // git's summary includes whatever the server-side hooks printed:
-        // arbitrary upstream text, scrubbed like every other upstream text.
-        const summary = pi.scrubText(result.output.trim());
+        // arbitrary upstream text, scrubbed like every other upstream text
+        // and capped to its tail (git's own status lines come last) so a
+        // chatty hook cannot blow the response past what a client accepts.
+        const MAX_SUMMARY_CHARS = 4_000;
+        const full = pi.scrubText(result.output.trim());
+        const summary =
+          full.length > MAX_SUMMARY_CHARS
+            ? `… (${full.length - MAX_SUMMARY_CHARS} characters of git output omitted)\n${full.slice(-MAX_SUMMARY_CHARS)}`
+            : full;
         return {
           content: [
             {

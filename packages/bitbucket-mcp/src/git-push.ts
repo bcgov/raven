@@ -418,7 +418,8 @@ export interface CloneRepoOptions {
  * the credential would follow the rewrite. push_repo is protected by
  * re-reading the URL git will use; a clone has no remote to ask yet, so
  * this pre-checks the rules git will apply: it runs from a neutral
- * directory — the temp directory, verified to be outside any repository,
+ * directory — the temp directory, verified to be outside any repository
+ * (bare ones included),
  * so no repository-local config applies (the server's own cwd is not
  * trusted) — and refuses if any insteadOf prefix in the remaining scopes
  * matches the URL, including the empty prefix, which git treats as
@@ -443,9 +444,11 @@ export function cloneRepo(opts: CloneRepoOptions): string {
   }
   pinnedHttpsUrl(opts.url, opts.expectedHost, "Clone URL");
 
+  // --git-dir rather than --show-toplevel: it also answers inside a bare
+  // repository, which has no top level but does have local config.
   let enclosing: string | null = null;
   try {
-    enclosing = run(["rev-parse", "--show-toplevel"]).trim();
+    enclosing = run(["rev-parse", "--git-dir"]).trim();
   } catch {
     // not inside a repository: the neutral directory is neutral
   }
