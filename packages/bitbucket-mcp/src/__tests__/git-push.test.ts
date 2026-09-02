@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { mkdtempSync, realpathSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultGitExec, pushRepo, type GitExec } from "../git-push.js";
+import { defaultGitExec, gitCredentialEnv, pushRepo, type GitExec } from "../git-push.js";
 
 const HOST = "bwa.example.gov.bc.ca";
 const AUTH = "Authorization: Basic Zm9vOmJhcg==";
@@ -127,6 +127,8 @@ describe("pushRepo", () => {
       GIT_CONFIG_KEY_2: "core.askpass",
       GIT_CONFIG_VALUE_2: "",
     });
+    // clone_repo uses the same helper, so the two invocations cannot drift.
+    expect(push.env).toEqual(gitCredentialEnv(AUTH));
     for (const call of git.calls) {
       expect(call.args.join(" ")).not.toContain("Basic");
       // Only the push carries the credential; the plumbing runs without it.

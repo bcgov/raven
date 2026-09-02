@@ -14,7 +14,7 @@ import {
   CodeSearchNotAvailableError,
 } from "./bitbucket-client.js";
 import { sliceFileContent } from "./file-slice.js";
-import { pushRepo } from "./git-push.js";
+import { gitCredentialEnv, pushRepo } from "./git-push.js";
 
 /** Schema ceiling for read_file maxChars — also gates the truncation hint. */
 const READ_FILE_MAX_CHARS = 200_000;
@@ -622,18 +622,14 @@ IMPORTANT: Bitbucket project keys often differ from Jira keys. If a key returns 
 
         // The auth header travels via GIT_CONFIG_* environment variables,
         // not argv — a `-c http.extraHeader=...` argument would expose the
-        // credentials in the process list for the whole clone.
+        // credentials in the process list for the whole clone — and the same
+        // variables reset credential helpers, so a 401 cannot hand this
+        // environment to another process (see gitCredentialEnv).
         execFileSync("git", args, {
           encoding: "utf-8",
           timeout: 300_000, // 5 minutes
           stdio: ["ignore", "pipe", "pipe"],
-          env: {
-            ...process.env,
-            GIT_TERMINAL_PROMPT: "0",
-            GIT_CONFIG_COUNT: "1",
-            GIT_CONFIG_KEY_0: "http.extraHeader",
-            GIT_CONFIG_VALUE_0: authHeader,
-          },
+          env: { ...process.env, ...gitCredentialEnv(authHeader) },
         });
 
         return {
@@ -1324,7 +1320,7 @@ IMPORTANT: Always include the file path and repository when referencing results 
           content: [
             {
               type: "text",
-              text: `Committed ${filePath} to ${branch}.\n\n**Commit:** ${commit.displayId}\n**Message:** ${commit.message}`,
+              text: `Committed ${filePath} to ${branch}.\n\n**Commit:** ${commit.displayId}\n**Message:** ${pi.scrubText(commit.message)}`,
             },
           ],
         };
@@ -1355,7 +1351,9 @@ IMPORTANT: Always include the file path and repository when referencing results 
         const expectedHost = new URL(bb.getBaseUrl()).host;
         const authHeader = await buildGitAuthHeader();
         const result = pushRepo({ dir, branch, remote, expectedHost, authHeader });
-        const summary = result.output.trim();
+        // git's summary includes whatever the server-side hooks printed:
+        // arbitrary upstream text, scrubbed like every other upstream text.
+        const summary = pi.scrubText(result.output.trim());
         return {
           content: [
             {

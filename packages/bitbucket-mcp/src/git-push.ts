@@ -61,6 +61,28 @@ function isForbiddenLocalKey(key: string, remote: string): boolean {
 }
 
 /**
+ * Environment for any git invocation that carries the Bitbucket credential
+ * (push_repo, clone_repo). The header travels via GIT_CONFIG_* variables,
+ * never argv, so it is not visible in the process list. The same variables
+ * reset credential.helper and core.askpass with empty values: the injected
+ * header is the only credential the invocation may use, so a 401 fails
+ * outright instead of consulting — and exposing this environment to — a
+ * credential program from any config scope.
+ */
+export function gitCredentialEnv(authHeader: string): Record<string, string> {
+  return {
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_CONFIG_COUNT: "3",
+    GIT_CONFIG_KEY_0: "http.extraHeader",
+    GIT_CONFIG_VALUE_0: authHeader,
+    GIT_CONFIG_KEY_1: "credential.helper",
+    GIT_CONFIG_VALUE_1: "",
+    GIT_CONFIG_KEY_2: "core.askpass",
+    GIT_CONFIG_VALUE_2: "",
+  };
+}
+
+/**
  * Real git runner. spawnSync rather than execFileSync: execFileSync returns
  * only stdout, and `git push` writes its status summary to stderr, so the
  * push result would always look empty.
@@ -245,20 +267,7 @@ export function pushRepo(opts: PushRepoOptions): PushRepoResult {
   const args = ["push", "--no-verify"];
   if (setUpstream) args.push("--set-upstream");
   args.push(remote, `refs/heads/${branch}:refs/heads/${branch}`);
-  const output = run(args, {
-    GIT_TERMINAL_PROMPT: "0",
-    GIT_CONFIG_COUNT: "3",
-    GIT_CONFIG_KEY_0: "http.extraHeader",
-    GIT_CONFIG_VALUE_0: opts.authHeader,
-    // Empty values reset the helper list and the askpass program: the
-    // injected header is the only credential this push may use, so a 401
-    // fails outright instead of consulting (and exposing the header to) a
-    // credential program from any config scope.
-    GIT_CONFIG_KEY_1: "credential.helper",
-    GIT_CONFIG_VALUE_1: "",
-    GIT_CONFIG_KEY_2: "core.askpass",
-    GIT_CONFIG_VALUE_2: "",
-  });
+  const output = run(args, gitCredentialEnv(opts.authHeader));
 
   return { branch, remote, remoteUrl: parsed.toString(), output, setUpstream };
 }
