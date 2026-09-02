@@ -18,7 +18,7 @@
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@nrs/auth": "*",
     "cross-spawn": "^7.0.6",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@types/cross-spawn": "^6.0.6"
