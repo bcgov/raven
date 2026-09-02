@@ -637,8 +637,10 @@ IMPORTANT: Bitbucket project keys often differ from Jira keys. If a key returns 
         // cloneRepo pins the URL to the configured host, refuses git
         // url.*.insteadOf rewrites that would redirect the credentialed
         // clone, runs from a neutral directory so no repository-local config
-        // applies, and hands the credential to git through gitCredentialEnv
-        // (GIT_CONFIG_* variables, never argv).
+        // applies, hands the credential to git through gitCredentialEnv
+        // (GIT_CONFIG_* variables, never argv), and populates the working
+        // tree in a second, credential-free process so no checkout hook can
+        // observe the header.
         cloneRepo({
           url: cloneUrl,
           dest,

@@ -358,8 +358,14 @@ export interface CloneRepoOptions {
  * so no repository-local config applies (the server's own cwd is not
  * trusted) — and refuses if any insteadOf prefix in the remaining scopes
  * matches the URL, including the empty prefix, which git treats as
- * matching every URL. The URL itself is pinned like a push URL, and the
- * clone runs with gitCredentialEnv. Returns git's output.
+ * matching every URL. The URL itself is pinned like a push URL.
+ *
+ * The network clone runs with gitCredentialEnv and --no-checkout: git
+ * clone's own checkout would run a post-checkout hook installed from
+ * init.templateDir or GIT_TEMPLATE_DIR with the header in its environment,
+ * the exposure --no-verify closes for pushes. The working tree is then
+ * populated by a separate, credential-free `git checkout` (skipped for an
+ * empty repository, whose HEAD is unborn). Returns git's output.
  */
 export function cloneRepo(opts: CloneRepoOptions): string {
   const exec = opts.exec ?? defaultGitExec;
@@ -396,8 +402,20 @@ export function cloneRepo(opts: CloneRepoOptions): string {
     }
   }
 
-  const args = ["clone"];
+  const args = ["clone", "--no-checkout"];
   if (opts.shallow) args.push("--depth=1");
   args.push(opts.url, opts.dest);
-  return run(args, gitCredentialEnv(opts.authHeader, opts.url));
+  const output = run(args, gitCredentialEnv(opts.authHeader, opts.url));
+
+  // Populate the working tree in a separate process that never sees the
+  // credential. Any post-checkout hook the templates installed runs here,
+  // with nothing to read.
+  const inDest = (a: string[]): string => exec(a, { cwd: opts.dest, timeoutMs: GIT_TIMEOUT_MS });
+  let hasHead = true;
+  try {
+    inDest(["rev-parse", "--verify", "--quiet", "HEAD"]);
+  } catch {
+    hasHead = false; // empty repository: nothing to check out
+  }
+  return hasHead ? output + inDest(["checkout"]) : output;
 }

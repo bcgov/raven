@@ -1,5 +1,5 @@
 import { afterAll, describe, it, expect, vi } from "vitest";
-import { existsSync, mkdtempSync, realpathSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,6 +31,8 @@ function fakeGit(state: {
   cloneOutput?: string;
   /** Pretend the temp directory cloneRepo runs from sits inside a repository. */
   cwdInsideRepo?: boolean;
+  /** Pretend the cloned repository is empty (HEAD unborn). */
+  emptyRemote?: boolean;
 }) {
   const calls: { args: string[]; env?: NodeJS.ProcessEnv; cwd: string }[] = [];
   const exec: GitExec = (args, opts) => {
@@ -71,8 +73,13 @@ function fakeGit(state: {
       if (!state.hasUpstream) throw new Error("fatal: no upstream configured");
       return `origin/${state.currentBranch}\n`;
     }
+    if (cmd === "rev-parse --verify --quiet HEAD") {
+      if (state.emptyRemote) throw new Error("git rev-parse exited with 1");
+      return "0123456789abcdef0123456789abcdef01234567\n";
+    }
     if (args[0] === "push") return state.pushOutput ?? "";
     if (args[0] === "clone") return state.cloneOutput ?? "";
+    if (cmd === "checkout") return "Your branch is up to date with 'origin/main'.\n";
     throw new Error(`fakeGit: unexpected command: ${cmd}`);
   };
   return { exec, calls };
@@ -396,15 +403,20 @@ describe("cloneRepo", () => {
     const git = fakeGit({ toplevel: "/unused", cloneOutput: "Cloning into 'clone'...\n" });
     const out = cloneRepo({ url: URL_OK, dest, shallow: true, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
     expect(out).toContain("Cloning");
-    expect(git.calls.map((c) => c.args[0])).toEqual(["rev-parse", "config", "clone"]);
+    expect(out).toContain("up to date");
+    expect(git.calls.map((c) => c.args[0])).toEqual(["rev-parse", "config", "clone", "rev-parse", "checkout"]);
     expect(git.calls[1]!.args).toEqual(["config", "--list", "--show-scope"]);
-    const clone = git.calls.at(-1)!;
-    expect(clone.args).toEqual(["clone", "--depth=1", URL_OK, dest]);
+    const clone = git.calls[2]!;
+    expect(clone.args).toEqual(["clone", "--no-checkout", "--depth=1", URL_OK, dest]);
     expect(clone.env).toEqual(gitCredentialEnv(AUTH, URL_OK));
+    expect(clone.cwd).toBe(tmpdir()); // never the server's own cwd
     for (const call of git.calls) {
-      expect(call.cwd).toBe(tmpdir()); // never the server's own cwd
-      if (call.args[0] !== "clone") expect(call.env).toBeUndefined();
+      if (call.args[0] === "clone") continue;
+      expect(call.env).toBeUndefined(); // only the network step carries the credential
     }
+    // The working tree is populated afterwards, inside the clone, without the credential.
+    expect(git.calls.slice(3).map((c) => c.cwd)).toEqual([dest, dest]);
+    expect(git.calls.at(-1)!.args).toEqual(["checkout"]);
   });
 
   it("refuses when a url.*.insteadOf rule would rewrite the clone URL, and never runs clone", () => {
@@ -443,7 +455,14 @@ describe("cloneRepo", () => {
       globalInsteadOf: { "ssh://git@github.com/": "https://github.com/" },
     });
     cloneRepo({ url: URL_OK, dest: join(tmpdir(), "x"), shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
-    expect(git.calls.at(-1)!.args).toEqual(["clone", URL_OK, join(tmpdir(), "x")]);
+    expect(git.calls.find((c) => c.args[0] === "clone")!.args).toEqual(["clone", "--no-checkout", URL_OK, join(tmpdir(), "x")]);
+  });
+
+  it("skips the checkout step for an empty repository (HEAD unborn)", () => {
+    const git = fakeGit({ toplevel: "/unused", emptyRemote: true, cloneOutput: "warning: You appear to have cloned an empty repository.\n" });
+    const out = cloneRepo({ url: URL_OK, dest: join(tmpdir(), "x"), shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
+    expect(out).toContain("empty repository");
+    expect(git.calls.map((c) => c.args[0])).toEqual(["rev-parse", "config", "clone", "rev-parse"]);
   });
 
   it("refuses a clone URL off the configured host, or with a relative dest, before any git runs", () => {
@@ -455,6 +474,44 @@ describe("cloneRepo", () => {
       cloneRepo({ url: URL_OK, dest: "relative", shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec })
     ).toThrow(/absolute path/);
     expect(git.calls).toHaveLength(0);
+  });
+});
+
+describe("cloneRepo checkout split (real git)", () => {
+  it("keeps a template post-checkout hook from observing the header, unlike a plain clone", () => {
+    if (process.platform === "win32") return; // the hook is a shell script
+    const root = repoDir();
+    const src = join(root, "src");
+    const bare = join(root, "bare.git");
+    const tmpl = join(root, "tmpl");
+    const marker = join(root, "marker.txt");
+    const g = (args: string[], cwd: string, env?: NodeJS.ProcessEnv) => defaultGitExec(args, { cwd, env, timeoutMs: 30_000 });
+    g(["init", "-q", "-b", "main", src], root);
+    writeFileSync(join(src, "a.txt"), "hi\n");
+    g(["add", "a.txt"], src);
+    g(["-c", "user.email=a@b.c", "-c", "user.name=a", "commit", "-q", "-m", "one"], src);
+    g(["clone", "-q", "--bare", src, bare], root);
+    mkdirSync(join(tmpl, "hooks"), { recursive: true });
+    writeFileSync(
+      join(tmpl, "hooks", "post-checkout"),
+      `#!/bin/sh\necho "saw: \${GIT_CONFIG_VALUE_0:-<unset>}" >> "${marker}"\n`,
+      { mode: 0o755 }
+    );
+    const url = `file://${bare}`;
+    const base = { ...process.env, GIT_TEMPLATE_DIR: tmpl };
+
+    // Control: a plain clone runs the template hook inside the credentialed process.
+    g(["clone", "-q", url, join(root, "plain")], root, gitCredentialEnv(AUTH, url, base));
+    expect(readFileSync(marker, "utf-8")).toContain(AUTH);
+    rmSync(marker);
+
+    // The split cloneRepo performs: credentialed --no-checkout, then a credential-free checkout.
+    const dest = join(root, "split");
+    g(["clone", "-q", "--no-checkout", url, dest], root, gitCredentialEnv(AUTH, url, base));
+    expect(existsSync(marker)).toBe(false); // no checkout happened with the credential
+    g(["checkout"], dest, base);
+    expect(existsSync(join(dest, "a.txt"))).toBe(true);
+    expect(readFileSync(marker, "utf-8")).toBe("saw: <unset>\n"); // hook ran, saw nothing
   });
 });
 
