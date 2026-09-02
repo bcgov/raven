@@ -8,8 +8,10 @@ const HOST = "bwa.example.gov.bc.ca";
 const AUTH = "Authorization: Basic Zm9vOmJhcg==";
 
 /**
- * Fake git. Answers rev-parse/symbolic-ref/remote lookups from `state` and
- * records every invocation; `push` returns state.pushOutput.
+ * Fake git. Answers rev-parse/symbolic-ref/remote/config lookups from
+ * `state` and records every invocation; `push` returns state.pushOutput.
+ * The global scope always carries a credential helper and a proxy, so every
+ * test implicitly checks that only repository-LOCAL keys are refused.
  */
 function fakeGit(state: {
   toplevel: string;
@@ -17,6 +19,8 @@ function fakeGit(state: {
   remoteUrl?: string;
   /** Additional configured push URLs beyond remoteUrl. */
   extraPushUrls?: string[];
+  /** Keys present in the repository's local config (besides the usual core.*). */
+  localConfigKeys?: string[];
   hasUpstream?: boolean;
   pushOutput?: string;
 }) {
@@ -34,6 +38,19 @@ function fakeGit(state: {
       expect(args).toContain("--all");
       if (!state.remoteUrl) throw new Error(`fatal: No such remote '${args[4]}'`);
       return [state.remoteUrl, ...(state.extraPushUrls ?? [])].join("\n") + "\n";
+    }
+    if (args[0] === "config") {
+      expect(args).toEqual(["config", "--list", "--show-scope", "--name-only"]);
+      const lines = [
+        "system\tcredential.helper",
+        "global\tcredential.helper",
+        "global\thttp.proxy",
+        "global\thttp.sslverify",
+        "local\tcore.repositoryformatversion",
+        "local\tremote.origin.url",
+        ...(state.localConfigKeys ?? []).map((k) => `local\t${k}`),
+      ];
+      return lines.join("\n") + "\n";
     }
     if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") {
       if (!state.hasUpstream) throw new Error("fatal: no upstream configured");
@@ -89,7 +106,7 @@ describe("pushRepo", () => {
     expect(git.calls.some((c) => c.args[0] === "push")).toBe(false);
   });
 
-  it("passes credentials via GIT_CONFIG_* env, never argv", () => {
+  it("passes credentials via GIT_CONFIG_* env, never argv, and resets credential programs", () => {
     const dir = repoDir();
     const git = fakeGit({
       toplevel: dir,
@@ -100,13 +117,20 @@ describe("pushRepo", () => {
     pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
     const push = git.calls.at(-1)!;
     expect(push.env).toMatchObject({
-      GIT_CONFIG_COUNT: "1",
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_CONFIG_COUNT: "3",
       GIT_CONFIG_KEY_0: "http.extraHeader",
       GIT_CONFIG_VALUE_0: AUTH,
-      GIT_TERMINAL_PROMPT: "0",
+      // A 401 must fail, not run a helper with the header in its environment.
+      GIT_CONFIG_KEY_1: "credential.helper",
+      GIT_CONFIG_VALUE_1: "",
+      GIT_CONFIG_KEY_2: "core.askpass",
+      GIT_CONFIG_VALUE_2: "",
     });
     for (const call of git.calls) {
       expect(call.args.join(" ")).not.toContain("Basic");
+      // Only the push carries the credential; the plumbing runs without it.
+      if (call.args[0] !== "push") expect(call.env).toBeUndefined();
     }
   });
 
@@ -142,6 +166,53 @@ describe("pushRepo", () => {
     expect(git.calls.some((c) => c.args[0] === "push")).toBe(false);
   });
 
+  it("refuses a backslash in the authority, which curl reads as userinfo", () => {
+    // WHATWG turns the backslash into a path separator, so `new URL().host`
+    // is the pinned host for every one of these — but git/curl connect to
+    // attacker.example.com and send the credential there. The raw-string
+    // check must catch them before the parsed host is consulted.
+    const dir = repoDir();
+    for (const remoteUrl of [
+      `https://${HOST}\\@attacker.example.com/scm/nrs/repo.git`,
+      `https://${HOST}\\\\@attacker.example.com/scm/nrs/repo.git`,
+      `https://${HOST}:443\\@attacker.example.com/scm/nrs/repo.git`,
+    ]) {
+      expect(new URL(remoteUrl).host).toBe(HOST); // the parser differential
+      const git = fakeGit({ toplevel: dir, currentBranch: "main", remoteUrl });
+      expect(() => pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).toThrow(
+        /not a plain https:\/\/host\/path URL/
+      );
+      expect(git.calls.some((c) => c.args[0] === "push")).toBe(false);
+    }
+  });
+
+  it("refuses embedded userinfo rather than stripping it", () => {
+    const dir = repoDir();
+    for (const remoteUrl of [
+      `https://user:secret@${HOST}/scm/nrs/repo.git`,
+      `https://${HOST}@attacker.example.com/scm/nrs/repo.git`,
+    ]) {
+      const git = fakeGit({ toplevel: dir, currentBranch: "main", remoteUrl });
+      expect(() => pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).toThrow(
+        /not a plain https:\/\/host\/path URL|not the configured Bitbucket host/
+      );
+      expect(git.calls.some((c) => c.args[0] === "push")).toBe(false);
+    }
+  });
+
+  it("accepts the configured host in any case and with an explicit :443", () => {
+    const dir = repoDir();
+    for (const remoteUrl of [
+      `https://${HOST.toUpperCase()}/scm/nrs/repo.git`,
+      `https://${HOST}:443/scm/nrs/repo.git`,
+    ]) {
+      const git = fakeGit({ toplevel: dir, currentBranch: "main", remoteUrl, hasUpstream: true });
+      const result = pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
+      expect(result.remoteUrl).toBe(`https://${HOST}/scm/nrs/repo.git`);
+      expect(git.calls.at(-1)!.args[0]).toBe("push");
+    }
+  });
+
   it("refuses non-HTTPS remotes (ssh and http)", () => {
     const dir = repoDir();
     for (const remoteUrl of [
@@ -165,6 +236,47 @@ describe("pushRepo", () => {
     expect(() => pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).toThrow(
       /non-URL push target/
     );
+  });
+
+  it("refuses repository-local proxy, TLS and credential-program config and never runs push", () => {
+    const dir = repoDir();
+    for (const key of [
+      "http.proxy",
+      "http.sslverify",
+      "http.sslcainfo",
+      "http.https://bwa.example.gov.bc.ca/.proxy",
+      "http.curloptresolve",
+      "credential.helper",
+      "credential.https://bwa.example.gov.bc.ca.helper",
+      "core.askpass",
+      "core.gitproxy",
+      "remote.origin.proxy",
+      "remote.origin.proxyauthmethod",
+    ]) {
+      const git = fakeGit({
+        toplevel: dir,
+        currentBranch: "main",
+        remoteUrl: `https://${HOST}/scm/nrs/repo.git`,
+        localConfigKeys: [key],
+      });
+      expect(() => pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).toThrow(
+        new RegExp(`repository-local git config.*${key.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}`)
+      );
+      expect(git.calls.some((c) => c.args[0] === "push")).toBe(false);
+    }
+  });
+
+  it("ignores harmless local keys, another remote's proxy, and every global/system key", () => {
+    const dir = repoDir();
+    const git = fakeGit({
+      toplevel: dir,
+      currentBranch: "main",
+      remoteUrl: `https://${HOST}/scm/nrs/repo.git`,
+      localConfigKeys: ["user.email", "core.filemode", "remote.upstream.proxy", "url.https://x/.insteadof"],
+      hasUpstream: true,
+    });
+    pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
+    expect(git.calls.at(-1)!.args[0]).toBe("push");
   });
 
   it("refuses option- or refspec-shaped branch and remote names", () => {
@@ -207,19 +319,6 @@ describe("pushRepo", () => {
     );
   });
 
-  it("strips embedded userinfo from the reported remote URL", () => {
-    const dir = repoDir();
-    const git = fakeGit({
-      toplevel: dir,
-      currentBranch: "main",
-      remoteUrl: `https://user:secret@${HOST}/scm/nrs/repo.git`,
-      hasUpstream: true,
-    });
-    const result = pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
-    expect(result.remoteUrl).toBe(`https://${HOST}/scm/nrs/repo.git`);
-    expect(result.remoteUrl).not.toContain("secret");
-  });
-
   it("push failures propagate (exec throws)", () => {
     const dir = repoDir();
     const calls: string[][] = [];
@@ -229,6 +328,7 @@ describe("pushRepo", () => {
       if (cmd === "rev-parse --show-toplevel") return dir + "\n";
       if (cmd === "symbolic-ref --short HEAD") return "main\n";
       if (args[0] === "remote") return `https://${HOST}/scm/nrs/repo.git\n`;
+      if (args[0] === "config") return "local\tcore.bare\n";
       if (args[0] === "rev-parse") return "origin/main\n";
       throw new Error("remote: rejected (pre-receive hook declined)");
     };
@@ -260,6 +360,14 @@ describe("defaultGitExec (real git)", () => {
     expect(() => defaultGitExec(["rev-parse", "--verify", "does-not-exist"], { cwd: dir, timeoutMs: 30_000 })).toThrow(
       /exited with 128/
     );
+  });
+
+  it("lists config keys with their scope, so local keys can be told from global ones", () => {
+    const dir = repoDir();
+    defaultGitExec(["init", "-q"], { cwd: dir, timeoutMs: 30_000 });
+    defaultGitExec(["config", "--local", "http.proxy", "http://127.0.0.1:1"], { cwd: dir, timeoutMs: 30_000 });
+    const out = defaultGitExec(["config", "--list", "--show-scope", "--name-only"], { cwd: dir, timeoutMs: 30_000 });
+    expect(out).toContain("local\thttp.proxy");
   });
 });
 

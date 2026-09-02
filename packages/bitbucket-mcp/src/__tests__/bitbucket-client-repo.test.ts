@@ -92,6 +92,63 @@ describe("BitbucketClient.fileType", () => {
     );
   });
 
+  it("returns null when only the path is missing at an existing ref", async () => {
+    const notFound = createMockFetch({
+      ok: false,
+      status: 404,
+      text: JSON.stringify({
+        errors: [
+          {
+            context: null,
+            message: 'The path "missing.txt" does not exist at revision "refs/heads/main"',
+            exceptionName: "com.atlassian.bitbucket.content.NoSuchPathException",
+          },
+        ],
+      }),
+    });
+    expect(
+      await new BitbucketClient(notFound as any, BASE).fileType("NRS", "repo", "missing.txt", "refs/heads/main")
+    ).toBeNull();
+  });
+
+  it("returns REF_MISSING when the ref itself does not resolve (the same 404 status)", async () => {
+    // Body shape observed from a real Bitbucket Data Center instance.
+    const notFound = createMockFetch({
+      ok: false,
+      status: 404,
+      text: JSON.stringify({
+        errors: [
+          {
+            context: null,
+            message: 'Object "refs/heads/does-not-exist" does not exist in repository \'repo\'',
+            exceptionName: "com.atlassian.bitbucket.NoSuchObjectException",
+          },
+        ],
+      }),
+    });
+    expect(
+      await new BitbucketClient(notFound as any, BASE).fileType("NRS", "repo", "a.txt", "refs/heads/does-not-exist")
+    ).toBe("REF_MISSING");
+  });
+
+  it("throws when the repository or project does not exist", async () => {
+    const notFound = createMockFetch({
+      ok: false,
+      status: 404,
+      text: JSON.stringify({
+        errors: [
+          {
+            message: "Repository NRS/nope does not exist.",
+            exceptionName: "com.atlassian.bitbucket.repository.NoSuchRepositoryException",
+          },
+        ],
+      }),
+    });
+    await expect(
+      new BitbucketClient(notFound as any, BASE).fileType("NRS", "nope", "a.txt", "refs/heads/main")
+    ).rejects.toThrow(/Repository NRS\/nope does not exist \(404\)/);
+  });
+
   it("throws on non-404 errors", async () => {
     const mockFetch = createMockFetch({ ok: false, status: 500, text: "boom" });
     const client = new BitbucketClient(mockFetch as any, BASE);
@@ -109,6 +166,8 @@ describe("repository path validation", () => {
         client.commitFile("NRS", "repo", p, { branch: "main", content: "x", message: "m" })
       ).rejects.toThrow(/path segment/);
       await expect(client.readFile("NRS", "repo", p)).rejects.toThrow(/path segment/);
+      await expect(client.browseFiles("NRS", "repo", p)).rejects.toThrow(/path segment/);
+      await expect(client.blameFile("NRS", "repo", p)).rejects.toThrow(/path segment/);
     }
     expect(mockFetch).not.toHaveBeenCalled();
   });

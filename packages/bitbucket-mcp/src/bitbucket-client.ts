@@ -48,6 +48,30 @@ function encodeRepoPath(filePath: string): string {
 }
 
 /**
+ * Classify a Bitbucket 404 body. Bitbucket names the missing thing in
+ * `errors[].exceptionName`: NoSuchObjectException / NoSuchCommitException
+ * when the ref or commit does not resolve, NoSuchRepositoryException /
+ * NoSuchProjectException when the container is missing. Anything else,
+ * including a non-JSON body, is read as the path being absent.
+ */
+function notFoundReason(body: string): "ref" | "repository" | "path" {
+  let names: string[];
+  try {
+    const parsed = JSON.parse(body) as { errors?: { exceptionName?: string }[] };
+    names = (parsed.errors ?? []).map((e) => e.exceptionName ?? "");
+  } catch {
+    return "path";
+  }
+  if (names.some((n) => /NoSuchRepositoryException|NoSuchProjectException/.test(n))) {
+    return "repository";
+  }
+  if (names.some((n) => /NoSuchObjectException|NoSuchCommitException/.test(n))) {
+    return "ref";
+  }
+  return "path";
+}
+
+/**
  * REST client for Bitbucket Data Center.
  * Uses /rest/api/1.0/ endpoints.
  */
@@ -433,16 +457,21 @@ export class BitbucketClient {
   }
 
   /**
-   * What `filePath` is at `at` (branch/tag/commit): "FILE", "DIRECTORY", or
-   * null when it does not exist there. Uses browse?type=true, which returns
-   * only the type — no content download.
+   * What `filePath` is at `at` (branch/tag/commit): "FILE", "DIRECTORY",
+   * null when the path does not exist there, or "REF_MISSING" when `at`
+   * itself does not resolve — a branch nobody created, or an empty
+   * repository, which has no refs at all. Bitbucket answers 404 for both a
+   * missing path and a missing ref; they are told apart by the exception
+   * name in the 404 body. A missing repository or project is an error.
+   * Uses browse?type=true, which returns only the type — no content
+   * download.
    */
   async fileType(
     projectKey: string,
     repoSlug: string,
     filePath: string,
     at?: string
-  ): Promise<"FILE" | "DIRECTORY" | null> {
+  ): Promise<"FILE" | "DIRECTORY" | "REF_MISSING" | null> {
     const params = new URLSearchParams({ type: "true" });
     if (at) params.set("at", at);
     const encodedPath = encodeRepoPath(filePath);
@@ -451,7 +480,14 @@ export class BitbucketClient {
         `/projects/${encodeURIComponent(projectKey)}/repos/${encodeURIComponent(repoSlug)}/browse/${encodedPath}?${params}`
       )
     );
-    if (resp.status === 404) return null;
+    if (resp.status === 404) {
+      const body = await resp.text();
+      const reason = notFoundReason(body);
+      if (reason === "repository") {
+        throw new Error(`Repository ${projectKey}/${repoSlug} does not exist (404): ${body}`);
+      }
+      return reason === "ref" ? "REF_MISSING" : null;
+    }
     if (!resp.ok) {
       throw new Error(
         `Failed to check ${filePath} (${resp.status}): ${await resp.text()}`

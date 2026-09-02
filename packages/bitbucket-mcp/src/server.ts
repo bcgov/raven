@@ -1257,7 +1257,7 @@ IMPORTANT: Always include the file path and repository when referencing results 
 
   server.tool(
     "commit_file",
-    "Create or update ONE text file with a single commit, server-side (no local clone). When the file already exists on the branch, its tip commit is looked up and used as the optimistic lock, so a concurrent edit fails instead of being clobbered.",
+    "Create or update ONE text file with a single commit, server-side (no local clone). When the file already exists on the branch, its tip commit is looked up and used as the optimistic lock, so a concurrent edit fails instead of being clobbered. The branch must already exist unless the repository is empty; commit_file never creates branches.",
     {
       projectKey: z.string().describe("Bitbucket project key"),
       repoSlug: z.string().describe("Repository slug"),
@@ -1284,6 +1284,26 @@ IMPORTANT: Always include the file path and repository when referencing results 
               ],
               isError: true,
             };
+          }
+          if (type === "REF_MISSING") {
+            // The branch does not resolve. That is legitimate only for an
+            // empty repository (the bootstrap create_repo advertises). On a
+            // repository that already has branches it is a typo or a branch
+            // nobody created, and the file-edit endpoint must not be left to
+            // decide where the commit lands.
+            const branches = await bb.listBranches(projectKey, repoSlug, 1);
+            const example = branches.values[0]?.displayId;
+            if (example !== undefined) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: `Branch ${branch} does not exist in ${projectKey}/${repoSlug} (its branches include ${example}). commit_file never creates branches; create it with create_branch first, or check the name.`,
+                  },
+                ],
+                isError: true,
+              };
+            }
           }
           if (type === "FILE") {
             const commits = await bb.listCommits(projectKey, repoSlug, {
@@ -1319,7 +1339,7 @@ IMPORTANT: Always include the file path and repository when referencing results 
 
   server.tool(
     "push_repo",
-    "Push one local branch to the configured Bitbucket host using git in the background. Never force-pushes. Refuses remotes on any other host, because the push injects the active Bitbucket credentials.",
+    "Push one local branch to the configured Bitbucket host using git in the background. Never force-pushes. Refuses remotes on any other host, and repositories whose local git config sets proxy, TLS, or credential-helper keys, because the push injects the active Bitbucket credentials.",
     {
       dir: z.string().describe("Absolute path to the local repository root"),
       branch: z
