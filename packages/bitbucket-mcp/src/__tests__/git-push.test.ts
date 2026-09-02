@@ -1,6 +1,8 @@
 import { afterAll, describe, it, expect, vi } from "vitest";
 import { existsSync, mkdtempSync, realpathSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cloneRepo, defaultGitExec, gitCredentialEnv, gitPlumbingEnv, isValidBranchName, pushRepo, type GitExec } from "../git-push.js";
@@ -153,7 +155,7 @@ describe("gitCredentialEnv", () => {
       HTTPS_PROXY: "http://proxy.example:3128", // the user's own proxy is kept
       GIT_TERMINAL_PROMPT: "0",
       GIT_TRACE_REDACT: "1",
-      GIT_CONFIG_COUNT: "5",
+      GIT_CONFIG_COUNT: "7",
       GIT_CONFIG_KEY_0: "http.extraHeader",
       GIT_CONFIG_VALUE_0: AUTH,
       GIT_CONFIG_KEY_1: "credential.helper",
@@ -166,6 +168,11 @@ describe("gitCredentialEnv", () => {
       // http.<host>.sslVerify=false must be out-specified for the target.
       GIT_CONFIG_KEY_4: `http.https://${HOST}/scm/nrs/repo.git.sslVerify`,
       GIT_CONFIG_VALUE_4: "true",
+      // A redirect would carry the injected header to a host the pin never saw.
+      GIT_CONFIG_KEY_5: "http.followRedirects",
+      GIT_CONFIG_VALUE_5: "false",
+      GIT_CONFIG_KEY_6: `http.https://${HOST}/scm/nrs/repo.git.followRedirects`,
+      GIT_CONFIG_VALUE_6: "false",
     });
     for (const key of DROPPED) expect(env).not.toHaveProperty(key);
     expect(Object.values(env).join(" ")).not.toContain("/x");
@@ -190,7 +197,7 @@ describe("gitCredentialEnv", () => {
     for (const once of ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_TERMINAL_PROMPT"]) {
       expect(names.filter((n) => n === once)).toHaveLength(1);
     }
-    expect(env).toMatchObject({ Path: "C:\\bin", GIT_CONFIG_GLOBAL: "C:\\work\\.gitconfig", GIT_CONFIG_COUNT: "5", GIT_TERMINAL_PROMPT: "0" });
+    expect(env).toMatchObject({ Path: "C:\\bin", GIT_CONFIG_GLOBAL: "C:\\work\\.gitconfig", GIT_CONFIG_COUNT: "7", GIT_TERMINAL_PROMPT: "0" });
     expect(Object.values(env).join(" ")).not.toContain("evil");
   });
 });
@@ -582,6 +589,58 @@ describe("cloneRepo checkout split (real git)", () => {
     g(["checkout"], dest, base);
     expect(existsSync(join(dest, "a.txt"))).toBe(true);
     expect(readFileSync(marker, "utf-8")).toBe("saw: <unset>\n"); // hook ran, saw nothing
+  });
+});
+
+describe("gitCredentialEnv redirects (real git)", () => {
+  const listen = (server: Server) =>
+    new Promise<number>((resolve) => server.listen(0, "127.0.0.1", () => resolve((server.address() as AddressInfo).port)));
+  // Asynchronous, unlike spawnSync: the servers live in this process and
+  // must keep serving while git runs.
+  const gitAsync = (args: string[], env: NodeJS.ProcessEnv) =>
+    new Promise<{ status: number | null; stderr: string }>((resolve) => {
+      const child = spawn("git", args, { env, stdio: ["ignore", "ignore", "pipe"], timeout: 30_000 });
+      let stderr = "";
+      child.stderr.on("data", (d) => (stderr += String(d)));
+      child.on("close", (status) => resolve({ status, stderr }));
+    });
+
+  it("stops at a redirect instead of contacting the host it points to, unlike git's default", async () => {
+    const seen: string[] = [];
+    const target = createServer((req, res) => {
+      seen.push(`${req.headers.host ?? ""}${req.url ?? ""}`);
+      res.statusCode = 401;
+      res.setHeader("WWW-Authenticate", 'Basic realm="x"');
+      res.end();
+    });
+    const targetPort = await listen(target);
+    const front = createServer((req, res) => {
+      res.statusCode = 302;
+      res.setHeader("Location", `http://127.0.0.1:${targetPort}${req.url ?? ""}`);
+      res.end();
+    });
+    const url = `http://127.0.0.1:${await listen(front)}/x.git`;
+    try {
+      // Control: git's default (http.followRedirects=initial) follows to the other host.
+      await gitAsync(["ls-remote", url], {
+        ...gitPlumbingEnv(),
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "http.extraHeader",
+        GIT_CONFIG_VALUE_0: AUTH,
+      });
+      expect(seen.length).toBeGreaterThan(0);
+      seen.length = 0;
+
+      // Guarded: refused at the 302; the redirect target is never contacted.
+      const guarded = await gitAsync(["ls-remote", url], gitCredentialEnv(AUTH, url));
+      expect(guarded.status).not.toBe(0);
+      expect(guarded.stderr).toMatch(/302/);
+      expect(seen).toHaveLength(0);
+    } finally {
+      front.close();
+      target.close();
+    }
   });
 });
 

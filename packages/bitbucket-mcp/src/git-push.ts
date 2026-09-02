@@ -143,9 +143,14 @@ export function gitPlumbingEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.Pr
  * lets a URL-scoped key beat a plain one whatever the scope, so a
  * `http.<host>.sslVerify=false` left in a global config (a TLS-inspecting
  * proxy workaround, say) would otherwise win; the exact target URL is the
- * most specific match possible, and command scope wins a tie. Git's trace
- * redaction is forced on so a debugging variable inherited from the server
- * cannot print the header.
+ * most specific match possible, and command scope wins a tie. Redirects
+ * are never followed, plain and URL-scoped alike: git follows the initial
+ * redirect by default, and whether the injected header travels to the new
+ * location depends on the curl version underneath (older ones forwarded
+ * custom headers even to another port, CVE-2022-27776), so the request is
+ * refused at the 302 instead and the pinned host stays the only host
+ * contacted. Git's trace redaction is forced on so a debugging variable
+ * inherited from the server cannot print the header.
  */
 export function gitCredentialEnv(
   authHeader: string,
@@ -156,7 +161,7 @@ export function gitCredentialEnv(
     ...gitPlumbingEnv(base),
     GIT_TERMINAL_PROMPT: "0",
     GIT_TRACE_REDACT: "1",
-    GIT_CONFIG_COUNT: "5",
+    GIT_CONFIG_COUNT: "7",
     GIT_CONFIG_KEY_0: "http.extraHeader",
     GIT_CONFIG_VALUE_0: authHeader,
     GIT_CONFIG_KEY_1: "credential.helper",
@@ -167,6 +172,10 @@ export function gitCredentialEnv(
     GIT_CONFIG_VALUE_3: "true",
     GIT_CONFIG_KEY_4: `http.${targetUrl}.sslVerify`,
     GIT_CONFIG_VALUE_4: "true",
+    GIT_CONFIG_KEY_5: "http.followRedirects",
+    GIT_CONFIG_VALUE_5: "false",
+    GIT_CONFIG_KEY_6: `http.${targetUrl}.followRedirects`,
+    GIT_CONFIG_VALUE_6: "false",
   };
 }
 
