@@ -112,6 +112,24 @@ function isForbiddenLocalKey(key: string, remote: string): boolean {
 }
 
 /**
+ * The environment for every git invocation this module makes that does NOT
+ * carry the credential: `base` (the process environment by default) with
+ * every controlled variable removed. The validation commands (top level,
+ * remote URLs, config listing) run with exactly this environment and the
+ * network step runs with gitCredentialEnv, which adds the credential to
+ * it — so both phases see the same git configuration, and an inherited
+ * GIT_CONFIG_* rewrite cannot make the checks resolve one URL while the
+ * push uses another.
+ */
+export function gitPlumbingEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(base)) {
+    if (!isControlledEnvKey(name)) env[name] = value;
+  }
+  return env;
+}
+
+/**
  * The COMPLETE environment for a git invocation that carries the Bitbucket
  * credential (push_repo, clone_repo) to `targetUrl`, built from `base`
  * (the process environment by default). The header travels via
@@ -134,12 +152,8 @@ export function gitCredentialEnv(
   targetUrl: string,
   base: NodeJS.ProcessEnv = process.env
 ): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
-  for (const [name, value] of Object.entries(base)) {
-    if (!isControlledEnvKey(name)) env[name] = value;
-  }
   return {
-    ...env,
+    ...gitPlumbingEnv(base),
     GIT_TERMINAL_PROMPT: "0",
     GIT_TRACE_REDACT: "1",
     GIT_CONFIG_COUNT: "5",
@@ -278,11 +292,14 @@ export interface PushRepoResult {
  * which would let the checkout redirect or intercept the credentialed
  * request (the hooks it could run are already skipped with --no-verify).
  * The refspec is always the explicit non-forcing `refs/heads/X:refs/heads/X`
- * — there is no force option at all. The push runs with gitCredentialEnv.
+ * — there is no force option at all; tags and submodules are never pushed.
+ * Every check runs with gitPlumbingEnv and the push with gitCredentialEnv,
+ * the same environment plus the credential.
  */
 export function pushRepo(opts: PushRepoOptions): PushRepoResult {
   const exec = opts.exec ?? defaultGitExec;
-  const run = (args: string[], env?: NodeJS.ProcessEnv): string =>
+  const plumbing = gitPlumbingEnv();
+  const run = (args: string[], env: NodeJS.ProcessEnv = plumbing): string =>
     exec(args, { cwd: opts.dir, env, timeoutMs: GIT_TIMEOUT_MS });
 
   if (!isAbsolute(opts.dir)) {
@@ -360,7 +377,9 @@ export function pushRepo(opts: PushRepoOptions): PushRepoResult {
   // credential header; this controlled push never runs it.
   // --no-follow-tags: push.followTags in any config scope would otherwise
   // add reachable annotated tags to what is meant to be a one-branch push.
-  const args = ["push", "--no-verify", "--no-follow-tags"];
+  // --recurse-submodules=no: push.recurseSubmodules=on-demand would push
+  // submodules to their own, never validated remotes with the credential.
+  const args = ["push", "--no-verify", "--no-follow-tags", "--recurse-submodules=no"];
   if (setUpstream) args.push("--set-upstream");
   args.push(remote, `refs/heads/${branch}:refs/heads/${branch}`);
   const output = run(args, gitCredentialEnv(opts.authHeader, remoteUrl));
@@ -406,7 +425,8 @@ export interface CloneRepoOptions {
 export function cloneRepo(opts: CloneRepoOptions): string {
   const exec = opts.exec ?? defaultGitExec;
   const cwd = tmpdir();
-  const run = (args: string[], env?: NodeJS.ProcessEnv): string =>
+  const plumbing = gitPlumbingEnv();
+  const run = (args: string[], env: NodeJS.ProcessEnv = plumbing): string =>
     exec(args, { cwd, env, timeoutMs: GIT_TIMEOUT_MS });
 
   if (!isAbsolute(opts.dest)) {
@@ -446,12 +466,15 @@ export function cloneRepo(opts: CloneRepoOptions): string {
   // Populate the working tree in a separate process that never sees the
   // credential. Any post-checkout hook the templates installed runs here,
   // with nothing to read.
-  const inDest = (a: string[]): string => exec(a, { cwd: opts.dest, timeoutMs: GIT_TIMEOUT_MS });
+  const inDest = (a: string[]): string =>
+    exec(a, { cwd: opts.dest, env: plumbing, timeoutMs: GIT_TIMEOUT_MS });
   let hasHead = true;
   try {
     inDest(["rev-parse", "--verify", "--quiet", "HEAD"]);
   } catch {
     hasHead = false; // empty repository: nothing to check out
   }
-  return hasHead ? output + inDest(["checkout"]) : output;
+  // --no-recurse-submodules: submodule.recurse in the user's config would
+  // otherwise fetch submodules here; clone_repo delivers the superproject.
+  return hasHead ? output + inDest(["checkout", "--no-recurse-submodules"]) : output;
 }

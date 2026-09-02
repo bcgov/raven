@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, realpathSync, mkdirSync, readFileSync, rmSync,
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cloneRepo, defaultGitExec, gitCredentialEnv, isValidBranchName, pushRepo, type GitExec } from "../git-push.js";
+import { cloneRepo, defaultGitExec, gitCredentialEnv, gitPlumbingEnv, isValidBranchName, pushRepo, type GitExec } from "../git-push.js";
 
 const HOST = "bwa.example.gov.bc.ca";
 const AUTH = "Authorization: Basic Zm9vOmJhcg==";
@@ -79,7 +79,7 @@ function fakeGit(state: {
     }
     if (args[0] === "push") return state.pushOutput ?? "";
     if (args[0] === "clone") return state.cloneOutput ?? "";
-    if (cmd === "checkout") return "Your branch is up to date with 'origin/main'.\n";
+    if (cmd === "checkout --no-recurse-submodules") return "Your branch is up to date with 'origin/main'.\n";
     throw new Error(`fakeGit: unexpected command: ${cmd}`);
   };
   return { exec, calls };
@@ -109,6 +109,29 @@ describe("isValidBranchName", () => {
       ".hidden", "a/.b", "x.lock", "a/b.lock", "main.", "a~b", "a^b", "a?b", "a*b", "a[b", "a\\b",
     ]) {
       expect(isValidBranchName(bad), JSON.stringify(bad)).toBe(false);
+    }
+  });
+});
+
+describe("gitPlumbingEnv", () => {
+  it("strips inherited GIT_CONFIG_* and repo redirection so checks and push see one configuration", () => {
+    vi.stubEnv("GIT_CONFIG_COUNT", "1");
+    vi.stubEnv("GIT_CONFIG_KEY_0", `url.https://${HOST}/.insteadOf`);
+    vi.stubEnv("GIT_CONFIG_VALUE_0", "https://attacker.example.com/");
+    vi.stubEnv("GIT_DIR", "/elsewhere/.git");
+    try {
+      const dir = repoDir();
+      const git = fakeGit({ toplevel: dir, currentBranch: "main", remoteUrl: `https://${HOST}/scm/nrs/repo.git`, hasUpstream: true });
+      pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
+      for (const call of git.calls) {
+        const names = Object.keys(call.env ?? {}).map((k) => k.toUpperCase());
+        expect(names).not.toContain("GIT_DIR");
+        expect(call.env?.["GIT_CONFIG_VALUE_0"] ?? "").not.toContain("attacker");
+      }
+      const plumbing = git.calls.find((c) => c.args[0] === "remote")!.env!;
+      expect(Object.keys(plumbing).some((k) => /^GIT_CONFIG_/i.test(k))).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
     }
   });
 });
@@ -194,6 +217,7 @@ describe("pushRepo", () => {
       "push",
       "--no-verify",
       "--no-follow-tags",
+      "--recurse-submodules=no",
       "origin",
       "refs/heads/feature/x:refs/heads/feature/x",
     ]);
@@ -228,7 +252,10 @@ describe("pushRepo", () => {
     expect(push.env?.["GIT_CONFIG_VALUE_0"]).toBe(AUTH);
     for (const call of git.calls) {
       expect(call.args.join(" ")).not.toContain("Basic");
-      if (call.args[0] !== "push") expect(call.env).toBeUndefined();
+      if (call.args[0] === "push") continue;
+      // The checks run with the same sanitized environment, minus the credential.
+      expect(call.env).toEqual(gitPlumbingEnv());
+      expect(JSON.stringify(call.env)).not.toContain("Basic");
     }
   });
 
@@ -246,6 +273,7 @@ describe("pushRepo", () => {
       "push",
       "--no-verify",
       "--no-follow-tags",
+      "--recurse-submodules=no",
       "--set-upstream",
       "origin",
       "refs/heads/new-branch:refs/heads/new-branch",
@@ -454,11 +482,11 @@ describe("cloneRepo", () => {
     expect(clone.cwd).toBe(tmpdir()); // never the server's own cwd
     for (const call of git.calls) {
       if (call.args[0] === "clone") continue;
-      expect(call.env).toBeUndefined(); // only the network step carries the credential
+      expect(call.env).toEqual(gitPlumbingEnv()); // only the network step carries the credential
     }
     // The working tree is populated afterwards, inside the clone, without the credential.
     expect(git.calls.slice(3).map((c) => c.cwd)).toEqual([dest, dest]);
-    expect(git.calls.at(-1)!.args).toEqual(["checkout"]);
+    expect(git.calls.at(-1)!.args).toEqual(["checkout", "--no-recurse-submodules"]);
   });
 
   it("refuses when a url.*.insteadOf rule would rewrite the clone URL, and never runs clone", () => {
