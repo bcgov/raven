@@ -229,7 +229,7 @@ IMPORTANT: Bitbucket project keys often differ from Jira keys. If a key returns 
 
   server.tool(
     "read_file",
-    "Read the content of a file from a Bitbucket repository. Returns the file content with line endings normalized to \\n, and (on the first page) the file's latest commit, which commit_file requires as sourceCommitId when updating that file. Large files can be read in full by paging with startLine/endLine, or by raising maxChars.\n\nIMPORTANT: Always search the newest release branch (e.g., release/*) or a feature branch if available, rather than the default branch. Use list_branches first to find the most recent branch. Always include the branch name and file path when referencing results to the user.",
+    "Read the content of a file from a Bitbucket repository. Returns the file content with line endings normalized to \\n. On the first page it also reports the file's latest commit and returns the content as of that exact commit, which commit_file requires as sourceCommitId when updating the file; pass that commit as `at` on later pages to keep reading the same revision. Large files can be read in full by paging with startLine/endLine, or by raising maxChars.\n\nIMPORTANT: Always search the newest release branch (e.g., release/*) or a feature branch if available, rather than the default branch. Use list_branches first to find the most recent branch. Always include the branch name and file path when referencing results to the user.",
     {
       projectKey: z.string().describe("Bitbucket project key"),
       repoSlug: z.string().describe("Repository slug"),
@@ -261,7 +261,27 @@ IMPORTANT: Bitbucket project keys often differ from Jira keys. If a key returns 
     async ({ projectKey, repoSlug, filePath, at, startLine, endLine, maxChars }) => {
       try {
         const bb = await getClient();
-        const content = await bb.readFile(projectKey, repoSlug, filePath, at);
+
+        // Resolve the file's latest commit FIRST, then read the content at
+        // that immutable commit, so the revision reported is the revision
+        // returned even if the branch moves between the two requests: it is
+        // the sourceCommitId commit_file requires to update the file. First
+        // page only (continuation pages can pass at=<that commit> to stay on
+        // the same revision); informational, never fails the read.
+        let commitId: string | undefined;
+        if (startLine === undefined || startLine === 1) {
+          try {
+            const latest = await bb.listCommits(projectKey, repoSlug, {
+              path: filePath,
+              limit: 1,
+              ...(at ? { until: at } : {}),
+            });
+            commitId = latest.values[0]?.id;
+          } catch {
+            // fall back to reading at `at` without a commit line
+          }
+        }
+        const content = await bb.readFile(projectKey, repoSlug, filePath, commitId ?? at);
 
         const slice = sliceFileContent(content, { startLine, endLine, maxChars });
         if (!slice.ok) {
@@ -281,24 +301,7 @@ IMPORTANT: Bitbucket project keys often differ from Jira keys. If a key returns 
           slice.totalLines > 0
             ? ` | **Lines:** ${slice.firstLine}–${slice.lastLine} of ${slice.totalLines}`
             : "";
-        // The file's latest commit is the sourceCommitId commit_file needs to
-        // update it: reporting it with the content lets a later write prove
-        // it saw the current version. Informational — never fail the read —
-        // and looked up once per file, not on every continuation page.
-        let commitLine = "";
-        if (startLine === undefined || startLine === 1) {
-          try {
-            const latest = await bb.listCommits(projectKey, repoSlug, {
-              path: filePath,
-              limit: 1,
-              ...(at ? { until: at } : {}),
-            });
-            const id = latest.values[0]?.id;
-            if (id) commitLine = ` | **Commit:** ${id} (sourceCommitId for commit_file)`;
-          } catch {
-            // leave commitLine empty
-          }
-        }
+        const commitLine = commitId ? ` | **Commit:** ${commitId} (sourceCommitId for commit_file)` : "";
         const out = [
           `### ${filePath}\n**Repo:** ${projectKey}/${repoSlug} | **Branch:** ${at ?? "default"}${range}${commitLine}\n\`\`\`\n${slice.text}\n\`\`\``,
         ];

@@ -130,6 +130,29 @@ describe("gitCredentialEnv", () => {
     for (const key of DROPPED) expect(env).not.toHaveProperty(key);
     expect(Object.values(env).join(" ")).not.toContain("/x");
   });
+
+  it("drops controlled variables whatever their case, as Windows resolves names case-insensitively", () => {
+    const env = gitCredentialEnv(AUTH, `https://${HOST}/scm/nrs/repo.git`, {
+      Path: "C:\\bin",
+      Git_AskPass: "C:\\evil\\askpass.exe",
+      ssh_askpass: "C:\\evil\\askpass.exe",
+      git_ssl_no_verify: "1",
+      Git_Config_Count: "9",
+      git_config_key_0: "http.proxy",
+      GIT_CONFIG_VALUE_9: "leftover",
+      git_terminal_prompt: "1",
+      GIT_CONFIG_GLOBAL: "C:\\work\\.gitconfig", // the user's own config file choice is kept
+    });
+    const names = Object.keys(env).map((k) => k.toUpperCase());
+    for (const gone of ["GIT_ASKPASS", "SSH_ASKPASS", "GIT_SSL_NO_VERIFY", "GIT_CONFIG_VALUE_9"]) {
+      expect(names.filter((n) => n === gone)).toHaveLength(0);
+    }
+    for (const once of ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_TERMINAL_PROMPT"]) {
+      expect(names.filter((n) => n === once)).toHaveLength(1);
+    }
+    expect(env).toMatchObject({ Path: "C:\\bin", GIT_CONFIG_GLOBAL: "C:\\work\\.gitconfig", GIT_CONFIG_COUNT: "5", GIT_TERMINAL_PROMPT: "0" });
+    expect(Object.values(env).join(" ")).not.toContain("evil");
+  });
 });
 
 describe("pushRepo", () => {

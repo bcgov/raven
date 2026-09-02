@@ -59,6 +59,24 @@ const DROPPED_ENV = [
 ];
 
 /**
+ * Is an inherited variable one this module controls? Compared without
+ * regard to case: Windows resolves environment names case-insensitively,
+ * so an inherited `Git_AskPass` would reach git as GIT_ASKPASS even though
+ * a plain-object copy keeps the original spelling. Inherited
+ * GIT_CONFIG_COUNT / GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n are dropped for
+ * the same reason, so they cannot shadow or extend the injected set.
+ */
+function isControlledEnvKey(name: string): boolean {
+  const upper = name.toUpperCase();
+  return (
+    DROPPED_ENV.includes(upper) ||
+    upper === "GIT_TERMINAL_PROMPT" ||
+    upper === "GIT_TRACE_REDACT" ||
+    /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(upper)
+  );
+}
+
+/**
  * Repository-LOCAL config keys that must not be present when git runs with
  * the credential. Credential helpers and askpass are programs git executes
  * on a 401 (an expired session is an everyday 401) with the credential in
@@ -103,8 +121,10 @@ export function gitCredentialEnv(
   targetUrl: string,
   base: NodeJS.ProcessEnv = process.env
 ): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...base };
-  for (const key of DROPPED_ENV) delete env[key];
+  const env: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(base)) {
+    if (!isControlledEnvKey(name)) env[name] = value;
+  }
   return {
     ...env,
     GIT_TERMINAL_PROMPT: "0",
