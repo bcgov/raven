@@ -52,9 +52,10 @@ If you encounter authentication errors (401 Unauthorized or "No valid SMSESSION 
 
   /**
    * Auth header for background git operations (clone/push), matching the
-   * active auth method. Callers must hand it to git via GIT_CONFIG_*
-   * environment variables, never argv, so credentials stay out of the
-   * process list. Call only after getClient() has resolved the auth mode.
+   * active auth method. Callers must hand it to git through
+   * gitCredentialEnv() — GIT_CONFIG_* environment variables, never argv, so
+   * credentials stay out of the process list, with credential programs
+   * reset. Call only after getClient() has resolved the auth mode.
    */
   async function buildGitAuthHeader(): Promise<string> {
     if (usingBasicAuth) {
@@ -228,7 +229,7 @@ IMPORTANT: Bitbucket project keys often differ from Jira keys. If a key returns 
 
   server.tool(
     "read_file",
-    "Read the content of a file from a Bitbucket repository. Returns the file content with line endings normalized to \\n. Large files can be read in full by paging with startLine/endLine, or by raising maxChars.\n\nIMPORTANT: Always search the newest release branch (e.g., release/*) or a feature branch if available, rather than the default branch. Use list_branches first to find the most recent branch. Always include the branch name and file path when referencing results to the user.",
+    "Read the content of a file from a Bitbucket repository. Returns the file content with line endings normalized to \\n, and (on the first page) the file's latest commit, which commit_file requires as sourceCommitId when updating that file. Large files can be read in full by paging with startLine/endLine, or by raising maxChars.\n\nIMPORTANT: Always search the newest release branch (e.g., release/*) or a feature branch if available, rather than the default branch. Use list_branches first to find the most recent branch. Always include the branch name and file path when referencing results to the user.",
     {
       projectKey: z.string().describe("Bitbucket project key"),
       repoSlug: z.string().describe("Repository slug"),
@@ -280,8 +281,26 @@ IMPORTANT: Bitbucket project keys often differ from Jira keys. If a key returns 
           slice.totalLines > 0
             ? ` | **Lines:** ${slice.firstLine}–${slice.lastLine} of ${slice.totalLines}`
             : "";
+        // The file's latest commit is the sourceCommitId commit_file needs to
+        // update it: reporting it with the content lets a later write prove
+        // it saw the current version. Informational — never fail the read —
+        // and looked up once per file, not on every continuation page.
+        let commitLine = "";
+        if (startLine === undefined || startLine === 1) {
+          try {
+            const latest = await bb.listCommits(projectKey, repoSlug, {
+              path: filePath,
+              limit: 1,
+              ...(at ? { until: at } : {}),
+            });
+            const id = latest.values[0]?.id;
+            if (id) commitLine = ` | **Commit:** ${id} (sourceCommitId for commit_file)`;
+          } catch {
+            // leave commitLine empty
+          }
+        }
         const out = [
-          `### ${filePath}\n**Repo:** ${projectKey}/${repoSlug} | **Branch:** ${at ?? "default"}${range}\n\`\`\`\n${slice.text}\n\`\`\``,
+          `### ${filePath}\n**Repo:** ${projectKey}/${repoSlug} | **Branch:** ${at ?? "default"}${range}${commitLine}\n\`\`\`\n${slice.text}\n\`\`\``,
         ];
         if (slice.truncated) {
           out.push(
@@ -1253,7 +1272,7 @@ IMPORTANT: Always include the file path and repository when referencing results 
 
   server.tool(
     "commit_file",
-    "Create or update ONE text file with a single commit, server-side (no local clone). When the file already exists on the branch, its tip commit is looked up and used as the optimistic lock, so a concurrent edit fails instead of being clobbered. The branch must already exist unless the repository is empty; commit_file never creates branches.",
+    "Create or update ONE text file with a single commit, server-side (no local clone). Creating a new file needs no sourceCommitId. Updating an existing file REQUIRES sourceCommitId, the commit read_file reports for that file: the server rejects the write (409) if the file changed since that commit, so an edit made between your read and your write is detected instead of overwritten. The branch must already exist unless the repository is empty; commit_file never creates branches.",
     {
       projectKey: z.string().describe("Bitbucket project key"),
       repoSlug: z.string().describe("Repository slug"),
@@ -1264,14 +1283,13 @@ IMPORTANT: Always include the file path and repository when referencing results 
       sourceCommitId: z
         .string()
         .optional()
-        .describe("Commit the file was last read at; overrides the automatic tip lookup"),
+        .describe("Commit the file was read at, as reported by read_file. Required when the file already exists on the branch; omit when creating a new file."),
     },
     { readOnlyHint: false },
     async ({ projectKey, repoSlug, filePath, branch, content, message, sourceCommitId }) => {
       try {
         const bb = await getClient();
-        let source = sourceCommitId;
-        if (!source) {
+        if (!sourceCommitId) {
           const type = await bb.fileType(projectKey, repoSlug, filePath, `refs/heads/${branch}`);
           if (type === "DIRECTORY") {
             return {
@@ -1302,19 +1320,32 @@ IMPORTANT: Always include the file path and repository when referencing results 
             }
           }
           if (type === "FILE") {
+            // Updating an existing file needs the revision the caller READ,
+            // not the tip looked up here: a tip lookup only guards the
+            // lookup-to-write window, and an edit that landed between the
+            // caller's read_file and now would be silently overwritten.
             const commits = await bb.listCommits(projectKey, repoSlug, {
               path: filePath,
               until: `refs/heads/${branch}`,
               limit: 1,
             });
-            source = commits.values[0]?.id;
+            const tip = commits.values[0]?.id ?? "unknown";
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `${filePath} already exists on ${branch} (latest commit ${tip}). Pass sourceCommitId, the commit read_file reported for this file, so an edit made since that read is detected instead of overwritten. Passing ${tip} asserts that the current content is what you intend to replace.`,
+                },
+              ],
+              isError: true,
+            };
           }
         }
         const commit = await bb.commitFile(projectKey, repoSlug, filePath, {
           branch,
           content,
           message,
-          ...(source ? { sourceCommitId: source } : {}),
+          ...(sourceCommitId ? { sourceCommitId } : {}),
         });
         return {
           content: [

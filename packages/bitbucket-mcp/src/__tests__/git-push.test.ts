@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { mkdtempSync, realpathSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultGitExec, gitCredentialEnv, pushRepo, type GitExec } from "../git-push.js";
@@ -118,6 +119,9 @@ describe("pushRepo", () => {
     const push = git.calls.at(-1)!;
     expect(push.env).toMatchObject({
       GIT_TERMINAL_PROMPT: "0",
+      // Inherited askpass programs are consulted before core.askpass.
+      GIT_ASKPASS: "",
+      SSH_ASKPASS: "",
       GIT_CONFIG_COUNT: "3",
       GIT_CONFIG_KEY_0: "http.extraHeader",
       GIT_CONFIG_VALUE_0: AUTH,
@@ -370,6 +374,38 @@ describe("defaultGitExec (real git)", () => {
     defaultGitExec(["config", "--local", "http.proxy", "http://127.0.0.1:1"], { cwd: dir, timeoutMs: 30_000 });
     const out = defaultGitExec(["config", "--list", "--show-scope", "--name-only"], { cwd: dir, timeoutMs: 30_000 });
     expect(out).toContain("local\thttp.proxy");
+  });
+});
+
+describe("gitCredentialEnv (real git)", () => {
+  it("keeps an inherited GIT_ASKPASS / SSH_ASKPASS program from running on a credential prompt", () => {
+    if (process.platform === "win32") return; // the marker program is a shell script
+    const dir = repoDir();
+    const marker = join(dir, "askpass-ran");
+    const script = join(dir, "askpass.sh");
+    writeFileSync(script, `#!/bin/sh\necho ran >> "${marker}"\necho secret\n`, { mode: 0o755 });
+    // `git credential fill` prompts exactly the way a 401 on clone/push does,
+    // without needing a server: helpers first, then askpass, then terminal.
+    const fill = (env: NodeJS.ProcessEnv) =>
+      spawnSync("git", ["credential", "fill"], {
+        cwd: dir,
+        encoding: "utf-8",
+        input: "protocol=https\nhost=example.invalid\n\n",
+        env,
+        timeout: 30_000,
+      });
+
+    // Control: with only the terminal prompt disabled, git runs GIT_ASKPASS.
+    const control = fill({ ...process.env, GIT_ASKPASS: script, GIT_TERMINAL_PROMPT: "0" });
+    expect(existsSync(marker)).toBe(true);
+    expect(control.stdout).toContain("password=secret");
+    rmSync(marker);
+
+    // Guarded: the same inherited programs never run, and git fails instead.
+    const guarded = fill({ ...process.env, GIT_ASKPASS: script, SSH_ASKPASS: script, ...gitCredentialEnv(AUTH) });
+    expect(guarded.status).not.toBe(0);
+    expect(existsSync(marker)).toBe(false);
+    expect(guarded.stdout).not.toContain("secret");
   });
 });
 

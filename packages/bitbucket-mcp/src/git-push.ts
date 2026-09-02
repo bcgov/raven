@@ -64,14 +64,18 @@ function isForbiddenLocalKey(key: string, remote: string): boolean {
  * Environment for any git invocation that carries the Bitbucket credential
  * (push_repo, clone_repo). The header travels via GIT_CONFIG_* variables,
  * never argv, so it is not visible in the process list. The same variables
- * reset credential.helper and core.askpass with empty values: the injected
+ * reset credential.helper and core.askpass with empty values, and the
+ * GIT_ASKPASS / SSH_ASKPASS variables an inherited environment may carry
+ * are blanked too (git consults those before core.askpass): the injected
  * header is the only credential the invocation may use, so a 401 fails
  * outright instead of consulting — and exposing this environment to — a
- * credential program from any config scope.
+ * credential program from any config scope or environment.
  */
 export function gitCredentialEnv(authHeader: string): Record<string, string> {
   return {
     GIT_TERMINAL_PROMPT: "0",
+    GIT_ASKPASS: "",
+    SSH_ASKPASS: "",
     GIT_CONFIG_COUNT: "3",
     GIT_CONFIG_KEY_0: "http.extraHeader",
     GIT_CONFIG_VALUE_0: authHeader,
