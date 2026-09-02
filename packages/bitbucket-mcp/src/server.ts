@@ -1,9 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { execFileSync } from "node:child_process";
 import { existsSync, statfsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { SessionManager, createAuthenticatedFetch, createBasicAuthFetch, PiScrubber, authCliPath } from "@nrs/auth";
 
 const pi = new PiScrubber();
@@ -14,7 +13,7 @@ import {
   CodeSearchNotAvailableError,
 } from "./bitbucket-client.js";
 import { sliceFileContent } from "./file-slice.js";
-import { gitCredentialEnv, pushRepo } from "./git-push.js";
+import { cloneRepo, pushRepo } from "./git-push.js";
 
 /** Schema ceiling for read_file maxChars — also gates the truncation hint. */
 const READ_FILE_MAX_CHARS = 200_000;
@@ -598,8 +597,7 @@ IMPORTANT: Bitbucket project keys often differ from Jira keys. If a key returns 
       try {
         const bb = await getClient();
 
-        const dest =
-          targetDir ?? join(homedir(), "Projects", repoSlug);
+        const dest = resolve(targetDir ?? join(homedir(), "Projects", repoSlug));
 
         // Check if already cloned
         if (existsSync(join(dest, ".git"))) {
@@ -635,20 +633,17 @@ IMPORTANT: Bitbucket project keys often differ from Jira keys. If a key returns 
         const cloneUrl = bb.getCloneUrl(projectKey, repoSlug);
         const authHeader = await buildGitAuthHeader();
 
-        const args = ["clone"];
-        if (shallow) args.push("--depth=1");
-        args.push(cloneUrl, dest);
-
-        // The auth header travels via GIT_CONFIG_* environment variables,
-        // not argv — a `-c http.extraHeader=...` argument would expose the
-        // credentials in the process list for the whole clone — and the same
-        // variables reset credential helpers, so a 401 cannot hand this
-        // environment to another process (see gitCredentialEnv).
-        execFileSync("git", args, {
-          encoding: "utf-8",
-          timeout: 300_000, // 5 minutes
-          stdio: ["ignore", "pipe", "pipe"],
-          env: { ...process.env, ...gitCredentialEnv(authHeader) },
+        // cloneRepo pins the URL to the configured host, refuses git
+        // url.*.insteadOf rewrites that would redirect the credentialed
+        // clone, runs from a neutral directory so no repository-local config
+        // applies, and hands the credential to git through gitCredentialEnv
+        // (GIT_CONFIG_* variables, never argv).
+        cloneRepo({
+          url: cloneUrl,
+          dest,
+          shallow: shallow,
+          expectedHost: new URL(bb.getBaseUrl()).host,
+          authHeader,
         });
 
         return {
@@ -1312,7 +1307,7 @@ IMPORTANT: Always include the file path and repository when referencing results 
                 content: [
                   {
                     type: "text",
-                    text: `Branch ${branch} does not exist in ${projectKey}/${repoSlug} (its branches include ${example}). commit_file never creates branches; create it with create_branch first, or check the name.`,
+                    text: `Branch ${branch} does not exist in ${projectKey}/${repoSlug} (its branches include ${pi.scrubText(example)}). commit_file never creates branches; create it with create_branch first, or check the name.`,
                   },
                 ],
                 isError: true,

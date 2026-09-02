@@ -296,4 +296,24 @@ describe("PiScrubber", () => {
       expect(scrubber.scrub("Jane Smith")).toBe("Person-2");
     });
   });
+  describe("scrubText credentials", () => {
+    beforeEach(() => {
+      delete process.env["RAVEN_SCRUB_PI"];
+    });
+
+    it("redacts the HTTP Basic and SMSESSION header values the git tools inject", () => {
+      expect(scrubber.scrubText("sent Authorization: Basic Zm9vOmJhcg== to host")).toBe(
+        "sent Authorization: Basic [TOKEN] to host"
+      );
+      expect(scrubber.scrubText("Cookie: SMSESSION=abcdefghijklmnop123456")).toBe(
+        "Cookie: SMSESSION=[TOKEN]"
+      );
+    });
+
+    it("leaves ordinary prose containing the word Basic alone", () => {
+      expect(scrubber.scrubText("Basic authentication is configured")).toBe(
+        "Basic authentication is configured"
+      );
+    });
+  });
 });

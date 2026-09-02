@@ -43,6 +43,8 @@ const ENV_KEY = "RAVEN_SCRUB_PI";
 const PI_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
   // SMSESSION tokens (long hex/base64 strings after SMSESSION=)
   { pattern: /SMSESSION=[A-Za-z0-9+/=%\-_.]{10,}/g, replacement: "SMSESSION=[TOKEN]" },
+  // HTTP Basic credentials (the other header shape the git tools inject)
+  { pattern: /Authorization:\s*Basic\s+[A-Za-z0-9+/]+={0,2}/gi, replacement: "Authorization: Basic [TOKEN]" },
   // Bearer tokens
   { pattern: /Bearer\s+[A-Za-z0-9\-_.~+/]+=*/g, replacement: "Bearer [TOKEN]" },
   // Generic API keys / tokens (long hex strings, 32+ chars)

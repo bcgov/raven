@@ -3,16 +3,18 @@ import { existsSync, mkdtempSync, realpathSync, mkdirSync, rmSync, writeFileSync
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultGitExec, gitCredentialEnv, pushRepo, type GitExec } from "../git-push.js";
+import { cloneRepo, defaultGitExec, gitCredentialEnv, pushRepo, type GitExec } from "../git-push.js";
 
 const HOST = "bwa.example.gov.bc.ca";
 const AUTH = "Authorization: Basic Zm9vOmJhcg==";
+const DROPPED = ["GIT_ASKPASS", "SSH_ASKPASS", "GIT_SSL_NO_VERIFY", "GIT_DIR", "GIT_WORK_TREE", "GIT_CONFIG_PARAMETERS"];
 
 /**
  * Fake git. Answers rev-parse/symbolic-ref/remote/config lookups from
- * `state` and records every invocation; `push` returns state.pushOutput.
- * The global scope always carries a credential helper and a proxy, so every
- * test implicitly checks that only repository-LOCAL keys are refused.
+ * `state` and records every invocation; `push` returns state.pushOutput,
+ * `clone` returns state.cloneOutput. The system and global scopes always
+ * carry credential helpers and a proxy, so every test implicitly checks
+ * that only repository-LOCAL keys are refused.
  */
 function fakeGit(state: {
   toplevel: string;
@@ -22,12 +24,15 @@ function fakeGit(state: {
   extraPushUrls?: string[];
   /** Keys present in the repository's local config (besides the usual core.*). */
   localConfigKeys?: string[];
+  /** Global url.<base>.insteadOf rules: base -> prefix it replaces. */
+  globalInsteadOf?: Record<string, string>;
   hasUpstream?: boolean;
   pushOutput?: string;
+  cloneOutput?: string;
 }) {
-  const calls: { args: string[]; env?: Record<string, string> }[] = [];
+  const calls: { args: string[]; env?: NodeJS.ProcessEnv; cwd: string }[] = [];
   const exec: GitExec = (args, opts) => {
-    calls.push({ args, env: opts.env });
+    calls.push({ args, env: opts.env, cwd: opts.cwd });
     const cmd = args.join(" ");
     if (cmd === "rev-parse --show-toplevel") return state.toplevel + "\n";
     if (cmd === "symbolic-ref --short HEAD") {
@@ -41,23 +46,28 @@ function fakeGit(state: {
       return [state.remoteUrl, ...(state.extraPushUrls ?? [])].join("\n") + "\n";
     }
     if (args[0] === "config") {
-      expect(args).toEqual(["config", "--list", "--show-scope", "--name-only"]);
-      const lines = [
-        "system\tcredential.helper",
-        "global\tcredential.helper",
-        "global\thttp.proxy",
-        "global\thttp.sslverify",
-        "local\tcore.repositoryformatversion",
-        "local\tremote.origin.url",
-        ...(state.localConfigKeys ?? []).map((k) => `local\t${k}`),
+      expect(args.slice(0, 3)).toEqual(["config", "--list", "--show-scope"]);
+      const nameOnly = args.includes("--name-only");
+      const entries: [string, string, string][] = [
+        ["system", "credential.helper", "osxkeychain"],
+        ["global", "credential.helper", "manager"],
+        ["global", "http.proxy", "http://proxy.example:3128"],
+        ["global", "http.sslverify", "true"],
+        ...Object.entries(state.globalInsteadOf ?? {}).map(
+          ([base, prefix]): [string, string, string] => ["global", `url.${base}.insteadof`, prefix]
+        ),
+        ["local", "core.repositoryformatversion", "0"],
+        ["local", "remote.origin.url", state.remoteUrl ?? ""],
+        ...(state.localConfigKeys ?? []).map((k): [string, string, string] => ["local", k, "x"]),
       ];
-      return lines.join("\n") + "\n";
+      return entries.map(([s, k, v]) => (nameOnly ? `${s}\t${k}` : `${s}\t${k}=${v}`)).join("\n") + "\n";
     }
     if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") {
       if (!state.hasUpstream) throw new Error("fatal: no upstream configured");
       return `origin/${state.currentBranch}\n`;
     }
     if (args[0] === "push") return state.pushOutput ?? "";
+    if (args[0] === "clone") return state.cloneOutput ?? "";
     throw new Error(`fakeGit: unexpected command: ${cmd}`);
   };
   return { exec, calls };
@@ -66,6 +76,38 @@ function fakeGit(state: {
 function repoDir(): string {
   return realpathSync(mkdtempSync(join(tmpdir(), "raven-push-")));
 }
+
+describe("gitCredentialEnv", () => {
+  it("injects the header and resets credential programs, TLS bypass and repo redirection", () => {
+    const env = gitCredentialEnv(AUTH, {
+      PATH: "/bin",
+      HTTPS_PROXY: "http://proxy.example:3128",
+      GIT_ASKPASS: "/x",
+      SSH_ASKPASS: "/y",
+      GIT_SSL_NO_VERIFY: "1",
+      GIT_DIR: "/z",
+      GIT_WORK_TREE: "/w",
+      GIT_CONFIG_PARAMETERS: "'a.b=c'",
+    });
+    expect(env).toMatchObject({
+      PATH: "/bin",
+      HTTPS_PROXY: "http://proxy.example:3128", // the user's own proxy is kept
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_TRACE_REDACT: "1",
+      GIT_CONFIG_COUNT: "4",
+      GIT_CONFIG_KEY_0: "http.extraHeader",
+      GIT_CONFIG_VALUE_0: AUTH,
+      GIT_CONFIG_KEY_1: "credential.helper",
+      GIT_CONFIG_VALUE_1: "",
+      GIT_CONFIG_KEY_2: "core.askpass",
+      GIT_CONFIG_VALUE_2: "",
+      GIT_CONFIG_KEY_3: "http.sslVerify",
+      GIT_CONFIG_VALUE_3: "true",
+    });
+    for (const key of DROPPED) expect(env).not.toHaveProperty(key);
+    expect(Object.values(env).join(" ")).not.toContain("/x");
+  });
+});
 
 describe("pushRepo", () => {
   it("pushes the current branch with an explicit non-forcing refspec", () => {
@@ -107,7 +149,7 @@ describe("pushRepo", () => {
     expect(git.calls.some((c) => c.args[0] === "push")).toBe(false);
   });
 
-  it("passes credentials via GIT_CONFIG_* env, never argv, and resets credential programs", () => {
+  it("runs only the push with the credential env, never argv, and the plumbing without it", () => {
     const dir = repoDir();
     const git = fakeGit({
       toplevel: dir,
@@ -117,25 +159,11 @@ describe("pushRepo", () => {
     });
     pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
     const push = git.calls.at(-1)!;
-    expect(push.env).toMatchObject({
-      GIT_TERMINAL_PROMPT: "0",
-      // Inherited askpass programs are consulted before core.askpass.
-      GIT_ASKPASS: "",
-      SSH_ASKPASS: "",
-      GIT_CONFIG_COUNT: "3",
-      GIT_CONFIG_KEY_0: "http.extraHeader",
-      GIT_CONFIG_VALUE_0: AUTH,
-      // A 401 must fail, not run a helper with the header in its environment.
-      GIT_CONFIG_KEY_1: "credential.helper",
-      GIT_CONFIG_VALUE_1: "",
-      GIT_CONFIG_KEY_2: "core.askpass",
-      GIT_CONFIG_VALUE_2: "",
-    });
     // clone_repo uses the same helper, so the two invocations cannot drift.
     expect(push.env).toEqual(gitCredentialEnv(AUTH));
+    expect(push.env?.["GIT_CONFIG_VALUE_0"]).toBe(AUTH);
     for (const call of git.calls) {
       expect(call.args.join(" ")).not.toContain("Basic");
-      // Only the push carries the credential; the plumbing runs without it.
       if (call.args[0] !== "push") expect(call.env).toBeUndefined();
     }
   });
@@ -227,7 +255,7 @@ describe("pushRepo", () => {
     ]) {
       const git = fakeGit({ toplevel: dir, currentBranch: "main", remoteUrl });
       expect(() => pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).toThrow(
-        /refusing to push credentials|not the configured Bitbucket host/
+        /refusing to send credentials there/
       );
     }
   });
@@ -240,7 +268,7 @@ describe("pushRepo", () => {
       remoteUrl: `git@${HOST}:nrs/repo.git`,
     });
     expect(() => pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).toThrow(
-      /non-URL push target/
+      /is not a URL/
     );
   });
 
@@ -344,6 +372,54 @@ describe("pushRepo", () => {
   });
 });
 
+describe("cloneRepo", () => {
+  const URL_OK = `https://${HOST}/int/stash/scm/nrs/repo.git`;
+
+  it("clones from a neutral cwd with the credential env and pinned argv", () => {
+    const dest = join(repoDir(), "clone");
+    const git = fakeGit({ toplevel: "/unused", cloneOutput: "Cloning into 'clone'...\n" });
+    const out = cloneRepo({ url: URL_OK, dest, shallow: true, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
+    expect(out).toContain("Cloning");
+    expect(git.calls[0]!.args).toEqual(["config", "--list", "--show-scope"]);
+    expect(git.calls[0]!.env).toBeUndefined();
+    const clone = git.calls.at(-1)!;
+    expect(clone.args).toEqual(["clone", "--depth=1", URL_OK, dest]);
+    expect(clone.env).toEqual(gitCredentialEnv(AUTH));
+    for (const call of git.calls) expect(call.cwd).toBe(tmpdir()); // never the server's own cwd
+  });
+
+  it("refuses when a url.*.insteadOf rule would rewrite the clone URL, and never runs clone", () => {
+    const git = fakeGit({
+      toplevel: "/unused",
+      globalInsteadOf: { "https://attacker.example.com/": `https://${HOST}/int/stash/` },
+    });
+    expect(() =>
+      cloneRepo({ url: URL_OK, dest: join(tmpdir(), "x"), shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec })
+    ).toThrow(/insteadOf.*refusing to clone/);
+    expect(git.calls.some((c) => c.args[0] === "clone")).toBe(false);
+  });
+
+  it("ignores insteadOf rules whose prefix does not match the clone URL", () => {
+    const git = fakeGit({
+      toplevel: "/unused",
+      globalInsteadOf: { "ssh://git@github.com/": "https://github.com/" },
+    });
+    cloneRepo({ url: URL_OK, dest: join(tmpdir(), "x"), shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
+    expect(git.calls.at(-1)!.args).toEqual(["clone", URL_OK, join(tmpdir(), "x")]);
+  });
+
+  it("refuses a clone URL off the configured host, or with a relative dest, before any git runs", () => {
+    const git = fakeGit({ toplevel: "/unused" });
+    expect(() =>
+      cloneRepo({ url: "https://attacker.example.com/x.git", dest: join(tmpdir(), "x"), shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec })
+    ).toThrow(/not the configured Bitbucket host/);
+    expect(() =>
+      cloneRepo({ url: URL_OK, dest: "relative", shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec })
+    ).toThrow(/absolute path/);
+    expect(git.calls).toHaveLength(0);
+  });
+});
+
 describe("defaultGitExec (real git)", () => {
   const opts = { cwd: repoDir(), timeoutMs: 30_000 };
 
@@ -374,6 +450,8 @@ describe("defaultGitExec (real git)", () => {
     defaultGitExec(["config", "--local", "http.proxy", "http://127.0.0.1:1"], { cwd: dir, timeoutMs: 30_000 });
     const out = defaultGitExec(["config", "--list", "--show-scope", "--name-only"], { cwd: dir, timeoutMs: 30_000 });
     expect(out).toContain("local\thttp.proxy");
+    const full = defaultGitExec(["config", "--list", "--show-scope"], { cwd: dir, timeoutMs: 30_000 });
+    expect(full).toContain("local\thttp.proxy=http://127.0.0.1:1");
   });
 });
 
@@ -402,7 +480,7 @@ describe("gitCredentialEnv (real git)", () => {
     rmSync(marker);
 
     // Guarded: the same inherited programs never run, and git fails instead.
-    const guarded = fill({ ...process.env, GIT_ASKPASS: script, SSH_ASKPASS: script, ...gitCredentialEnv(AUTH) });
+    const guarded = fill(gitCredentialEnv(AUTH, { ...process.env, GIT_ASKPASS: script, SSH_ASKPASS: script }));
     expect(guarded.status).not.toBe(0);
     expect(existsSync(marker)).toBe(false);
     expect(guarded.stdout).not.toContain("secret");

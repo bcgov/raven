@@ -1,20 +1,22 @@
 import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { isAbsolute } from "node:path";
 
 /**
  * Injectable git runner for tests. Returns the command's stdout followed by
  * its stderr — `git push` reports its summary on stderr while the plumbing
  * commands answer on stdout, and callers get both. Throws on a non-zero
- * exit with git's stderr in the message. `env` entries are ADDED to the
- * process environment for that invocation only.
+ * exit with git's stderr in the message. `env`, when given, is the COMPLETE
+ * environment for that invocation (see gitCredentialEnv); otherwise the
+ * process environment is used as is.
  */
 export type GitExec = (
   args: string[],
-  opts: { cwd: string; env?: Record<string, string>; timeoutMs: number }
+  opts: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs: number }
 ) => string;
 
-const PUSH_TIMEOUT_MS = 300_000; // 5 minutes, same ceiling as clone_repo
+const GIT_TIMEOUT_MS = 300_000; // 5 minutes for clone and push alike
 
 /**
  * Output ceiling for one git invocation. Node's default (1 MiB) would kill
@@ -28,15 +30,33 @@ const BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 const REMOTE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /**
- * Shape a push URL must have BEFORE any parser sees it: `https://`, a plain
- * hostname, an optional port, then a path — no userinfo, no backslash, no
- * whitespace. WHATWG `new URL()` and git/curl disagree on those characters:
- * `https://good.host\@evil.host/x.git` parses to host "good.host" in Node
- * (the backslash becomes a path separator) but curl reads "good.host\" as
- * the username and connects to evil.host. The host pin is therefore decided
- * on the raw string; the parsed URL is only a second opinion.
+ * Shape a credential-bearing URL must have BEFORE any parser sees it:
+ * `https://`, a plain hostname, an optional port, then a path — no
+ * userinfo, no backslash, no whitespace. WHATWG `new URL()` and git/curl
+ * disagree on those characters: `https://good.host\@evil.host/x.git`
+ * parses to host "good.host" in Node (the backslash becomes a path
+ * separator) but curl reads "good.host\" as the username and connects to
+ * evil.host. The host pin is therefore decided on the raw string; the
+ * parsed URL is only a second opinion.
  */
 const HTTPS_REMOTE_RE = /^https:\/\/([a-z0-9.-]+)(?::(\d{1,5}))?\/[^\s\\]*$/i;
+
+/**
+ * Environment variables never inherited by a credential-bearing git
+ * invocation: programs git would run on a credential prompt, a switch that
+ * disables TLS verification, repository redirection, and git's own
+ * inherited `-c` channel. Proxy variables are deliberately NOT removed:
+ * they are the user's own environment, like global config, and the REST
+ * client reaches the same host without them.
+ */
+const DROPPED_ENV = [
+  "GIT_ASKPASS",
+  "SSH_ASKPASS",
+  "GIT_SSL_NO_VERIFY",
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_CONFIG_PARAMETERS",
+];
 
 /**
  * Repository-LOCAL config keys that must not be present when git runs with
@@ -61,28 +81,37 @@ function isForbiddenLocalKey(key: string, remote: string): boolean {
 }
 
 /**
- * Environment for any git invocation that carries the Bitbucket credential
- * (push_repo, clone_repo). The header travels via GIT_CONFIG_* variables,
+ * The COMPLETE environment for a git invocation that carries the Bitbucket
+ * credential (push_repo, clone_repo), built from `base` (the process
+ * environment by default). The header travels via GIT_CONFIG_* variables,
  * never argv, so it is not visible in the process list. The same variables
- * reset credential.helper and core.askpass with empty values, and the
- * GIT_ASKPASS / SSH_ASKPASS variables an inherited environment may carry
- * are blanked too (git consults those before core.askpass): the injected
- * header is the only credential the invocation may use, so a 401 fails
- * outright instead of consulting — and exposing this environment to — a
- * credential program from any config scope or environment.
+ * reset credential.helper and core.askpass and force http.sslVerify on,
+ * and the DROPPED_ENV variables are removed: the injected header is the
+ * only credential the invocation may use, so a 401 fails outright instead
+ * of consulting — and exposing this environment to — a credential program
+ * from any config scope or environment, and TLS is always verified. Git's
+ * trace redaction is forced on so a debugging variable inherited from the
+ * server cannot print the header.
  */
-export function gitCredentialEnv(authHeader: string): Record<string, string> {
+export function gitCredentialEnv(
+  authHeader: string,
+  base: NodeJS.ProcessEnv = process.env
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base };
+  for (const key of DROPPED_ENV) delete env[key];
   return {
+    ...env,
     GIT_TERMINAL_PROMPT: "0",
-    GIT_ASKPASS: "",
-    SSH_ASKPASS: "",
-    GIT_CONFIG_COUNT: "3",
+    GIT_TRACE_REDACT: "1",
+    GIT_CONFIG_COUNT: "4",
     GIT_CONFIG_KEY_0: "http.extraHeader",
     GIT_CONFIG_VALUE_0: authHeader,
     GIT_CONFIG_KEY_1: "credential.helper",
     GIT_CONFIG_VALUE_1: "",
     GIT_CONFIG_KEY_2: "core.askpass",
     GIT_CONFIG_VALUE_2: "",
+    GIT_CONFIG_KEY_3: "http.sslVerify",
+    GIT_CONFIG_VALUE_3: "true",
   };
 }
 
@@ -100,7 +129,7 @@ export const defaultGitExec: GitExec = (args, opts) => {
     timeout: opts.timeoutMs,
     maxBuffer: MAX_OUTPUT_BYTES,
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, ...opts.env },
+    env: opts.env ?? process.env,
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -111,6 +140,56 @@ export const defaultGitExec: GitExec = (args, opts) => {
   }
   return (result.stdout ?? "") + (result.stderr ?? "");
 };
+
+/**
+ * Validate a URL that git will be handed together with the credential:
+ * https only, plain shape (see HTTPS_REMOTE_RE), and host pinned to
+ * `expectedHost` on both the raw string and the parsed form. Returns the
+ * parsed URL for reporting. `label` names the URL in error messages.
+ */
+function pinnedHttpsUrl(url: string, expectedHost: string, label: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`${label} is not a URL; only https://${expectedHost}/... can carry credentials.`);
+  }
+  if (parsed.protocol !== "https:") {
+    throw new Error(
+      `${label} uses ${parsed.protocol}//${parsed.host}, not https://${expectedHost}; refusing to send credentials there.`
+    );
+  }
+  const shape = HTTPS_REMOTE_RE.exec(url);
+  if (!shape) {
+    throw new Error(
+      `${label} is not a plain https://host/path URL; userinfo, backslashes and whitespace are refused because credentials are injected.`
+    );
+  }
+  const rawHost = shape[2] && shape[2] !== "443" ? `${shape[1]}:${shape[2]}` : shape[1]!;
+  const expected = expectedHost.toLowerCase();
+  if (rawHost.toLowerCase() !== expected || parsed.host.toLowerCase() !== expected) {
+    throw new Error(
+      `${label} points at https://${rawHost}, not the configured Bitbucket host (${expectedHost}); refusing to send credentials there.`
+    );
+  }
+  return parsed;
+}
+
+/** One `git config --list --show-scope` line, split. */
+function parseScopedConfig(output: string): { scope: string; key: string; value: string }[] {
+  const entries: { scope: string; key: string; value: string }[] = [];
+  for (const line of output.split("\n")) {
+    const tab = line.indexOf("\t");
+    if (tab < 0) continue;
+    const scope = line.slice(0, tab);
+    const rest = line.slice(tab + 1);
+    const eq = rest.indexOf("=");
+    entries.push(
+      eq < 0 ? { scope, key: rest, value: "" } : { scope, key: rest.slice(0, eq), value: rest.slice(eq + 1) }
+    );
+  }
+  return entries;
+}
 
 export interface PushRepoOptions {
   /** Absolute path to the local repository's top-level directory. */
@@ -157,16 +236,12 @@ export interface PushRepoResult {
  * which would let the checkout redirect or intercept the credentialed
  * request (the hooks it could run are already skipped with --no-verify).
  * The refspec is always the explicit non-forcing `refs/heads/X:refs/heads/X`
- * — there is no force option at all. Credentials travel via GIT_CONFIG_*
- * environment variables, never on the command line, so they are not
- * visible in the process list; the same variables reset credential.helper
- * and core.askpass so a 401 fails instead of handing the credential to a
- * helper program.
+ * — there is no force option at all. The push runs with gitCredentialEnv.
  */
 export function pushRepo(opts: PushRepoOptions): PushRepoResult {
   const exec = opts.exec ?? defaultGitExec;
-  const run = (args: string[], env?: Record<string, string>): string =>
-    exec(args, { cwd: opts.dir, env, timeoutMs: PUSH_TIMEOUT_MS });
+  const run = (args: string[], env?: NodeJS.ProcessEnv): string =>
+    exec(args, { cwd: opts.dir, env, timeoutMs: GIT_TIMEOUT_MS });
 
   if (!isAbsolute(opts.dir)) {
     throw new Error(`dir must be an absolute path (got "${opts.dir}").`);
@@ -215,42 +290,14 @@ export function pushRepo(opts: PushRepoOptions): PushRepoResult {
       `Remote "${remote}" has ${pushUrls.length} push URLs; refusing to push credentials to a multi-URL remote.`
     );
   }
-  const remoteUrl = pushUrls[0]!;
-  let parsed: URL;
-  try {
-    parsed = new URL(remoteUrl);
-  } catch {
-    throw new Error(
-      `Remote "${remote}" has a non-URL push target; only HTTPS remotes on ${opts.expectedHost} can be pushed.`
-    );
-  }
-  if (parsed.protocol !== "https:") {
-    throw new Error(
-      `Remote "${remote}" points at ${parsed.protocol}//${parsed.host}, not the configured Bitbucket host (${opts.expectedHost}); refusing to push credentials there.`
-    );
-  }
-  const shape = HTTPS_REMOTE_RE.exec(remoteUrl);
-  if (!shape) {
-    throw new Error(
-      `Remote "${remote}" push URL is not a plain https://host/path URL; userinfo, backslashes and whitespace are refused because the push injects credentials.`
-    );
-  }
-  const rawHost = shape[2] && shape[2] !== "443" ? `${shape[1]}:${shape[2]}` : shape[1]!;
-  const expected = opts.expectedHost.toLowerCase();
-  if (rawHost.toLowerCase() !== expected || parsed.host.toLowerCase() !== expected) {
-    throw new Error(
-      `Remote "${remote}" points at https://${rawHost}, not the configured Bitbucket host (${opts.expectedHost}); refusing to push credentials there.`
-    );
-  }
+  const parsed = pinnedHttpsUrl(pushUrls[0]!, opts.expectedHost, `Remote "${remote}"`);
 
   // Repository-local config is arbitrary local state, exactly like the
   // hooks --no-verify skips. Refuse rather than override, so the user sees
   // which key is in the way; global/system scope is left alone.
-  const forbidden = run(["config", "--list", "--show-scope", "--name-only"])
-    .split("\n")
-    .map((line) => line.split("\t"))
-    .filter(([scope]) => scope === "local" || scope === "worktree")
-    .map(([, key]) => key ?? "")
+  const forbidden = parseScopedConfig(run(["config", "--list", "--show-scope", "--name-only"]))
+    .filter((e) => e.scope === "local" || e.scope === "worktree")
+    .map((e) => e.key)
     .filter((key) => isForbiddenLocalKey(key, remote));
   if (forbidden.length > 0) {
     throw new Error(
@@ -274,4 +321,60 @@ export function pushRepo(opts: PushRepoOptions): PushRepoResult {
   const output = run(args, gitCredentialEnv(opts.authHeader));
 
   return { branch, remote, remoteUrl: parsed.toString(), output, setUpstream };
+}
+
+export interface CloneRepoOptions {
+  /** Clone URL, built by the caller from the configured Bitbucket base URL. */
+  url: string;
+  /** Absolute path the repository is cloned into (must not exist yet). */
+  dest: string;
+  shallow: boolean;
+  /** Host (hostname[:port]) `url` must be on; see PushRepoOptions. */
+  expectedHost: string;
+  /** Value for git's http.extraHeader. */
+  authHeader: string;
+  /** Injectable git runner (tests). */
+  exec?: GitExec;
+}
+
+/**
+ * Clone a repository from the configured Bitbucket host with the credential.
+ *
+ * `git clone <url>` does not go where the argument says if a
+ * `url.<base>.insteadOf` rule matches it — git rewrites the URL first, and
+ * the credential would follow the rewrite. push_repo is protected by
+ * re-reading the URL git will use; a clone has no remote to ask yet, so
+ * this pre-checks the rules git will apply: it runs from a neutral
+ * directory (no enclosing repository, hence no repository-local config —
+ * the server's own cwd is not trusted) and refuses if any insteadOf prefix
+ * in the remaining scopes matches the URL. The URL itself is pinned like a
+ * push URL, and the clone runs with gitCredentialEnv. Returns git's output.
+ */
+export function cloneRepo(opts: CloneRepoOptions): string {
+  const exec = opts.exec ?? defaultGitExec;
+  const cwd = tmpdir();
+  const run = (args: string[], env?: NodeJS.ProcessEnv): string =>
+    exec(args, { cwd, env, timeoutMs: GIT_TIMEOUT_MS });
+
+  if (!isAbsolute(opts.dest)) {
+    throw new Error(`dest must be an absolute path (got "${opts.dest}").`);
+  }
+  pinnedHttpsUrl(opts.url, opts.expectedHost, "Clone URL");
+
+  const rewrites = parseScopedConfig(run(["config", "--list", "--show-scope"])).filter(
+    (e) => e.key.toLowerCase().startsWith("url.") && e.key.toLowerCase().endsWith(".insteadof")
+  );
+  for (const rule of rewrites) {
+    if (rule.value !== "" && opts.url.startsWith(rule.value)) {
+      const base = rule.key.slice("url.".length, -".insteadof".length);
+      throw new Error(
+        `${rule.scope} git config rewrites ${rule.value} to ${base} (url.<base>.insteadOf); refusing to clone with credentials through a rewritten URL.`
+      );
+    }
+  }
+
+  const args = ["clone"];
+  if (opts.shallow) args.push("--depth=1");
+  args.push(opts.url, opts.dest);
+  return run(args, gitCredentialEnv(opts.authHeader));
 }
