@@ -29,6 +29,49 @@ const DEFAULT_BASE_URL =
     : "https://apps.example.gov.bc.ca/int/stash";
 
 /**
+ * Encode a repository-relative file path for a REST URL, one segment at a
+ * time. Rejects empty, ".", and ".." segments: encodeURIComponent leaves
+ * dots alone and fetch normalizes dot segments before sending, so a path
+ * like "a/../../PROJ/repos/other/browse/x" would otherwise address a
+ * DIFFERENT repository than the caller named.
+ */
+function encodeRepoPath(filePath: string): string {
+  const segments = filePath.split("/");
+  for (const s of segments) {
+    if (s === "" || s === "." || s === "..") {
+      throw new Error(
+        `Invalid path segment in "${filePath}": empty, "." and ".." segments are not allowed.`
+      );
+    }
+  }
+  return segments.map(encodeURIComponent).join("/");
+}
+
+/**
+ * Classify a Bitbucket 404 body. Bitbucket names the missing thing in
+ * `errors[].exceptionName`: NoSuchObjectException / NoSuchCommitException
+ * when the ref or commit does not resolve, NoSuchRepositoryException /
+ * NoSuchProjectException when the container is missing. Anything else,
+ * including a non-JSON body, is read as the path being absent.
+ */
+function notFoundReason(body: string): "ref" | "repository" | "path" {
+  let names: string[];
+  try {
+    const parsed = JSON.parse(body) as { errors?: { exceptionName?: string }[] };
+    names = (parsed.errors ?? []).map((e) => e.exceptionName ?? "");
+  } catch {
+    return "path";
+  }
+  if (names.some((n) => /NoSuchRepositoryException|NoSuchProjectException/.test(n))) {
+    return "repository";
+  }
+  if (names.some((n) => /NoSuchObjectException|NoSuchCommitException/.test(n))) {
+    return "ref";
+  }
+  return "path";
+}
+
+/**
  * REST client for Bitbucket Data Center.
  * Uses /rest/api/1.0/ endpoints.
  */
@@ -77,9 +120,7 @@ export class BitbucketClient {
     const params = new URLSearchParams();
     if (at) params.set("at", at);
 
-    const encodedPath = path
-      ? `/${path.split("/").map(encodeURIComponent).join("/")}`
-      : "";
+    const encodedPath = path ? `/${encodeRepoPath(path)}` : "";
 
     const resp = await this.fetch(
       this.apiUrl(
@@ -146,10 +187,7 @@ export class BitbucketClient {
     const params = new URLSearchParams();
     if (at) params.set("at", at);
 
-    const encodedPath = filePath
-      .split("/")
-      .map(encodeURIComponent)
-      .join("/");
+    const encodedPath = encodeRepoPath(filePath);
 
     const resp = await this.fetch(
       this.apiUrl(
@@ -380,6 +418,158 @@ export class BitbucketClient {
    */
   getCloneUrl(projectKey: string, repoSlug: string): string {
     return `${this.baseUrl}/scm/${projectKey.toLowerCase()}/${repoSlug}.git`;
+  }
+
+  /** Base URL this client talks to (scheme + host + context path). */
+  getBaseUrl(): string {
+    return this.baseUrl;
+  }
+
+  /**
+   * Create a repository in a project. Bitbucket derives the slug from the
+   * name; the response carries it. `defaultBranch` names the branch HEAD
+   * will point at: an empty repository otherwise inherits the instance
+   * default, and if the first commit lands on a differently named branch
+   * HEAD dangles, so clones check out nothing and the UI reports a missing
+   * default branch.
+   */
+  async createRepo(
+    projectKey: string,
+    name: string,
+    opts?: { description?: string; forkable?: boolean; defaultBranch?: string }
+  ): Promise<BitbucketRepo> {
+    const body: Record<string, unknown> = {
+      name,
+      scmId: "git",
+      forkable: opts?.forkable ?? true,
+    };
+    if (opts?.description !== undefined) body["description"] = opts.description;
+    if (opts?.defaultBranch !== undefined) body["defaultBranch"] = opts.defaultBranch;
+    const resp = await this.fetch(
+      this.apiUrl(`/projects/${encodeURIComponent(projectKey)}/repos`),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    );
+    if (!resp.ok) {
+      throw new Error(
+        `Failed to create repository "${name}" in ${projectKey} (${resp.status}): ${await resp.text()}`
+      );
+    }
+    return (await resp.json()) as BitbucketRepo;
+  }
+
+  /** The repository's configured default branch (short name), whether or not it exists yet. */
+  async getDefaultBranch(projectKey: string, repoSlug: string): Promise<string | null> {
+    const resp = await this.fetch(
+      this.apiUrl(
+        `/projects/${encodeURIComponent(projectKey)}/repos/${encodeURIComponent(repoSlug)}/default-branch`
+      )
+    );
+    if (resp.status === 404) return null;
+    if (!resp.ok) {
+      throw new Error(`Failed to read default branch (${resp.status}): ${await resp.text()}`);
+    }
+    const data = (await resp.json()) as { displayId?: string; id?: string };
+    return data.displayId ?? data.id?.replace(/^refs\/heads\//, "") ?? null;
+  }
+
+  /** Point the repository's HEAD at `branch` (short name). Works on an empty repository. */
+  async setDefaultBranch(projectKey: string, repoSlug: string, branch: string): Promise<void> {
+    const resp = await this.fetch(
+      this.apiUrl(
+        `/projects/${encodeURIComponent(projectKey)}/repos/${encodeURIComponent(repoSlug)}/default-branch`
+      ),
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: `refs/heads/${branch}` }),
+      }
+    );
+    if (!resp.ok) {
+      throw new Error(`Failed to set default branch to ${branch} (${resp.status}): ${await resp.text()}`);
+    }
+  }
+
+  /**
+   * What `filePath` is at `at` (branch/tag/commit): "FILE", "DIRECTORY",
+   * null when the path does not exist there, or "REF_MISSING" when `at`
+   * itself does not resolve — a branch nobody created, or an empty
+   * repository, which has no refs at all. Bitbucket answers 404 for both a
+   * missing path and a missing ref; they are told apart by the exception
+   * name in the 404 body. A missing repository or project is an error.
+   * Uses browse?type=true, which returns only the type — no content
+   * download.
+   */
+  async fileType(
+    projectKey: string,
+    repoSlug: string,
+    filePath: string,
+    at?: string
+  ): Promise<"FILE" | "DIRECTORY" | "REF_MISSING" | null> {
+    const params = new URLSearchParams({ type: "true" });
+    if (at) params.set("at", at);
+    const encodedPath = encodeRepoPath(filePath);
+    const resp = await this.fetch(
+      this.apiUrl(
+        `/projects/${encodeURIComponent(projectKey)}/repos/${encodeURIComponent(repoSlug)}/browse/${encodedPath}?${params}`
+      )
+    );
+    if (resp.status === 404) {
+      const body = await resp.text();
+      const reason = notFoundReason(body);
+      if (reason === "repository") {
+        throw new Error(`Repository ${projectKey}/${repoSlug} does not exist (404): ${body}`);
+      }
+      return reason === "ref" ? "REF_MISSING" : null;
+    }
+    if (!resp.ok) {
+      throw new Error(
+        `Failed to check ${filePath} (${resp.status}): ${await resp.text()}`
+      );
+    }
+    const data = (await resp.json()) as { type?: string };
+    return data.type === "DIRECTORY" ? "DIRECTORY" : "FILE";
+  }
+
+  /**
+   * Create or update ONE text file with one commit (Bitbucket's file-edit
+   * endpoint). `sourceCommitId` is the commit the caller last saw the file
+   * at and is REQUIRED by the server when the file already exists on the
+   * branch — the file-level optimistic lock. Omit it only when creating a
+   * new file.
+   */
+  async commitFile(
+    projectKey: string,
+    repoSlug: string,
+    filePath: string,
+    opts: {
+      branch: string;
+      content: string;
+      message: string;
+      sourceCommitId?: string;
+    }
+  ): Promise<BitbucketCommit> {
+    const form = new FormData();
+    form.set("branch", opts.branch);
+    form.set("content", opts.content);
+    form.set("message", opts.message);
+    if (opts.sourceCommitId) form.set("sourceCommitId", opts.sourceCommitId);
+    const encodedPath = encodeRepoPath(filePath);
+    const resp = await this.fetch(
+      this.apiUrl(
+        `/projects/${encodeURIComponent(projectKey)}/repos/${encodeURIComponent(repoSlug)}/browse/${encodedPath}`
+      ),
+      { method: "PUT", body: form }
+    );
+    if (!resp.ok) {
+      throw new Error(
+        `Failed to commit ${filePath} on ${opts.branch} (${resp.status}): ${await resp.text()}`
+      );
+    }
+    return (await resp.json()) as BitbucketCommit;
   }
 
   // ---------------------------------------------------------------------------
@@ -688,10 +878,7 @@ export class BitbucketClient {
     const blame: BitbucketBlameResponse["blame"] = [];
     let start = initialStart;
     let isLast = false;
-    const encodedPath = filePath
-      .split("/")
-      .map(encodeURIComponent)
-      .join("/");
+    const encodedPath = encodeRepoPath(filePath);
 
     // Track the last page's nextPageStart so callers can resume cleanly
     // when we cut off at maxLines rather than the natural EOF.
