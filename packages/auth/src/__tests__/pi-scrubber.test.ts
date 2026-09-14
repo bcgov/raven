@@ -104,3 +104,30 @@ describe("PiScrubber.scrubText — FOIPPA coverage (RSEC-004)", () => {
     });
   });
 });
+
+describe("PiScrubber.scrubText — credential values are redacted whole", () => {
+  let pi: PiScrubber;
+  beforeEach(() => { delete process.env["RAVEN_SCRUB_PI"]; pi = new PiScrubber(); });
+
+  it("redacts a value containing punctuation outside the old character class", () => {
+    // The class-based pattern stopped at the first unlisted character and
+    // emitted "[CREDENTIAL]!suffix", leaking the tail of the secret.
+    expect(pi.scrubText("password=Secret12!suffix")).toBe("[CREDENTIAL]");
+  });
+
+  it("redacts a value containing a dollar sign", () => {
+    expect(pi.scrubText("api_key: abc12345$extra")).toBe("[CREDENTIAL]");
+  });
+
+  it("redacts a double-quoted value whole", () => {
+    expect(pi.scrubText('password="p@ss w0rd!"')).toBe("[CREDENTIAL]");
+  });
+
+  it("redacts a single-quoted value whole", () => {
+    expect(pi.scrubText("secret='a!b@c#d$'")).toBe("[CREDENTIAL]");
+  });
+
+  it("stops at whitespace and does not swallow the rest of the line", () => {
+    expect(pi.scrubText("password=Secret12! and then some prose")).toBe("[CREDENTIAL] and then some prose");
+  });
+});

@@ -468,15 +468,17 @@ A scan-hygiene note that materially affects these numbers: the server's global `
 
 ### OWASP ASVS & CWE Mapping
 
+Status reflects §0. `RSEC-008` onward were out of the agreed remediation scope.
+
 | Finding | ASVS | CWE | MITRE ATT&CK | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| `RSEC-001` | V5.3.8 | CWE-78 | T1059.004 | Open |
-| `RSEC-002` | V5.3.8 | CWE-78 / CWE-88 | T1059.004 | Open |
-| `RSEC-003` | V5.3.8 | CWE-78 | T1059.004 | Open |
-| `RSEC-004` | V8.3.1 | CWE-359 | T1552.001 | Open |
-| `RSEC-005` | V4.2.1 / V4.1.1 | CWE-352 / CWE-284 | T1190 | Open |
-| `RSEC-006` | V6.2.1 | CWE-295 | T1557 | Open |
-| `RSEC-007` | V9.2.1 | CWE-295 | T1557 | Open |
+| `RSEC-001` | V5.3.8 | CWE-78 | T1059.004 | **Fixed** |
+| `RSEC-002` | V5.3.8 | CWE-78 / CWE-88 | T1059.004 | **Fixed** |
+| `RSEC-003` | V5.3.8 | CWE-78 | T1059.004 | **Fixed** |
+| `RSEC-004` | V8.3.1 | CWE-359 | T1552.001 | **Fixed** |
+| `RSEC-005` | V4.2.1 / V4.1.1 | CWE-352 / CWE-284 | T1190 | **Fixed** |
+| `RSEC-006` | V6.2.1 | CWE-295 | T1557 | **Fixed** |
+| `RSEC-007` | V9.2.1 | CWE-295 | T1557 | **Fixed** |
 | `RSEC-008` | V8.3.1 | CWE-522 | T1552.001 | Open |
 | `RSEC-009` | V5.3.3 | CWE-79 | T1189 | Open |
 | `RSEC-010` | V12.6.1 | CWE-918 | T1190 | Open |

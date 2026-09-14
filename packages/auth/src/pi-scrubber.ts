@@ -82,7 +82,11 @@ const PI_PATTERNS: Array<{
   // Generic API keys / tokens. The minimum length is 8 rather than 16: an
   // eight-character password is weak, not absent, and leaking it is the same
   // disclosure as leaking a long one.
-  { pattern: /(?:api[_-]?key|token|secret|password)\s*[:=]\s*["']?[A-Za-z0-9\-_.~+/]{8,}["']?/gi, replacement: "[CREDENTIAL]" },
+  // The value is matched to its delimiter, not to the end of an allowlisted
+  // character run. A class-based match stopped at the first character outside
+  // the class, so `password=Secret12!suffix` redacted only the prefix and
+  // emitted `[CREDENTIAL]!suffix`, leaking the tail of the secret.
+  { pattern: /(?:api[_-]?key|token|secret|password)\s*[:=]\s*(?:"[^"\r\n]{4,}"|'[^'\r\n]{4,}'|[^\s"'\r\n]{6,})/gi, replacement: "[CREDENTIAL]" },
   // SIN, separated: 123-456-789 or 123 456 789. No checksum gate here — a
   // three-three-three grouping is already a strong signal on its own.
   { pattern: /\b\d{3}[\s-]\d{3}[\s-]\d{3}\b/g, replacement: "[SIN]" },

@@ -353,3 +353,31 @@ describe("buildHttpdLogSearchCommand — shell injection hardening (RSEC-001)", 
     expect(() => buildHttpdLogSearchCommand({ ...httpdBase, pattern: "404\nid" })).toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// PR review follow-up: quoting does not stop grep's own option parsing. A
+// pattern beginning with `-` is consumed as flags; `-v` additionally leaves
+// grep with no pattern, so it takes the log path as the pattern and blocks on
+// stdin until the SSH timeout fires.
+// ---------------------------------------------------------------------------
+
+describe("buildLogSearchCommand — grep option-injection guard", () => {
+  it("passes a leading-dash pattern after -e so grep cannot read it as flags", () => {
+    const cmd = buildLogSearchCommand({ ...baseParams, pattern: "-v" });
+    expect(cmd).toContain("-e '-v'");
+    expect(cmd).not.toMatch(/-a '-v'/);
+  });
+
+  it("guards the -e pattern form too", () => {
+    const cmd = buildLogSearchCommand({ ...baseParams, pattern: "-e" });
+    expect(cmd).toContain("-e '-e'");
+  });
+
+  it("applies the guard in the httpd builder as well", () => {
+    const cmd = buildHttpdLogSearchCommand({
+      logsBase: "/sw_ux/httpd01/logs", domain: "portalext.example.gov.bc.ca",
+      logType: "access", pattern: "-v", maxLines: 10, contextLines: 0,
+    });
+    expect(cmd).toContain("-e '-v'");
+  });
+});

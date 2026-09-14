@@ -29,6 +29,8 @@ const warned = new Set<string>();
 
 /** One parsed known_hosts entry. */
 export interface KnownHostsEntry {
+  /** OpenSSH line marker. `revoked` keys must never be accepted. */
+  marker: "none" | "revoked" | "cert-authority";
   /** Literal host patterns, empty when the entry is hashed. */
   hosts: string[];
   /** Base64 salt for a `|1|` hashed entry, else null. */
@@ -54,9 +56,19 @@ export function parseKnownHosts(contents: string): KnownHostsEntry[] {
   const entries: KnownHostsEntry[] = [];
   for (const rawLine of contents.split(/\r?\n/)) {
     const line = rawLine.trim();
-    if (!line || line.startsWith("#") || line.startsWith("@")) continue;
+    if (!line || line.startsWith("#")) continue;
 
-    const parts = line.split(/\s+/);
+    let parts = line.split(/\s+/);
+    let marker: KnownHostsEntry["marker"] = "none";
+    if (parts[0]?.startsWith("@")) {
+      // A marker consumes the first field. @revoked is an explicit deny and
+      // must be retained; @cert-authority is retained only so it can be
+      // ignored deliberately rather than silently widening trust.
+      if (parts[0] === "@revoked") marker = "revoked";
+      else if (parts[0] === "@cert-authority") marker = "cert-authority";
+      else continue; // unknown marker — ignore the line rather than guess
+      parts = parts.slice(1);
+    }
     if (parts.length < 3) continue;
     const [hostField, , keyB64] = parts as [string, string, string];
 
@@ -64,9 +76,10 @@ export function parseKnownHosts(contents: string): KnownHostsEntry[] {
       const segments = hostField.split("|");
       // Format: "" | "1" | salt | hash
       if (segments.length !== 4) continue;
-      entries.push({ hosts: [], hashSalt: segments[2]!, hashValue: segments[3]!, key: keyB64 });
+      entries.push({ marker, hosts: [], hashSalt: segments[2]!, hashValue: segments[3]!, key: keyB64 });
     } else {
       entries.push({
+        marker,
         hosts: hostField.split(",").map((h) => h.toLowerCase()),
         hashSalt: null,
         hashValue: null,
@@ -93,8 +106,36 @@ function entryMatchesHost(entry: KnownHostsEntry, host: string): boolean {
     return mac.digest("base64") === entry.hashValue;
   }
 
-  // Plain entries may carry a bracketed non-default port, e.g. [host]:2222.
-  return entry.hosts.some((h) => h === target || h === `[${target}]:22`);
+  // OpenSSH host fields are comma-separated patterns supporting * and ?, with
+  // a leading ! negating. `@revoked * ssh-rsa ...` is the documented way to
+  // revoke a key everywhere, so wildcards cannot be treated as literals.
+  let matched = false;
+  for (const pattern of entry.hosts) {
+    const negated = pattern.startsWith("!");
+    const body = negated ? pattern.slice(1) : pattern;
+    if (!hostPatternMatches(body, target)) continue;
+    if (negated) return false; // an explicit negation wins outright
+    matched = true;
+  }
+  return matched;
+}
+
+/**
+ * Match one OpenSSH host pattern against a hostname.
+ *
+ * @param pattern - Pattern from a known_hosts host field, without any leading `!`.
+ * @param host - Lowercased hostname being contacted.
+ * @returns True when the pattern covers the host.
+ */
+function hostPatternMatches(pattern: string, host: string): boolean {
+  if (!pattern.includes("*") && !pattern.includes("?")) {
+    // Plain entries may carry a bracketed non-default port, e.g. [host]:2222.
+    return pattern === host || pattern === `[${host}]:22`;
+  }
+  const rx = new RegExp(
+    "^" + pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$",
+  );
+  return rx.test(host);
 }
 
 /**
@@ -109,7 +150,7 @@ export function knownHostsPath(): string {
 /** Outcome of a host key check. */
 export type HostKeyVerdict =
   | { ok: true; reason: "insecure-opt-in" | "matched" }
-  | { ok: false; reason: "no-known-hosts-file" | "host-not-found" | "key-mismatch"; message: string };
+  | { ok: false; reason: "no-known-hosts-file" | "host-not-found" | "key-mismatch" | "revoked"; message: string };
 
 /**
  * Verify a presented host key for a host.
@@ -136,7 +177,25 @@ export function verifyHostKey(
   }
 
   const presented = key.toString("base64");
-  const entries = parseKnownHosts(contents).filter((e) => entryMatchesHost(e, host));
+  const all = parseKnownHosts(contents).filter((e) => entryMatchesHost(e, host));
+
+  // Revocation is checked first and independently. Per sshd(8) a @revoked key
+  // "must not ever be accepted", so a stale positive entry elsewhere in the
+  // file must not be able to authorize it.
+  if (all.some((e) => e.marker === "revoked" && e.key === presented)) {
+    return {
+      ok: false,
+      reason: "revoked",
+      message:
+        `The host key presented by "${host}" is marked @revoked in ${knownHostsPath()}. ` +
+        `A revoked key is never acceptable. Do not set ${INSECURE_HOST_KEYS_ENV} to bypass ` +
+        `this — obtain the current key from the server owner.`,
+    };
+  }
+
+  // Only unmarked entries can authorize a key. @cert-authority is deliberately
+  // not honoured: trusting a CA would silently widen trust to anything it signs.
+  const entries = all.filter((e) => e.marker === "none");
 
   if (entries.length === 0) {
     return {

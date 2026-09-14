@@ -91,7 +91,14 @@ export function buildLogSearchCommand(params: LogSearchParams): string {
     throw new Error("Pattern contains shell metacharacters");
   }
   // Escaped once here, then interpolated unquoted everywhere below.
-  const safePattern = shellEscape(pattern);
+  //
+  // The leading `-e` is load-bearing, not decoration. Quoting stops the shell
+  // from expanding the value but does nothing about grep's own option parsing:
+  // a pattern beginning with `-` is consumed as flags. `-v` inverts the match,
+  // and worse, it leaves grep with no pattern at all, so grep takes the log
+  // path as the pattern and blocks reading stdin until the SSH timeout fires.
+  // `-e` marks the next argument as a pattern unambiguously.
+  const safePattern = `-e ${shellEscape(pattern)}`;
   if (!APP_COMPONENT_RE.test(app) || !APP_COMPONENT_RE.test(component)) {
     throw new Error("App or component contains invalid characters");
   }
@@ -191,7 +198,9 @@ export function buildHttpdLogSearchCommand(params: HttpdLogSearchParams): string
     throw new Error("Pattern contains shell metacharacters");
   }
   // Escaped once here, then interpolated unquoted everywhere below.
-  const safePattern = shellEscape(pattern);
+  // See buildLogSearchCommand: `-e` keeps grep from reading a leading-dash
+  // pattern as options.
+  const safePattern = `-e ${shellEscape(pattern)}`;
 
   if (!HTTPD_DOMAIN_RE.test(domain)) {
     throw new Error("Domain contains invalid characters");
