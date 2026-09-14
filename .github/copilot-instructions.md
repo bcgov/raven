@@ -115,10 +115,10 @@ The read/write split in `docs/TOOL_INVENTORY.md` (and the security doc) is **gen
 
 ## Trust & security model — DO NOT flag these as bugs
 
-- **SSH host key verification is intentionally disabled** in every `packages/*-mcp` SSH helper (`hostVerifier: () => true`, matching legacy `server-cmd.exp` / `StrictHostKeyChecking=no`). RAVEN reaches BC Gov internal servers (prod01/test01/int01) over an authenticated VPN; the trust boundary is the VPN tunnel + `SERVER_A_PASSWORD`, not TLS-style host pinning. Do not flag MITM concerns for SSH code in these packages.
+- **SSH host keys are verified against `~/.ssh/known_hosts`** in every `packages/*-mcp` SSH helper, via `createHostVerifier` from `@nrs/auth`. An unknown or mismatched key fails the connection with an actionable message. `RAVEN_SSH_INSECURE_HOST_KEYS=true` restores the legacy accept-anything behaviour (`server-cmd.exp` / `StrictHostKeyChecking=no`) as a logged, explicit exception. Flag any new `hostVerifier: () => true` as a regression.
 - **`ca.bc.gov*` strings in stack-trace parsers are Java package names**, not URLs/hosts. `startsWith("ca.bc.gov.")` style checks are not URL sanitization — do not treat them as such.
 - **PI scrubbing via `PiScrubber` from `@nrs/auth` is mandatory** before any prompt is sent to an LLM (FOIPPA). Anonymized strings like `Person-1` / `Person-2` are intentional output, not a bug.
-- **All `server-mcp`, `imis-mcp`, `health-mcp`, `assets-mcp`, `overview-mcp` operations are READ-ONLY** by design.
+- **All `server-mcp`, `imis-mcp`, `health-mcp`, `assets-mcp`, `overview-mcp` operations are READ-ONLY** by design. For `imis-mcp`'s `explore_server`, read-only is enforced by the per-command argument policy in `ssh-executor.ts` — allowlisted binaries only, with executing or mutating options (`find -exec`, `sort -o`, `rpm --pipe`, `uniq OUTPUT`, `date -s`, `hostname NAME`) rejected. A command that passes `validateCommand` yet mutates the remote is a bug: flag it.
 - **Atlassian MCP packages must accept dual auth.** Prefer `ATLASSIAN_EMAIL` + `ATLASSIAN_PASSWORD` Basic Auth, fall back to SiteMinder via `SessionManager` + `createAuthenticatedFetch` from `@nrs/auth`. A package that hard-fails when env vars are missing is a bug — flag it.
 
 ## CI / checks that run on PRs

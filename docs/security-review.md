@@ -5,7 +5,7 @@ application: "Resource Analytics, Visibility & Enterprise Navigator"
 application_acronym: "RAVEN"
 reviewed_ref: "origin/main @ fd982f6"
 overall_risk: HIGH
-remediation_status: "RSEC-001..007 fixed on security-remediation-2026-09-14; RSEC-011..013 open"
+remediation_status: "RSEC-001..007 fixed on security-remediation-2026-09-14; RSEC-008..013 open"
 remediation_branch: "security-remediation-2026-09-14"
 total_findings: 13
 critical_count: 2
@@ -53,10 +53,10 @@ identical to `main`, none in the new code**.
 
 | Finding | Status | Fix |
 | :--- | :--- | :--- |
-| `RSEC-001` | **Fixed** | Grep pattern escaped per-argument via a shared helper; `|` still works as `grep -E` alternation |
+| `RSEC-001` | **Fixed** | Grep pattern escaped per-argument via a shared helper and passed after `-e`; `date`/`dateFrom`/`dateTo` validated to `YYYY-MM-DD` in both builders and at the tool boundary; `|` still works as `grep -E` alternation |
 | `RSEC-002` | **Fixed** | CR/LF rejected before the allowlist tokenizer sees them |
 | `RSEC-003` | **Fixed** | `sanitizePath` rejects control and quote characters; output escaped at interpolation |
-| `RSEC-004` | **Fixed** | Unseparated SIN (Luhn-gated), unseparated NANP phone, domain-qualified IDIR; credential minimum 16 → 8 |
+| `RSEC-004` | **Fixed** | Unseparated SIN (Luhn-gated), unseparated NANP phone, domain-qualified IDIR, and bare IDIR in attribution context (`assigned to JSMITH`, `owner: MSMITH` — 5-8 uppercase after an attribution phrase, common acronyms excluded); credential values matched to whitespace so quotes and punctuation cannot truncate the redaction; credential minimum 16 → 8 |
 | `RSEC-005` | **Fixed** | `localGuard` validates Host and Origin ahead of every API router |
 | `RSEC-006` | **Fixed** | `known_hosts` verification in **both** SSH clients, one shared implementation |
 | `RSEC-007` | **Fixed** | TLS validation on by default; `SMTP_INSECURE_TLS=true` to opt out |
