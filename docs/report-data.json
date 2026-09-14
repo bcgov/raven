@@ -1,0 +1,235 @@
+{
+  "application_name": "Resource Analytics, Visibility & Enterprise Navigator",
+  "application_acronym": "RAVEN",
+  "report_date": "2026-09-14",
+  "overall_risk": "HIGH",
+  "quality_gate_status": "FAILED",
+
+  "critical_count": 2,
+  "high_count": 2,
+  "medium_count": 3,
+  "low_count": 3,
+  "informational_count": 3,
+  "confirmed_count": 10,
+  "probable_count": 3,
+  "coverage_gaps": 1,
+  "coverage_pct": 0,
+
+  "total_deps": 20,
+  "outdated_deps": 8,
+  "vulnerable_deps": 0,
+  "abandoned_deps": 0,
+
+  "executive_brief": "RAVEN is in good structural health. Its dependencies are clean — npm audit reports zero open advisories at the reviewed commit, and Dependabot closed four advisory classes within nine days during September. Its security design is better than typical for an internal tool: it never holds more authority than the person running it, its audit log is cryptographically tamper-evident, and personal information is scrubbed before any content reaches an AI model. The material risk is concentrated in one place. Two confirmed command-injection defects allow an attacker who can influence text in a ticket or an application log to run commands on BC Government application servers under a privileged service account. These are not two separate bugs but one duplicated one: two packages independently implement the same shell-safety check, and the two copies have already drifted apart so that each blocks characters the other misses. Reachability analysis shows the affected code is called from the autonomous pipeline, which runs on a schedule with no person watching, widening the exposure beyond what a first-pass review identified. Separately, the FOIPPA privacy scrubber does not redact a social insurance number or phone number written without separators, nor a bare IDIR — a compliance gap in the exact control the privacy posture depends on. None of this is an emergency: every path requires an attacker to already be writing content the system reads. The recommended first step is roughly a day of focused work that closes the whole class rather than the individual instances.",
+
+  "tech_stack_summary": "Node.js (LTS 20/22), TypeScript 7.0.2, Express 5.2.1, MCP SDK 1.30.0, ssh2, Playwright, Zod 4.5.4, Vitest",
+  "arch_pattern": "Local-first MCP server suite — 21 npm workspace packages, 17 stdio servers around a shared @nrs/auth security kernel",
+  "deployment_model": "Developer workstation only — no server deployment, no containers, no infrastructure-as-code",
+  "resilience_summary": "Fails closed throughout. Token bucket and circuit breaker protect shared upstreams; no backup exists for the append-only audit log, which is the single non-reproducible artifact",
+
+  "platform_alignment": {
+    "role": "Integration adapter",
+    "evidence": "Every package brokers between a local AI assistant and an existing upstream system of record; RAVEN stores no business data of its own.",
+    "confidence": "Verified",
+    "consumer_count": 17,
+    "reuse_decision": "Built in-house by Connected Services BC to satisfy SiteMinder SSO, FOIPPA scrubbing, and per-user credential isolation together. No equivalent shared BC Gov MCP layer was identified.",
+    "data_custodian": "James Gagan (bcgovpubcode.yml product_owner and data_custodian)",
+    "data_sharing_spectrum": "Closed",
+    "contract_owner": "Upstream platform teams own the external APIs; RAVEN's own MCP tool schemas have no declared owner, version, or deprecation policy.",
+    "contract_versioning": "None. Neither the MCP tool schemas nor the Server UI REST surface carries a version identifier, so a schema change cannot be evolved without silently breaking a pinned client.",
+    "degradation_behavior": "Fails closed in every observed path. No fallback serves stale data or weakens authorization. The one weakening default is unconditional SMTP TLS bypass, which is a configuration choice rather than a failure path."
+  },
+
+  "platform_metrics": {
+    "shared_dependency_count": 20,
+    "known_consumer_count": 17,
+    "contracts_with_owner_count": 0,
+    "fallback_scenarios_tested_count": 0,
+    "evidence": "Direct dependencies counted from package-lock.json at fd982f6. Consumers counted as the 17 MCP servers depending on @nrs/auth. No external contract has a documented owner in-repo and no fault-injection or fallback test exists."
+  },
+
+  "zero_trust_posture": {
+    "protected_resources": "BC Gov Atlassian APIs, government application servers over SSH with sudo, Azure DevOps / Jenkins / Artifactory / GitHub / SonarQube, SharePoint Online, and the local dashboard socket on 127.0.0.1:3777.",
+    "enforcement_points": "Authorization is delegated to the upstream provider — every call carries the operator's own identity, so RAVEN can never exceed the operator's entitlements. The exception is the Server UI, which enforces nothing on any of its fifteen routers.",
+    "least_privilege": "SiteMinder sessions expire in roughly 25 minutes; sudo targets are allowlisted to named service accounts. Undermined by the unauthenticated dashboard, which exposes those privileges without attribution.",
+    "revocation_and_expiry": "Session expiry and clearCachedSession exist. No rotation schedule, no provider-token revocation path, and no time-bound exception process are defined.",
+    "exceptions_and_degradation": "Dependency failures deny explicitly and never expand privilege. SSH host key verification is disabled at two sites as an implicit, undocumented standing exception.",
+    "telemetry": "Hash-chained JSONL audit records capture tool invocations and state changes, scrubbed before write — subject to the scrubber pattern gaps.",
+    "confidence": "Verified",
+    "evidence": "packages/auth/src/{session-manager,audit-log,rate-limit,pi-scrubber}.ts; packages/server-ui/src/server.ts createApp(); packages/server-mcp/src/ssh-client.ts:163; packages/imis-mcp/src/ssh-executor.ts:186."
+  },
+
+  "security_doc_path": "docs/security-review.md",
+  "architecture_doc_path": "docs/architecture.md",
+
+  "owasp": {
+    "A01": 2, "A02": 3, "A03": 0, "A04": 2,
+    "A05": 4, "A06": 1, "A07": 0, "A08": 0,
+    "A09": 1, "A10": 0
+  },
+
+  "findings": [
+    {
+      "title": "RSEC-001 — Command injection in Server MCP log search",
+      "severity": "Critical",
+      "classification": "Confirmed",
+      "business_risk": "An attacker who can influence text in a ticket or an application log can run arbitrary commands on BC Government application servers under a privileged service account. Reachable from seven call sites across four packages, including the autonomous pipeline that runs unattended on a schedule.",
+      "action": "Escape the search pattern per-argument instead of extending the character denylist; ship together with RSEC-002 and RSEC-003."
+    },
+    {
+      "title": "RSEC-002 — Command injection via newline bypass of the IMIS allowlist",
+      "severity": "Critical",
+      "classification": "Confirmed",
+      "business_risk": "The same class of defect in a second package. A newline in a command argument passes the safety check because the check treats a newline as ordinary whitespace, then acts as a statement separator on the remote shell.",
+      "action": "Add newline, carriage return and quote characters to the check, and consolidate both packages onto one shared, tested command builder so the copies cannot drift again."
+    },
+    {
+      "title": "RSEC-003 — Path validation accepts newline and quote characters",
+      "severity": "High",
+      "classification": "Confirmed",
+      "business_risk": "This is the delivery route for RSEC-002. A file path supplied through an AI tool call reaches an unquoted shell command, so a path containing a newline executes.",
+      "action": "Extend the character check and quote the path where it is interpolated. Fix alongside RSEC-002."
+    },
+    {
+      "title": "RSEC-004 — Privacy scrubber misses unseparated SIN, phone and bare IDIR",
+      "severity": "High",
+      "classification": "Confirmed",
+      "business_risk": "FOIPPA compliance gap in the exact control the privacy posture depends on. A social insurance number written as nine consecutive digits — the common machine-readable form — passes through unredacted to an AI model and into audit records, as do unformatted phone numbers and bare IDIRs.",
+      "action": "Make separators optional, add a bare nine-digit branch with a checksum test to limit false positives, add a standalone IDIR pattern, and lower the credential length threshold. Over-redaction is the safe direction here."
+    },
+    {
+      "title": "RSEC-005 — Local dashboard has no authentication or CSRF protection",
+      "severity": "Medium",
+      "classification": "Confirmed",
+      "business_risk": "Any website the operator visits can read the internal server inventory — hostnames, SSH usernames, sudo accounts — or overwrite the server configuration file, using the operator's own privileges.",
+      "action": "Add Host and Origin validation plus a custom-header requirement on state-changing requests, and sanitize values written to the configuration file."
+    },
+    {
+      "title": "RSEC-006 — SSH host key verification disabled in both SSH clients",
+      "severity": "Medium",
+      "classification": "Confirmed",
+      "business_risk": "Both SSH clients accept any host key presented, then send the SSH credential and the sudo password. An attacker positioned on the network path could capture both. Documented in code as a deliberate decision treating the VPN as the trust boundary, but the exception is implicit and duplicated.",
+      "action": "Verify against known_hosts and gate the bypass behind one explicit opt-in flag covering both sites. Record the decision as an architecture decision record."
+    },
+    {
+      "title": "RSEC-007 — TLS certificate validation disabled for alert email",
+      "severity": "Medium",
+      "classification": "Confirmed",
+      "business_risk": "Every alert email is sent with certificate checking switched off. Where SMTP credentials are configured, those credentials and the alert contents — internal hostnames and stack traces — can be intercepted.",
+      "action": "Remove the default and require an explicit opt-in environment variable for the insecure mode."
+    },
+    {
+      "title": "RSEC-008 — Push credentials transiently written to git config",
+      "severity": "Low",
+      "classification": "Probable",
+      "business_risk": "An abnormal termination during a pipeline push can leave the operator's password in plain text in a local git configuration file.",
+      "action": "Port the credential-header pattern already implemented in the Bitbucket package. This is a copy of proven in-repo code, not a new design."
+    },
+    {
+      "title": "RSEC-009 — Unescaped markdown in the Confluence converter fallback",
+      "severity": "Low",
+      "classification": "Probable",
+      "business_risk": "If a markdown render throws on untrusted content, the error path returns the raw input unescaped into Confluence page storage.",
+      "action": "HTML-escape the fallback return value."
+    },
+    {
+      "title": "RSEC-010 — Webhook validation does not resolve DNS",
+      "severity": "Low",
+      "classification": "Probable",
+      "business_risk": "Alert webhook validation blocks private IP addresses written literally but never resolves hostnames, so a domain pointing at an internal or cloud metadata address is accepted.",
+      "action": "Resolve the hostname at dispatch time and re-check the resolved addresses."
+    },
+    {
+      "title": "RSEC-011 — Missing HTTP security headers on the dashboard",
+      "severity": "Informational",
+      "classification": "Confirmed",
+      "business_risk": "No content security policy or framing protection, so the local dashboard can be embedded by another page for clickjacking.",
+      "action": "Mount the helmet middleware when the application is created."
+    },
+    {
+      "title": "RSEC-012 — No code coverage provider is installed",
+      "severity": "Informational",
+      "classification": "Confirmed",
+      "business_risk": "Coverage reads zero and fails the quality gate. The cause is not scan configuration — no coverage tooling exists in the project at all, so no amount of re-scanning will produce a number.",
+      "action": "Install a coverage provider, configure LCOV output, and establish a real baseline before setting any coverage threshold."
+    },
+    {
+      "title": "RSEC-013 — Continuous integration has no security scanning gate",
+      "severity": "Informational",
+      "classification": "Confirmed",
+      "business_risk": "The build runs a real compile and the full test suite but no dependency audit or static security analysis, so an advisory published after a merge is never caught by a gate on the change itself.",
+      "action": "Add a dependency audit step to the workflow and enable code scanning in repository settings. This directly supports the goal of automating dependency maintenance."
+    }
+  ],
+
+  "tech_debt": [
+    {
+      "component": "Shell command construction",
+      "category": "Duplicated security-critical logic",
+      "risk": "HIGH",
+      "impact": "Two packages independently implement the same shell-safety check and two separate SSH clients. The copies have already drifted — each blocks characters the other misses — which is why one defect appears as two findings.",
+      "action": "Extract one shared, tested command builder and one SSH client; delete the duplicates."
+    },
+    {
+      "component": "Test coverage tooling",
+      "category": "Missing quality infrastructure",
+      "risk": "MEDIUM",
+      "impact": "No coverage provider is installed, so coverage is structurally zero and the quality gate cannot pass its coverage condition.",
+      "action": "Install a coverage provider and configure LCOV reporting."
+    },
+    {
+      "component": "CI security gates",
+      "category": "Missing pipeline control",
+      "risk": "MEDIUM",
+      "impact": "No dependency audit or static analysis runs on a change. Advisory detection depends entirely on the Dependabot schedule.",
+      "action": "Add a dependency audit step and enable code scanning."
+    },
+    {
+      "component": "SonarQube hotspot queue",
+      "category": "Untriaged findings",
+      "risk": "MEDIUM",
+      "impact": "Twenty-eight hotspots are unreviewed, which fails a quality gate condition outright. Three high-severity entries are test fixtures that mask genuine credential findings; eight concern regular expressions that parse remote responses.",
+      "action": "Mark the test fixtures safe, then review the regular-expression hotspots that handle remote input."
+    },
+    {
+      "component": "Audit log retention",
+      "category": "Operational gap",
+      "risk": "MEDIUM",
+      "impact": "The audit log is the only non-reproducible artifact the system creates. It is retained indefinitely with no rotation and no backup. Its hash chain makes tampering detectable but does nothing about loss.",
+      "action": "Define a rotation and retention policy and include the audit directory in workstation backup."
+    },
+    {
+      "component": "MCP tool and REST contracts",
+      "category": "Unversioned interfaces",
+      "risk": "LOW",
+      "impact": "Neither the tool schemas nor the dashboard REST surface carries a version, so there is no mechanism to evolve a contract without breaking a pinned consumer.",
+      "action": "Adopt a versioning and deprecation policy for the tool schemas."
+    },
+    {
+      "component": "Architecture decision records",
+      "category": "Undocumented decisions",
+      "risk": "LOW",
+      "impact": "Consequential decisions — disabling SSH host key checking, separate processes per server, disabling model tool access — survive only as source comments.",
+      "action": "Record these as architecture decision records so the reasoning is reviewable."
+    },
+    {
+      "component": "Direct dependencies",
+      "category": "Minor version drift",
+      "risk": "LOW",
+      "impact": "Eight direct dependencies trail their latest release by minor or patch versions. No advisory is open against any of them.",
+      "action": "Allow the existing Dependabot flow to close these; no manual action required."
+    }
+  ],
+
+  "stride": [
+    { "component": "Server MCP (SSH)", "S": "Medium", "T": "High", "R": "Low", "I": "Medium", "D": "Low", "E": "High" },
+    { "component": "IMIS MCP (SSH)", "S": "Medium", "T": "High", "R": "Low", "I": "Medium", "D": "Low", "E": "High" },
+    { "component": "Server UI (port 3777)", "S": "Medium", "T": "Medium", "R": "Low", "I": "Medium", "D": "Medium", "E": "Medium" },
+    { "component": "Pipeline (autonomous)", "S": "Low", "T": "Medium", "R": "Low", "I": "Medium", "D": "Low", "E": "Low" },
+    { "component": "Auth kernel", "S": "Low", "T": "Low", "R": "Low", "I": "Medium", "D": "Low", "E": "Low" }
+  ],
+
+  "p1_actions": "Close the command-injection class in one change — RSEC-001, RSEC-002 and RSEC-003 are one defect duplicated across two packages, so fixing a single package closes the ticket without closing the hole. Extract a shared, tested command builder using per-argument escaping and add the reproduced payloads as regression tests. In parallel, fix the privacy scrubber patterns so unseparated identifiers are redacted; this is cheap and it is the control FOIPPA compliance rests on.",
+  "p2_actions": "Add Host and Origin validation to the local dashboard and sanitize configuration writes. Enable SSH host key verification at both sites behind one explicit opt-in flag, and record the trust-boundary decision as an architecture decision record.",
+  "p3_actions": "Gate the SMTP TLS bypass behind an opt-in variable. Port the existing in-repo credential-header pattern into the pipeline push path. Escape the markdown fallback, resolve DNS before dispatching webhooks, and mount security headers. Install a coverage provider and add dependency-audit and code-scanning gates to CI before trusting any future scan trend."
+}

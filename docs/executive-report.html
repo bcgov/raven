@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Executive Security Report — RAVEN</title>
+<style>@page{size:letter;margin:.6in .5in}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}.page-break{page-break-before:always}.no-print{display:none}}*{box-sizing:border-box;margin:0;padding:0}:root{--critical:#b91c1c;--critical-bg:#fef2f2;--high:#c2410c;--high-bg:#fff7ed;--medium:#a16207;--medium-bg:#fefce8;--low:#15803d;--low-bg:#f0fdf4;--info:#1d4ed8;--info-bg:#eff6ff;--secure:#047857;--secure-bg:#ecfdf5;--border:#e5e7eb;--text:#1f2937;--muted:#6b7280;--card-shadow:0 1px 3px rgba(0,0,0,.08)}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:11pt;line-height:1.5;color:var(--text);max-width:7.5in;margin:0 auto;padding:.25in 0}h1{font-size:1.4em;margin-bottom:.2em}h2{font-size:1.15em;margin:1.2em 0 .5em;border-bottom:2px solid var(--border);padding-bottom:.2em}h3{font-size:1em;margin:.8em 0 .3em}p,li{margin-bottom:.4em}.report-header{text-align:center;margin-bottom:1em;padding-bottom:.8em;border-bottom:3px solid var(--text)}.report-header h1{font-size:1.6em}.report-header .subtitle{color:var(--muted);font-size:.95em}.report-meta{display:flex;justify-content:space-between;flex-wrap:wrap;gap:.3em;font-size:.85em;color:var(--muted);margin-top:.5em}.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:.5em;margin:.8em 0}.kpi-card{border:1px solid var(--border);border-radius:6px;padding:.5em .6em;text-align:center;box-shadow:var(--card-shadow)}.kpi-card .kpi-value{font-size:1.8em;font-weight:700;line-height:1.2}.kpi-card .kpi-label{font-size:.75em;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}.kpi-card.critical{border-left:4px solid var(--critical)}.kpi-card.critical .kpi-value{color:var(--critical)}.kpi-card.high{border-left:4px solid var(--high)}.kpi-card.high .kpi-value{color:var(--high)}.kpi-card.medium{border-left:4px solid var(--medium)}.kpi-card.medium .kpi-value{color:var(--medium)}.kpi-card.secure{border-left:4px solid var(--secure)}.kpi-card.secure .kpi-value{color:var(--secure)}.risk-badge{display:inline-block;padding:.2em .7em;border-radius:4px;font-weight:600;font-size:.85em;text-transform:uppercase}.risk-badge.critical{background:var(--critical-bg);color:var(--critical);border:1px solid var(--critical)}.risk-badge.high{background:var(--high-bg);color:var(--high);border:1px solid var(--high)}.risk-badge.moderate{background:var(--medium-bg);color:var(--medium);border:1px solid var(--medium)}.risk-badge.low{background:var(--low-bg);color:var(--low);border:1px solid var(--low)}.risk-badge.secure{background:var(--secure-bg);color:var(--secure);border:1px solid var(--secure)}.chart-container{display:flex;align-items:center;gap:1.2em;margin:.8em 0}.donut-chart{width:140px;height:140px;flex-shrink:0}.chart-legend{font-size:.85em}.chart-legend li{list-style:none;display:flex;align-items:center;gap:.4em;margin-bottom:.3em}.legend-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}.bar-chart{margin:.6em 0}.bar-row{display:flex;align-items:center;margin-bottom:.4em}.bar-label{width:5.5em;font-size:.8em;text-align:right;padding-right:.5em;flex-shrink:0}.bar-track{flex:1;height:18px;background:#f3f4f6;border-radius:3px;overflow:hidden;position:relative}.bar-fill{height:100%;border-radius:3px;transition:width .3s}.bar-value{position:absolute;right:4px;top:1px;font-size:.7em;font-weight:600;color:var(--text)}.heatmap{border-collapse:collapse;width:100%;font-size:.8em;margin:.6em 0}.heatmap th,.heatmap td{border:1px solid var(--border);padding:.3em .5em;text-align:center}.heatmap th{background:#f9fafb;font-weight:600}.heatmap .cell-high{background:#fecaca;color:var(--critical);font-weight:600}.heatmap .cell-medium{background:#fef08a;color:var(--medium);font-weight:600}.heatmap .cell-low{background:#bbf7d0;color:var(--secure);font-weight:600}table.data-table{border-collapse:collapse;width:100%;font-size:.82em;margin:.5em 0}table.data-table th,table.data-table td{border:1px solid var(--border);padding:.35em .5em;text-align:left}table.data-table th{background:#f9fafb;font-weight:600;white-space:nowrap}table.data-table tr:nth-child(even){background:#fafafa}.roadmap{margin:.8em 0}.roadmap-phase{display:flex;align-items:flex-start;gap:.6em;margin-bottom:.6em}.phase-marker{width:2.2em;height:2.2em;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.85em;color:#fff;flex-shrink:0}.phase-marker.p1{background:var(--critical)}.phase-marker.p2{background:var(--high)}.phase-marker.p3{background:var(--medium)}.phase-content{flex:1}.phase-content .phase-title{font-weight:600;font-size:.9em}.phase-content .phase-detail{font-size:.82em;color:var(--muted)}.gauge-container{display:flex;align-items:center;gap:.8em;margin:.5em 0}.gauge-bar{flex:1;height:12px;background:#f3f4f6;border-radius:6px;overflow:hidden}.gauge-fill{height:100%;border-radius:6px}.gauge-label{font-size:.85em;font-weight:600;min-width:3em}.flex-row{display:flex;gap:1em;flex-wrap:wrap}.flex-col-half{flex:1;min-width:3in}.section-note{font-size:.8em;color:var(--muted);font-style:italic;margin-bottom:.5em}
+</style>
+</head>
+<body>
+
+<!-- ===== HEADER ===== -->
+<div class="report-header">
+  <h1>Executive Security Report</h1>
+  <div class="subtitle">Resource Analytics, Visibility &amp; Enterprise Navigator (RAVEN)</div>
+  <div class="report-meta">
+    <span>Report Date: 2026-09-14</span>
+    <span>Overall Risk: <span class="risk-badge high">HIGH</span></span>
+    <span>Quality Gate: <strong>FAILED</strong></span>
+  </div>
+</div>
+
+<!-- ===== KPI CARDS ===== -->
+<h2>Key Metrics</h2>
+<div class="kpi-grid">
+  <div class="kpi-card critical">
+    <div class="kpi-value">2</div>
+    <div class="kpi-label">Critical</div>
+  </div>
+  <div class="kpi-card high">
+    <div class="kpi-value">2</div>
+    <div class="kpi-label">High</div>
+  </div>
+  <div class="kpi-card medium">
+    <div class="kpi-value">3</div>
+    <div class="kpi-label">Medium</div>
+  </div>
+  <div class="kpi-card secure">
+    <div class="kpi-value">3</div>
+    <div class="kpi-label">Low</div>
+  </div>
+</div>
+<div class="kpi-grid">
+  <div class="kpi-card">
+    <div class="kpi-value">10</div>
+    <div class="kpi-label">Confirmed</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-value">3</div>
+    <div class="kpi-label">Probable</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-value">13</div>
+    <div class="kpi-label">Total Findings</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-value">1</div>
+    <div class="kpi-label">Coverage Gaps</div>
+  </div>
+</div>
+
+<!-- ===== SEVERITY BREAKDOWN ===== -->
+<h2>Findings by Severity</h2>
+<div class="flex-row">
+  <div class="flex-col-half">
+    <!-- Donut Chart: replace stroke-dasharray values with calculated segments -->
+    <!-- Formula: segment = (count / total) * 251.2 (circumference for r=40) -->
+    <svg class="donut-chart" viewBox="0 0 100 100">
+      <circle cx="50" cy="50" r="40" fill="none" stroke="#f3f4f6" stroke-width="14"/>
+      <!-- Critical segment -->
+      <circle cx="50" cy="50" r="40" fill="none" stroke="#b91c1c" stroke-width="14"
+        stroke-dasharray="38.65 251.2" stroke-dashoffset="0" transform="rotate(-90 50 50)"/>
+      <!-- High segment -->
+      <circle cx="50" cy="50" r="40" fill="none" stroke="#c2410c" stroke-width="14"
+        stroke-dasharray="38.65 251.2" stroke-dashoffset="-38.65" transform="rotate(-90 50 50)"/>
+      <!-- Medium segment -->
+      <circle cx="50" cy="50" r="40" fill="none" stroke="#a16207" stroke-width="14"
+        stroke-dasharray="57.97 251.2" stroke-dashoffset="-77.3" transform="rotate(-90 50 50)"/>
+      <!-- Low segment -->
+      <circle cx="50" cy="50" r="40" fill="none" stroke="#15803d" stroke-width="14"
+        stroke-dasharray="57.97 251.2" stroke-dashoffset="-135.27" transform="rotate(-90 50 50)"/>
+      <!-- Center label -->
+      <text x="50" y="48" text-anchor="middle" font-size="14" font-weight="700" fill="#1f2937">13</text>
+      <text x="50" y="60" text-anchor="middle" font-size="6" fill="#6b7280">findings</text>
+    </svg>
+  </div>
+  <div class="flex-col-half">
+    <ul class="chart-legend">
+      <li><span class="legend-dot" style="background:#b91c1c"></span> Critical — 2</li>
+      <li><span class="legend-dot" style="background:#c2410c"></span> High — 2</li>
+      <li><span class="legend-dot" style="background:#a16207"></span> Medium — 3</li>
+      <li><span class="legend-dot" style="background:#15803d"></span> Low — 3</li>
+      <li><span class="legend-dot" style="background:#1d4ed8"></span> Informational — 3</li>
+    </ul>
+    <h3 style="margin-top:0.8em;">Classification</h3>
+    <div class="bar-chart">
+      <div class="bar-row">
+        <span class="bar-label">Confirmed</span>
+        <div class="bar-track">
+          <div class="bar-fill" style="width:77%; background:var(--critical);"></div>
+          <span class="bar-value">10</span>
+        </div>
+      </div>
+      <div class="bar-row">
+        <span class="bar-label">Probable</span>
+        <div class="bar-track">
+          <div class="bar-fill" style="width:23%; background:var(--medium);"></div>
+          <span class="bar-value">3</span>
+        </div>
+      </div>
+      <div class="bar-row">
+        <span class="bar-label">Info</span>
+        <div class="bar-track">
+          <div class="bar-fill" style="width:23%; background:var(--info);"></div>
+          <span class="bar-value">3</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== OWASP CATEGORY BAR CHART ===== -->
+<h2>Findings by OWASP Category</h2>
+<div class="bar-chart">
+    <div class="bar-row">
+    <span class="bar-label">A01</span>
+    <div class="bar-track">
+      <div class="bar-fill" style="width:50%; background:var(--critical);"></div>
+      <span class="bar-value">2 &mdash; Broken Access Control</span>
+    </div>
+  </div>
+  <div class="bar-row">
+    <span class="bar-label">A02</span>
+    <div class="bar-track">
+      <div class="bar-fill" style="width:75%; background:var(--high);"></div>
+      <span class="bar-value">3 &mdash; Security Misconfiguration</span>
+    </div>
+  </div>
+  <div class="bar-row">
+    <span class="bar-label">A03</span>
+    <div class="bar-track">
+      <div class="bar-fill" style="width:0%; background:var(--high);"></div>
+      <span class="bar-value">0 &mdash; Supply Chain Failures</span>
+    </div>
+  </div>
+  <div class="bar-row">
+    <span class="bar-label">A04</span>
+    <div class="bar-track">
+      <div class="bar-fill" style="width:50%; background:var(--medium);"></div>
+      <span class="bar-value">2 &mdash; Cryptographic Failures</span>
+    </div>
+  </div>
+  <div class="bar-row">
+    <span class="bar-label">A05</span>
+    <div class="bar-track">
+      <div class="bar-fill" style="width:100%; background:var(--critical);"></div>
+      <span class="bar-value">4 &mdash; Injection</span>
+    </div>
+  </div>
+  <div class="bar-row">
+    <span class="bar-label">A06</span>
+    <div class="bar-track">
+      <div class="bar-fill" style="width:25%; background:var(--medium);"></div>
+      <span class="bar-value">1 &mdash; Insecure Design</span>
+    </div>
+  </div>
+  <div class="bar-row">
+    <span class="bar-label">A07</span>
+    <div class="bar-track">
+      <div class="bar-fill" style="width:0%; background:var(--high);"></div>
+      <span class="bar-value">0 &mdash; Authentication Failures</span>
+    </div>
+  </div>
+  <div class="bar-row">
+    <span class="bar-label">A08</span>
+    <div class="bar-track">
+      <div class="bar-fill" style="width:0%; background:var(--medium);"></div>
+      <span class="bar-value">0 &mdash; Integrity Failures</span>
+    </div>
+  </div>
+  <div class="bar-row">
+    <span class="bar-label">A09</span>
+    <div class="bar-track">
+      <div class="bar-fill" style="width:25%; background:var(--medium);"></div>
+      <span class="bar-value">1 &mdash; Logging Failures</span>
+    </div>
+  </div>
+  <div class="bar-row">
+    <span class="bar-label">A10</span>
+    <div class="bar-track">
+      <div class="bar-fill" style="width:0%; background:var(--medium);"></div>
+      <span class="bar-value">0 &mdash; Exception Handling</span>
+    </div>
+  </div>
+</div>
+
+<!-- ===== PAGE BREAK FOR PDF ===== -->
+<div class="page-break"></div>
+
+<!-- ===== EXECUTIVE BRIEF ===== -->
+<h2>Executive Brief</h2>
+<p>RAVEN is in good structural health. Its dependencies are clean — npm audit reports zero open advisories at the reviewed commit, and Dependabot closed four advisory classes within nine days during September. Its security design is better than typical for an internal tool: it never holds more authority than the person running it, its audit log is cryptographically tamper-evident, and personal information is scrubbed before any content reaches an AI model. The material risk is concentrated in one place. Two confirmed command-injection defects allow an attacker who can influence text in a ticket or an application log to run commands on BC Government application servers under a privileged service account. These are not two separate bugs but one duplicated one: two packages independently implement the same shell-safety check, and the two copies have already drifted apart so that each blocks characters the other misses. Reachability analysis shows the affected code is called from the autonomous pipeline, which runs on a schedule with no person watching, widening the exposure beyond what a first-pass review identified. Separately, the FOIPPA privacy scrubber does not redact a social insurance number or phone number written without separators, nor a bare IDIR — a compliance gap in the exact control the privacy posture depends on. None of this is an emergency: every path requires an attacker to already be writing content the system reads. The recommended first step is roughly a day of focused work that closes the whole class rather than the individual instances.</p>
+
+<!-- ===== HIGH-RISK ISSUES TABLE ===== -->
+<h2>High-Risk Security Issues</h2>
+<p class="section-note">Critical and high-severity findings requiring immediate attention. Confirmed findings have full code evidence; Probable findings await complete verification.</p>
+<table class="data-table">
+  <thead>
+    <tr><th>Finding</th><th>Severity</th><th>Class.</th><th>Business Risk</th><th>Action</th></tr>
+  </thead>
+  <tbody>
+        <tr>
+      <td>RSEC-001 — Command injection in Server MCP log search</td>
+      <td><span class="risk-badge critical">Critical</span></td>
+      <td>Confirmed</td>
+      <td>An attacker who can influence text in a ticket or an application log can run arbitrary commands on BC Government application servers under a privileged service account. Reachable from seven call sites across four packages, including the autonomous pipeline that runs unattended on a schedule.</td>
+      <td>Escape the search pattern per-argument instead of extending the character denylist; ship together with RSEC-002 and RSEC-003.</td>
+    </tr>
+    <tr>
+      <td>RSEC-002 — Command injection via newline bypass of the IMIS allowlist</td>
+      <td><span class="risk-badge critical">Critical</span></td>
+      <td>Confirmed</td>
+      <td>The same class of defect in a second package. A newline in a command argument passes the safety check because the check treats a newline as ordinary whitespace, then acts as a statement separator on the remote shell.</td>
+      <td>Add newline, carriage return and quote characters to the check, and consolidate both packages onto one shared, tested command builder so the copies cannot drift again.</td>
+    </tr>
+    <tr>
+      <td>RSEC-003 — Path validation accepts newline and quote characters</td>
+      <td><span class="risk-badge high">High</span></td>
+      <td>Confirmed</td>
+      <td>This is the delivery route for RSEC-002. A file path supplied through an AI tool call reaches an unquoted shell command, so a path containing a newline executes.</td>
+      <td>Extend the character check and quote the path where it is interpolated. Fix alongside RSEC-002.</td>
+    </tr>
+    <tr>
+      <td>RSEC-004 — Privacy scrubber misses unseparated SIN, phone and bare IDIR</td>
+      <td><span class="risk-badge high">High</span></td>
+      <td>Confirmed</td>
+      <td>FOIPPA compliance gap in the exact control the privacy posture depends on. A social insurance number written as nine consecutive digits — the common machine-readable form — passes through unredacted to an AI model and into audit records, as do unformatted phone numbers and bare IDIRs.</td>
+      <td>Make separators optional, add a bare nine-digit branch with a checksum test to limit false positives, add a standalone IDIR pattern, and lower the credential length threshold. Over-redaction is the safe direction here.</td>
+    </tr>
+    <tr>
+      <td>RSEC-005 — Local dashboard has no authentication or CSRF protection</td>
+      <td><span class="risk-badge moderate">Medium</span></td>
+      <td>Confirmed</td>
+      <td>Any website the operator visits can read the internal server inventory — hostnames, SSH usernames, sudo accounts — or overwrite the server configuration file, using the operator&#39;s own privileges.</td>
+      <td>Add Host and Origin validation plus a custom-header requirement on state-changing requests, and sanitize values written to the configuration file.</td>
+    </tr>
+    <tr>
+      <td>RSEC-006 — SSH host key verification disabled in both SSH clients</td>
+      <td><span class="risk-badge moderate">Medium</span></td>
+      <td>Confirmed</td>
+      <td>Both SSH clients accept any host key presented, then send the SSH credential and the sudo password. An attacker positioned on the network path could capture both. Documented in code as a deliberate decision treating the VPN as the trust boundary, but the exception is implicit and duplicated.</td>
+      <td>Verify against known_hosts and gate the bypass behind one explicit opt-in flag covering both sites. Record the decision as an architecture decision record.</td>
+    </tr>
+    <tr>
+      <td>RSEC-007 — TLS certificate validation disabled for alert email</td>
+      <td><span class="risk-badge moderate">Medium</span></td>
+      <td>Confirmed</td>
+      <td>Every alert email is sent with certificate checking switched off. Where SMTP credentials are configured, those credentials and the alert contents — internal hostnames and stack traces — can be intercepted.</td>
+      <td>Remove the default and require an explicit opt-in environment variable for the insecure mode.</td>
+    </tr>
+    <tr>
+      <td>RSEC-008 — Push credentials transiently written to git config</td>
+      <td><span class="risk-badge low">Low</span></td>
+      <td>Probable</td>
+      <td>An abnormal termination during a pipeline push can leave the operator&#39;s password in plain text in a local git configuration file.</td>
+      <td>Port the credential-header pattern already implemented in the Bitbucket package. This is a copy of proven in-repo code, not a new design.</td>
+    </tr>
+    <tr>
+      <td>RSEC-009 — Unescaped markdown in the Confluence converter fallback</td>
+      <td><span class="risk-badge low">Low</span></td>
+      <td>Probable</td>
+      <td>If a markdown render throws on untrusted content, the error path returns the raw input unescaped into Confluence page storage.</td>
+      <td>HTML-escape the fallback return value.</td>
+    </tr>
+    <tr>
+      <td>RSEC-010 — Webhook validation does not resolve DNS</td>
+      <td><span class="risk-badge low">Low</span></td>
+      <td>Probable</td>
+      <td>Alert webhook validation blocks private IP addresses written literally but never resolves hostnames, so a domain pointing at an internal or cloud metadata address is accepted.</td>
+      <td>Resolve the hostname at dispatch time and re-check the resolved addresses.</td>
+    </tr>
+    <tr>
+      <td>RSEC-011 — Missing HTTP security headers on the dashboard</td>
+      <td><span class="risk-badge low">Informational</span></td>
+      <td>Confirmed</td>
+      <td>No content security policy or framing protection, so the local dashboard can be embedded by another page for clickjacking.</td>
+      <td>Mount the helmet middleware when the application is created.</td>
+    </tr>
+    <tr>
+      <td>RSEC-012 — No code coverage provider is installed</td>
+      <td><span class="risk-badge low">Informational</span></td>
+      <td>Confirmed</td>
+      <td>Coverage reads zero and fails the quality gate. The cause is not scan configuration — no coverage tooling exists in the project at all, so no amount of re-scanning will produce a number.</td>
+      <td>Install a coverage provider, configure LCOV output, and establish a real baseline before setting any coverage threshold.</td>
+    </tr>
+    <tr>
+      <td>RSEC-013 — Continuous integration has no security scanning gate</td>
+      <td><span class="risk-badge low">Informational</span></td>
+      <td>Confirmed</td>
+      <td>The build runs a real compile and the full test suite but no dependency audit or static security analysis, so an advisory published after a merge is never caught by a gate on the change itself.</td>
+      <td>Add a dependency audit step to the workflow and enable code scanning in repository settings. This directly supports the goal of automating dependency maintenance.</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ===== TECH DEBT & PLATFORM CURRENCY ===== -->
+<h2>Technical Debt & Platform Currency</h2>
+<table class="data-table">
+  <thead>
+    <tr><th>Component</th><th>Category</th><th>Risk</th><th>Impact</th><th>Action</th></tr>
+  </thead>
+  <tbody>
+        <tr>
+      <td>Shell command construction</td>
+      <td>Duplicated security-critical logic</td>
+      <td><span class="risk-badge high">HIGH</span></td>
+      <td>Two packages independently implement the same shell-safety check and two separate SSH clients. The copies have already drifted — each blocks characters the other misses — which is why one defect appears as two findings.</td>
+      <td>Extract one shared, tested command builder and one SSH client; delete the duplicates.</td>
+    </tr>
+    <tr>
+      <td>Test coverage tooling</td>
+      <td>Missing quality infrastructure</td>
+      <td><span class="risk-badge moderate">MEDIUM</span></td>
+      <td>No coverage provider is installed, so coverage is structurally zero and the quality gate cannot pass its coverage condition.</td>
+      <td>Install a coverage provider and configure LCOV reporting.</td>
+    </tr>
+    <tr>
+      <td>CI security gates</td>
+      <td>Missing pipeline control</td>
+      <td><span class="risk-badge moderate">MEDIUM</span></td>
+      <td>No dependency audit or static analysis runs on a change. Advisory detection depends entirely on the Dependabot schedule.</td>
+      <td>Add a dependency audit step and enable code scanning.</td>
+    </tr>
+    <tr>
+      <td>SonarQube hotspot queue</td>
+      <td>Untriaged findings</td>
+      <td><span class="risk-badge moderate">MEDIUM</span></td>
+      <td>Twenty-eight hotspots are unreviewed, which fails a quality gate condition outright. Three high-severity entries are test fixtures that mask genuine credential findings; eight concern regular expressions that parse remote responses.</td>
+      <td>Mark the test fixtures safe, then review the regular-expression hotspots that handle remote input.</td>
+    </tr>
+    <tr>
+      <td>Audit log retention</td>
+      <td>Operational gap</td>
+      <td><span class="risk-badge moderate">MEDIUM</span></td>
+      <td>The audit log is the only non-reproducible artifact the system creates. It is retained indefinitely with no rotation and no backup. Its hash chain makes tampering detectable but does nothing about loss.</td>
+      <td>Define a rotation and retention policy and include the audit directory in workstation backup.</td>
+    </tr>
+    <tr>
+      <td>MCP tool and REST contracts</td>
+      <td>Unversioned interfaces</td>
+      <td><span class="risk-badge low">LOW</span></td>
+      <td>Neither the tool schemas nor the dashboard REST surface carries a version, so there is no mechanism to evolve a contract without breaking a pinned consumer.</td>
+      <td>Adopt a versioning and deprecation policy for the tool schemas.</td>
+    </tr>
+    <tr>
+      <td>Architecture decision records</td>
+      <td>Undocumented decisions</td>
+      <td><span class="risk-badge low">LOW</span></td>
+      <td>Consequential decisions — disabling SSH host key checking, separate processes per server, disabling model tool access — survive only as source comments.</td>
+      <td>Record these as architecture decision records so the reasoning is reviewable.</td>
+    </tr>
+    <tr>
+      <td>Direct dependencies</td>
+      <td>Minor version drift</td>
+      <td><span class="risk-badge low">LOW</span></td>
+      <td>Eight direct dependencies trail their latest release by minor or patch versions. No advisory is open against any of them.</td>
+      <td>Allow the existing Dependabot flow to close these; no manual action required.</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ===== DEPENDENCY HEALTH ===== -->
+<h2>Dependency Health</h2>
+<div class="flex-row">
+  <div class="flex-col-half">
+    <div class="gauge-container">
+      <span class="gauge-label">60%</span>
+      <div class="gauge-bar">
+        <div class="gauge-fill" style="width:60%; background: linear-gradient(90deg, var(--secure), #34d399);"></div>
+      </div>
+      <span style="font-size:0.8em;">healthy</span>
+    </div>
+    <div class="gauge-container">
+      <span class="gauge-label">40%</span>
+      <div class="gauge-bar">
+        <div class="gauge-fill" style="width:40%; background: linear-gradient(90deg, var(--medium), #fbbf24);"></div>
+      </div>
+      <span style="font-size:0.8em;">outdated</span>
+    </div>
+    <div class="gauge-container">
+      <span class="gauge-label">0%</span>
+      <div class="gauge-bar">
+        <div class="gauge-fill" style="width:0%; background: linear-gradient(90deg, var(--critical), #f87171);"></div>
+      </div>
+      <span style="font-size:0.8em;">vulnerable</span>
+    </div>
+  </div>
+  <div class="flex-col-half">
+    <p style="font-size:0.85em;"><strong>Total Dependencies:</strong> 20<br>
+    <strong>Outdated:</strong> 8<br>
+    <strong>Known Vulnerable:</strong> 0<br>
+    <strong>Abandoned:</strong> 0</p>
+  </div>
+</div>
+
+<!-- ===== STRIDE HEATMAP ===== -->
+<h2>STRIDE Threat Model</h2>
+<table class="heatmap">
+  <thead>
+    <tr><th>Component</th><th>Spoofing</th><th>Tampering</th><th>Repudiation</th><th>Info Disclosure</th><th>DoS</th><th>Elevation</th></tr>
+  </thead>
+  <tbody>
+        <tr>
+      <td>Server MCP (SSH)</td>
+      <td class="cell-medium">Medium</td>
+      <td class="cell-high">High</td>
+      <td class="cell-low">Low</td>
+      <td class="cell-medium">Medium</td>
+      <td class="cell-low">Low</td>
+      <td class="cell-high">High</td>
+    </tr>
+    <tr>
+      <td>IMIS MCP (SSH)</td>
+      <td class="cell-medium">Medium</td>
+      <td class="cell-high">High</td>
+      <td class="cell-low">Low</td>
+      <td class="cell-medium">Medium</td>
+      <td class="cell-low">Low</td>
+      <td class="cell-high">High</td>
+    </tr>
+    <tr>
+      <td>Server UI (port 3777)</td>
+      <td class="cell-medium">Medium</td>
+      <td class="cell-medium">Medium</td>
+      <td class="cell-low">Low</td>
+      <td class="cell-medium">Medium</td>
+      <td class="cell-medium">Medium</td>
+      <td class="cell-medium">Medium</td>
+    </tr>
+    <tr>
+      <td>Pipeline (autonomous)</td>
+      <td class="cell-low">Low</td>
+      <td class="cell-medium">Medium</td>
+      <td class="cell-low">Low</td>
+      <td class="cell-medium">Medium</td>
+      <td class="cell-low">Low</td>
+      <td class="cell-low">Low</td>
+    </tr>
+    <tr>
+      <td>Auth kernel</td>
+      <td class="cell-low">Low</td>
+      <td class="cell-low">Low</td>
+      <td class="cell-low">Low</td>
+      <td class="cell-medium">Medium</td>
+      <td class="cell-low">Low</td>
+      <td class="cell-low">Low</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ===== PAGE BREAK FOR PDF ===== -->
+<div class="page-break"></div>
+
+<!-- ===== ARCHITECTURE OVERVIEW ===== -->
+<h2>Architecture Overview</h2>
+<div class="flex-row">
+  <div class="flex-col-half">
+    <p><strong>Tech Stack:</strong> Node.js (LTS 20/22), TypeScript 7.0.2, Express 5.2.1, MCP SDK 1.30.0, ssh2, Playwright, Zod 4.5.4, Vitest</p>
+    <p><strong>Architecture:</strong> Local-first MCP server suite — 21 npm workspace packages, 17 stdio servers around a shared @nrs/auth security kernel</p>
+    <p><strong>Deployment:</strong> Developer workstation only — no server deployment, no containers, no infrastructure-as-code</p>
+    <p><strong>Resilience:</strong> Fails closed throughout. Token bucket and circuit breaker protect shared upstreams; no backup exists for the append-only audit log, which is the single non-reproducible artifact</p>
+  </div>
+  <div class="flex-col-half">
+    <!-- Coverage baseline gauge -->
+    <h3>Assessment Coverage</h3>
+    <div class="gauge-container">
+      <span class="gauge-label">0%</span>
+      <div class="gauge-bar">
+        <div class="gauge-fill" style="width:0%; background: linear-gradient(90deg, #3b82f6, #06b6d4);"></div>
+      </div>
+      <span style="font-size:0.8em;">entry points assessed</span>
+    </div>
+    <p style="font-size:0.8em; color:var(--muted);">1 entry point(s) not fully assessed</p>
+  </div>
+</div>
+
+<!-- ===== OPTIONAL PLATFORM ALIGNMENT ===== -->
+<h2>Platform Alignment</h2>
+<p class="section-note">Evidence-backed platform role, reuse, data responsibility, contract, and dependency behavior. Unsupported values are shown as Unknown.</p>
+<div class="flex-row">
+  <div class="flex-col-half">
+    <table class="data-table">
+      <tbody>
+        <tr><th>Role</th><td>Integration adapter</td></tr>
+        <tr><th>Confidence</th><td>Verified</td></tr>
+        <tr><th>Known Consumers</th><td>17</td></tr>
+        <tr><th>Reuse Decision</th><td>Built in-house by Connected Services BC to satisfy SiteMinder SSO, FOIPPA scrubbing, and per-user credential isolation together. No equivalent shared BC Gov MCP layer was identified.</td></tr>
+        <tr><th>Data Custodian</th><td>James Gagan (bcgovpubcode.yml product_owner and data_custodian)</td></tr>
+        <tr><th>Data Sharing</th><td>Closed</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="flex-col-half">
+    <table class="data-table">
+      <tbody>
+        <tr><th>Contract Owner</th><td>Upstream platform teams own the external APIs; RAVEN&#39;s own MCP tool schemas have no declared owner, version, or deprecation policy.</td></tr>
+        <tr><th>Contract Versioning</th><td>None. Neither the MCP tool schemas nor the Server UI REST surface carries a version identifier, so a schema change cannot be evolved without silently breaking a pinned client.</td></tr>
+        <tr><th>Degradation Behavior</th><td>Fails closed in every observed path. No fallback serves stale data or weakens authorization. The one weakening default is unconditional SMTP TLS bypass, which is a configuration choice rather than a failure path.</td></tr>
+        <tr><th>Shared Dependencies</th><td>20</td></tr>
+        <tr><th>Consumers Measured</th><td>17</td></tr>
+        <tr><th>Contracts With Owners</th><td>0</td></tr>
+        <tr><th>Fallback Scenarios Tested</th><td>0</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+<p class="section-note"><strong>Evidence:</strong> Every package brokers between a local AI assistant and an existing upstream system of record; RAVEN stores no business data of its own.</p>
+<h2>Zero Trust Posture</h2>
+<p class="section-note">Evidence-backed resource protection summary. This is not an enterprise maturity score.</p>
+<table class="data-table">
+  <tbody>
+    <tr><th>Protected Resources</th><td>BC Gov Atlassian APIs, government application servers over SSH with sudo, Azure DevOps / Jenkins / Artifactory / GitHub / SonarQube, SharePoint Online, and the local dashboard socket on 127.0.0.1:3777.</td></tr>
+    <tr><th>Enforcement Points</th><td>Authorization is delegated to the upstream provider — every call carries the operator&#39;s own identity, so RAVEN can never exceed the operator&#39;s entitlements. The exception is the Server UI, which enforces nothing on any of its fifteen routers.</td></tr>
+    <tr><th>Least Privilege</th><td>SiteMinder sessions expire in roughly 25 minutes; sudo targets are allowlisted to named service accounts. Undermined by the unauthenticated dashboard, which exposes those privileges without attribution.</td></tr>
+    <tr><th>Revocation and Expiry</th><td>Session expiry and clearCachedSession exist. No rotation schedule, no provider-token revocation path, and no time-bound exception process are defined.</td></tr>
+    <tr><th>Exceptions and Degradation</th><td>Dependency failures deny explicitly and never expand privilege. SSH host key verification is disabled at two sites as an implicit, undocumented standing exception.</td></tr>
+    <tr><th>Telemetry</th><td>Hash-chained JSONL audit records capture tool invocations and state changes, scrubbed before write — subject to the scrubber pattern gaps.</td></tr>
+    <tr><th>Confidence</th><td>Verified</td></tr>
+  </tbody>
+</table>
+<p class="section-note"><strong>Evidence:</strong> packages/auth/src/{session-manager,audit-log,rate-limit,pi-scrubber}.ts; packages/server-ui/src/server.ts createApp(); packages/server-mcp/src/ssh-client.ts:163; packages/imis-mcp/src/ssh-executor.ts:186.</p>
+
+<!-- ===== STRATEGIC ROADMAP ===== -->
+<h2>Strategic Remediation Roadmap</h2>
+<div class="roadmap">
+  <div class="roadmap-phase">
+    <div class="phase-marker p1">P1</div>
+    <div class="phase-content">
+      <div class="phase-title">Immediate — Current Sprint</div>
+      <div class="phase-detail">Close the command-injection class in one change — RSEC-001, RSEC-002 and RSEC-003 are one defect duplicated across two packages, so fixing a single package closes the ticket without closing the hole. Extract a shared, tested command builder using per-argument escaping and add the reproduced payloads as regression tests. In parallel, fix the privacy scrubber patterns so unseparated identifiers are redacted; this is cheap and it is the control FOIPPA compliance rests on.</div>
+    </div>
+  </div>
+  <div class="roadmap-phase">
+    <div class="phase-marker p2">P2</div>
+    <div class="phase-content">
+      <div class="phase-title">Short Term — 1-2 Sprints</div>
+      <div class="phase-detail">Add Host and Origin validation to the local dashboard and sanitize configuration writes. Enable SSH host key verification at both sites behind one explicit opt-in flag, and record the trust-boundary decision as an architecture decision record.</div>
+    </div>
+  </div>
+  <div class="roadmap-phase">
+    <div class="phase-marker p3">P3</div>
+    <div class="phase-content">
+      <div class="phase-title">Strategic — Next Quarter</div>
+      <div class="phase-detail">Gate the SMTP TLS bypass behind an opt-in variable. Port the existing in-repo credential-header pattern into the pipeline push path. Escape the markdown fallback, resolve DNS before dispatching webhooks, and mount security headers. Install a coverage provider and add dependency-audit and code-scanning gates to CI before trusting any future scan trend.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== FOOTER ===== -->
+<hr style="margin-top:1.5em; border:none; border-top:1px solid var(--border);">
+<p style="font-size:0.75em; color:var(--muted); text-align:center; margin-top:0.5em;">
+  Generated by CROW Security & Dependency Review Agent • 2026-09-14 •
+  Source: <code>docs/security-review.md</code>, <code>docs/architecture.md</code>
+</p>
+
+</body>
+</html>
