@@ -131,3 +131,50 @@ describe("PiScrubber.scrubText — credential values are redacted whole", () => 
     expect(pi.scrubText("password=Secret12! and then some prose")).toBe("[CREDENTIAL] and then some prose");
   });
 });
+
+describe("PiScrubber.scrubText — credentials containing quotes (review Issue 3)", () => {
+  let pi: PiScrubber;
+  beforeEach(() => { delete process.env["RAVEN_SCRUB_PI"]; pi = new PiScrubber(); });
+
+  it("redacts a value whole when a quote appears before the minimum length", () => {
+    // The unquoted branch excluded quotes, so this failed to match at all and
+    // the entire credential passed through unredacted.
+    expect(pi.scrubText("password=Sec'ret1andmore")).toBe("[CREDENTIAL]");
+    expect(pi.scrubText('password=Sec"ret1andmore')).toBe("[CREDENTIAL]");
+    expect(pi.scrubText("api_key: abc'defghij")).toBe("[CREDENTIAL]");
+  });
+
+  it("redacts the tail when a quote appears after the minimum length", () => {
+    expect(pi.scrubText("password=Secret12'suffix")).toBe("[CREDENTIAL]");
+    expect(pi.scrubText('password=Secret12"suffix')).toBe("[CREDENTIAL]");
+  });
+
+  it("still stops at whitespace", () => {
+    expect(pi.scrubText("password=Sec'ret12 then prose")).toBe("[CREDENTIAL] then prose");
+  });
+});
+
+describe("PiScrubber.scrubText — bare IDIR in attribution context (review Issue 6)", () => {
+  let pi: PiScrubber;
+  beforeEach(() => { delete process.env["RAVEN_SCRUB_PI"]; pi = new PiScrubber(); });
+
+  it("redacts the documented leak: an IDIR after an attribution word", () => {
+    expect(pi.scrubText("assigned to JSMITH today")).toBe("assigned to [IDIR] today");
+    expect(pi.scrubText("reported by JGAGAN")).toBe("reported by [IDIR]");
+    expect(pi.scrubText("owner: MSMITH")).toBe("owner: [IDIR]");
+    expect(pi.scrubText("reviewer TWILSON approved")).toBe("reviewer [IDIR] approved");
+  });
+
+  it("does not redact common acronyms in the same position", () => {
+    // These are the false positives a blanket uppercase rule would produce.
+    expect(pi.scrubText("for HTTP requests")).toBe("for HTTP requests");
+    expect(pi.scrubText("assigned to ERROR")).toBe("assigned to ERROR");
+    expect(pi.scrubText("sent to JSON")).toBe("sent to JSON");
+    expect(pi.scrubText("reported by HTTPS client")).toBe("reported by HTTPS client");
+    expect(pi.scrubText("owner: NULL")).toBe("owner: NULL");
+  });
+
+  it("does not redact uppercase tokens with no attribution context", () => {
+    expect(pi.scrubText("ERROR JSMITH FATAL")).toBe("ERROR JSMITH FATAL");
+  });
+});

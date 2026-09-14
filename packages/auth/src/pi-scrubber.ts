@@ -71,9 +71,22 @@ function passesLuhn(digits: string): boolean {
  * `replacement` accepts a function so a pattern can apply a secondary test
  * (see the unseparated SIN rule) rather than redacting every syntactic match.
  */
+/**
+ * Uppercase tokens of IDIR-like length that appear in attribution position in
+ * ordinary logs and must not be redacted. Extend when a false positive is found.
+ */
+const IDIR_STOPLIST = new Set([
+  "ERROR", "FATAL", "DEBUG", "TRACE", "HTTPS", "STDOUT", "STDERR", "STDIN",
+  "ADMIN", "SYSTEM", "ORACLE", "TOMCAT", "APACHE", "NGINX", "LOCAL", "UNKNOWN",
+  "DEFAULT", "TIMEOUT", "FAILED", "PASSED", "SUCCESS", "CLOSED", "OPENED",
+  "ACTIVE", "PENDING", "ENABLED", "DISABLED", "MISSING", "INVALID", "EXPIRED",
+  "DENIED", "ALLOWED", "SERVER", "CLIENT", "WEBADE", "BATCH", "DAEMON",
+  "SERVICE", "PROXY", "BACKUP", "NOBODY", "ANONYMOUS", "SCHEDULER",
+]);
+
 const PI_PATTERNS: Array<{
   pattern: RegExp;
-  replacement: string | ((match: string) => string);
+  replacement: string | ((match: string, ...groups: string[]) => string);
 }> = [
   // SMSESSION tokens (long hex/base64 strings after SMSESSION=)
   { pattern: /SMSESSION=[A-Za-z0-9+/=%\-_.]{10,}/g, replacement: "SMSESSION=[TOKEN]" },
@@ -83,10 +96,12 @@ const PI_PATTERNS: Array<{
   // eight-character password is weak, not absent, and leaking it is the same
   // disclosure as leaking a long one.
   // The value is matched to its delimiter, not to the end of an allowlisted
-  // character run. A class-based match stopped at the first character outside
-  // the class, so `password=Secret12!suffix` redacted only the prefix and
-  // emitted `[CREDENTIAL]!suffix`, leaking the tail of the secret.
-  { pattern: /(?:api[_-]?key|token|secret|password)\s*[:=]\s*(?:"[^"\r\n]{4,}"|'[^'\r\n]{4,}'|[^\s"'\r\n]{6,})/gi, replacement: "[CREDENTIAL]" },
+  // character run. Two earlier versions each stopped at a character outside
+  // a class — first `!`, then `'`/`"` — and leaked the tail (or, when the
+  // stray character came before the minimum length, failed to match at all
+  // and leaked the whole value). The quoted branches find their own closing
+  // quote; the unquoted branch stops at whitespace and nothing else.
+  { pattern: /(?:api[_-]?key|token|secret|password)\s*[:=]\s*(?:"[^"\r\n]{4,}"|'[^'\r\n]{4,}'|[^\s]{6,})/gi, replacement: "[CREDENTIAL]" },
   // SIN, separated: 123-456-789 or 123 456 789. No checksum gate here — a
   // three-three-three grouping is already a strong signal on its own.
   { pattern: /\b\d{3}[\s-]\d{3}[\s-]\d{3}\b/g, replacement: "[SIN]" },
@@ -100,6 +115,16 @@ const PI_PATTERNS: Array<{
   { pattern: /[A-Za-z0-9]+@[Ii][Dd][Ii][Rr]\b/g, replacement: "[IDIR]" },
   // IDIR domain-qualified form: IDIR\JSMITH
   { pattern: /\bIDIR\\[A-Za-z0-9._-]+/gi, replacement: "[IDIR]" },
+  // Bare IDIR in attribution context: "assigned to JSMITH", "reported by
+  // JGAGAN", "owner: MSMITH". A blanket uppercase rule would redact
+  // ERROR/WARN/HTTP and destroy log utility, so this requires all three of:
+  // an attribution phrase, 5-8 uppercase letters (BC Gov IDIRs are initial +
+  // surname), and a token not in the common-acronym stoplist.
+  {
+    pattern: /\b((?:assigned to|reported by|created by|updated by|modified by|resolved by|closed by|requested by|submitted by|owner|reporter|assignee|reviewer|approver|author)[:\s]+)([A-Z]{5,8})\b/g,
+    replacement: (m: string, prefix: string, token: string) =>
+      IDIR_STOPLIST.has(token) ? m : `${prefix}[IDIR]`,
+  },
   // Phone numbers: North American formats
   // (250) 555-1234, 250-555-1234, 250.555.1234, +1-250-555-1234, 1-800-555-1234
   { pattern: /(?:\+?1[\s.-]?)?\(?[2-9]\d{2}\)?[\s.-]\d{3}[\s.-]\d{4}\b/g, replacement: "[PHONE]" },
