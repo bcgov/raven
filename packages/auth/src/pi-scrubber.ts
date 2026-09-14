@@ -37,29 +37,73 @@
 const ENV_KEY = "RAVEN_SCRUB_PI";
 
 /**
+ * Luhn checksum, used to gate the unseparated nine-digit SIN pattern.
+ *
+ * A bare nine-digit run is ambiguous — it is just as likely an order number,
+ * ticket id, or counter as a SIN. Redacting every one of them would make
+ * application logs unreadable, which is its own failure. Canadian SINs carry a
+ * Luhn check digit, so requiring the checksum keeps false positives to roughly
+ * one in ten random nine-digit values while still catching real SINs written
+ * in their most common machine-readable form.
+ *
+ * @param digits - Exactly the digit characters to verify.
+ * @returns True when the value satisfies the Luhn checksum.
+ */
+function passesLuhn(digits: string): boolean {
+  let sum = 0;
+  let double = false;
+  for (let i = digits.length - 1; i >= 0; i -= 1) {
+    let d = digits.charCodeAt(i) - 48;
+    if (double) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
+    double = !double;
+  }
+  return sum % 10 === 0;
+}
+
+/**
  * Patterns for regex-based PI scrubbing applied in scrubText().
  * Order matters — more specific patterns should come first.
+ *
+ * `replacement` accepts a function so a pattern can apply a secondary test
+ * (see the unseparated SIN rule) rather than redacting every syntactic match.
  */
-const PI_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
+const PI_PATTERNS: Array<{
+  pattern: RegExp;
+  replacement: string | ((match: string) => string);
+}> = [
   // SMSESSION tokens (long hex/base64 strings after SMSESSION=)
   { pattern: /SMSESSION=[A-Za-z0-9+/=%\-_.]{10,}/g, replacement: "SMSESSION=[TOKEN]" },
   // Bearer tokens
   { pattern: /Bearer\s+[A-Za-z0-9\-_.~+/]+=*/g, replacement: "Bearer [TOKEN]" },
-  // Generic API keys / tokens (long hex strings, 32+ chars)
-  { pattern: /(?:api[_-]?key|token|secret|password)\s*[:=]\s*["']?[A-Za-z0-9\-_.~+/]{16,}["']?/gi, replacement: "[CREDENTIAL]" },
-  // SIN: 9 digits with optional spaces or dashes (e.g., 123-456-789 or 123 456 789)
+  // Generic API keys / tokens. The minimum length is 8 rather than 16: an
+  // eight-character password is weak, not absent, and leaking it is the same
+  // disclosure as leaking a long one.
+  { pattern: /(?:api[_-]?key|token|secret|password)\s*[:=]\s*["']?[A-Za-z0-9\-_.~+/]{8,}["']?/gi, replacement: "[CREDENTIAL]" },
+  // SIN, separated: 123-456-789 or 123 456 789. No checksum gate here — a
+  // three-three-three grouping is already a strong signal on its own.
   { pattern: /\b\d{3}[\s-]\d{3}[\s-]\d{3}\b/g, replacement: "[SIN]" },
+  // SIN, unseparated: nine consecutive digits that pass the Luhn check.
+  { pattern: /\b\d{9}\b/g, replacement: (m: string) => (passesLuhn(m) ? "[SIN]" : m) },
   // Email addresses
   { pattern: /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g, replacement: "[EMAIL]" },
   // IDIR usernames (uppercase letters, typically 5-8 chars, appearing after common prefixes)
   { pattern: /(?:username|author|idir)[:=]\s*[A-Z]{3,8}\b/gi, replacement: "[IDIR]" },
   // IDIR format: USER@idir or USER@IDIR (also handles surrounding whitespace context)
   { pattern: /[A-Za-z0-9]+@[Ii][Dd][Ii][Rr]\b/g, replacement: "[IDIR]" },
+  // IDIR domain-qualified form: IDIR\JSMITH
+  { pattern: /\bIDIR\\[A-Za-z0-9._-]+/gi, replacement: "[IDIR]" },
   // Phone numbers: North American formats
   // (250) 555-1234, 250-555-1234, 250.555.1234, +1-250-555-1234, 1-800-555-1234
   { pattern: /(?:\+?1[\s.-]?)?\(?[2-9]\d{2}\)?[\s.-]\d{3}[\s.-]\d{4}\b/g, replacement: "[PHONE]" },
+  // Phone numbers, unseparated ten-digit NANP. Both the area code and the
+  // exchange must start 2-9, which excludes epoch-second timestamps (they
+  // start with 1 for any plausible date) and most numeric identifiers.
+  { pattern: /\b[2-9]\d{2}[2-9]\d{6}\b/g, replacement: "[PHONE]" },
 ];
-
 export class PiScrubber {
   /** Map from original displayName to anonymized label. */
   private nameMap: Map<string, string> = new Map();
@@ -112,7 +156,9 @@ export class PiScrubber {
     for (const { pattern, replacement } of PI_PATTERNS) {
       // Reset lastIndex for global regexes reused across calls
       pattern.lastIndex = 0;
-      result = result.replace(pattern, replacement);
+      result = typeof replacement === "string"
+        ? result.replace(pattern, replacement)
+        : result.replace(pattern, replacement);
     }
 
     // Layer 2: Known name replacement

@@ -1,0 +1,106 @@
+import { describe, it, expect, beforeEach } from "vitest";
+import { PiScrubber } from "../pi-scrubber.js";
+
+/**
+ * RSEC-004 regression suite.
+ *
+ * The original PI_PATTERNS made the separator mandatory inside the SIN and
+ * phone patterns, despite the comment describing it as optional, and matched an
+ * IDIR only after a labelling prefix. `scrubText` is the last control before
+ * enterprise content reaches a model and before audit records are written, so a
+ * SIN written as nine consecutive digits — the common machine-readable form —
+ * left the workstation unredacted.
+ */
+describe("PiScrubber.scrubText — FOIPPA coverage (RSEC-004)", () => {
+  let pi: PiScrubber;
+
+  beforeEach(() => {
+    delete process.env["RAVEN_SCRUB_PI"]; // undefined means enabled
+    pi = new PiScrubber();
+  });
+
+  describe("social insurance numbers", () => {
+    // 046 454 286 is a synthetic SIN that satisfies the Luhn checksum.
+    it("redacts a dash-separated SIN", () => {
+      expect(pi.scrubText("SIN 046-454-286")).toBe("SIN [SIN]");
+    });
+
+    it("redacts a space-separated SIN", () => {
+      expect(pi.scrubText("SIN 046 454 286")).toBe("SIN [SIN]");
+    });
+
+    it("redacts an unseparated nine-digit SIN", () => {
+      expect(pi.scrubText("SIN 046454286")).toBe("SIN [SIN]");
+    });
+
+    it("leaves a nine-digit number that fails the Luhn check alone", () => {
+      // Deliberate trade-off: redacting every nine-digit token would destroy
+      // log utility (order numbers, ticket ids, counters). The checksum gate
+      // keeps false positives near 10% of random nine-digit values.
+      expect(pi.scrubText("order 123456789")).toBe("order 123456789");
+    });
+
+    it("does not redact inside a longer digit run", () => {
+      expect(pi.scrubText("id 12345678901234")).toBe("id 12345678901234");
+    });
+  });
+
+  describe("phone numbers", () => {
+    it("redacts a dash-separated phone number", () => {
+      expect(pi.scrubText("call 250-555-1234")).toBe("call [PHONE]");
+    });
+
+    it("redacts an unseparated ten-digit phone number", () => {
+      expect(pi.scrubText("call 2505551234")).toBe("call [PHONE]");
+    });
+
+    it("leaves a ten-digit epoch timestamp alone", () => {
+      // NANP area and exchange codes both start 2-9, so epoch seconds
+      // (which start with 1 for any plausible date) never match.
+      expect(pi.scrubText("ts 1789418992")).toBe("ts 1789418992");
+    });
+  });
+
+  describe("credentials", () => {
+    it("redacts a long credential value", () => {
+      expect(pi.scrubText("password=SuperSecret12345678")).toBe("[CREDENTIAL]");
+    });
+
+    it("redacts a short credential value", () => {
+      expect(pi.scrubText("password=Secret12")).toBe("[CREDENTIAL]");
+    });
+  });
+
+  describe("identifiers that already worked", () => {
+    it("redacts email addresses", () => {
+      expect(pi.scrubText("mail jane.smith@gov.bc.ca")).toBe("mail [EMAIL]");
+    });
+
+    it("redacts a prefixed IDIR", () => {
+      expect(pi.scrubText("username: JSMITH")).toBe("[IDIR]");
+    });
+
+    it("redacts a domain-qualified IDIR", () => {
+      expect(pi.scrubText("user IDIR\\JSMITH logged in")).toBe("user [IDIR] logged in");
+    });
+
+    it("redacts bearer tokens", () => {
+      expect(pi.scrubText("Authorization: Bearer abc123def456")).toBe("Authorization: Bearer [TOKEN]");
+    });
+  });
+
+  describe("log utility is preserved", () => {
+    it("leaves ordinary log levels and identifiers intact", () => {
+      const line = "ERROR [main] RRS-API startup failed after 3 retries (HTTP 503)";
+      expect(pi.scrubText(line)).toBe(line);
+    });
+  });
+
+  describe("scrubbing disabled", () => {
+    it("returns text unchanged when RAVEN_SCRUB_PI=false", () => {
+      process.env["RAVEN_SCRUB_PI"] = "false";
+      const disabled = new PiScrubber();
+      expect(disabled.scrubText("SIN 046454286")).toBe("SIN 046454286");
+    });
+  });
+});
