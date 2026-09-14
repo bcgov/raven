@@ -274,3 +274,82 @@ describe("searchLogs (stdout/stderr selection)", () => {
     expect(output).toBe("12: matched");
   });
 });
+
+// ---------------------------------------------------------------------------
+// RSEC-001 regression: single-quote breakout in the grep pattern.
+//
+// PATTERN_META never blocked the single quote, and the pattern was interpolated
+// between literal quotes ('${pattern}'). A quote therefore closed the string
+// literal and everything after it ran as shell. The fix escapes the pattern
+// per-argument instead of widening the denylist, because `|` is legitimate
+// grep -E alternation and must keep working.
+// ---------------------------------------------------------------------------
+
+/** POSIX single-quote escaping, redefined here so the test is independent of the implementation. */
+const posixQuote = (s: string): string => "'" + s.replace(/'/g, "'\\''") + "'";
+
+const baseParams = {
+  logsBase: "/apps_ux/logs",
+  app: "RRS",
+  component: "rrs-api",
+  logType: "app" as const,
+  maxLines: 100,
+  contextLines: 0,
+};
+
+describe("buildLogSearchCommand — shell injection hardening (RSEC-001)", () => {
+  it("neutralizes a single-quote breakout instead of emitting a live pipeline", () => {
+    const pattern = "FATAL' | id | '";
+    const cmd = buildLogSearchCommand({ ...baseParams, pattern });
+
+    // The vulnerable build emitted: grep -E -n -a 'FATAL' | id | '' /path
+    expect(cmd).not.toContain("'FATAL' | id | ''");
+    // The pattern must appear exactly as one escaped argument.
+    expect(cmd).toContain(posixQuote(pattern));
+  });
+
+  it("still supports grep -E alternation, which legitimately uses the pipe", () => {
+    const cmd = buildLogSearchCommand({ ...baseParams, pattern: "ERROR|FATAL" });
+    expect(cmd).toContain(posixQuote("ERROR|FATAL"));
+  });
+
+  it("rejects a newline in the pattern", () => {
+    expect(() => buildLogSearchCommand({ ...baseParams, pattern: "FATAL\nid" })).toThrow();
+  });
+
+  it("rejects a carriage return in the pattern", () => {
+    expect(() => buildLogSearchCommand({ ...baseParams, pattern: "FATAL\rid" })).toThrow();
+  });
+
+  it("escapes the pattern in every branch of a date-range search", () => {
+    // Uses the pipe form, not a semicolon: PATTERN_META already rejects `;`,
+    // so a semicolon payload would never reach the interpolation under test.
+    const pattern = "x' | id | '";
+    const cmd = buildLogSearchCommand({
+      ...baseParams, pattern, dateFrom: "2026-09-01", dateTo: "2026-09-02",
+    });
+    expect(cmd).not.toContain("'x' | id | ''");
+    expect(cmd.split(posixQuote(pattern)).length - 1).toBeGreaterThanOrEqual(2); // grep + zgrep branches
+  });
+});
+
+describe("buildHttpdLogSearchCommand — shell injection hardening (RSEC-001)", () => {
+  const httpdBase = {
+    logsBase: "/sw_ux/httpd01/logs",
+    domain: "portalext.example.gov.bc.ca",
+    logType: "access" as const,
+    maxLines: 100,
+    contextLines: 0,
+  };
+
+  it("neutralizes a single-quote breakout", () => {
+    const pattern = "404' | id | '";
+    const cmd = buildHttpdLogSearchCommand({ ...httpdBase, pattern });
+    expect(cmd).not.toContain("'404' | id | ''");
+    expect(cmd).toContain(posixQuote(pattern));
+  });
+
+  it("rejects a newline in the pattern", () => {
+    expect(() => buildHttpdLogSearchCommand({ ...httpdBase, pattern: "404\nid" })).toThrow();
+  });
+});

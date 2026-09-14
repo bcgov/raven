@@ -3,17 +3,12 @@ import type { Readable } from "node:stream";
 import { readFileSync, existsSync } from "node:fs";
 import { isIP } from "node:net";
 import type { ServerEntry } from "@nrs/auth";
-import { wrapSshExecWithLimits, sshLimiterOpts, loadEnvVar } from "@nrs/auth";
+import { wrapSshExecWithLimits, sshLimiterOpts, loadEnvVar, shellEscape, createHostVerifier } from "@nrs/auth";
 
 export interface SshResult {
   stdout: string;
   stderr: string;
   exitCode: number;
-}
-
-/** Shell-escape a single argument (wrap in single quotes). */
-function shellEscape(s: string): string {
-  return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
 /**
@@ -159,8 +154,10 @@ export function buildConnectOpts(
     port: 22,
     username: entry.sshUser,
     readyTimeout: 30_000,
-    // Match server-cmd.exp: ssh -o StrictHostKeyChecking=no
-    hostVerifier: () => true,
+    // RSEC-006: verify against ~/.ssh/known_hosts. Set
+    // RAVEN_SSH_INSECURE_HOST_KEYS=true to restore the previous
+    // accept-anything behavior (the old `ssh -o StrictHostKeyChecking=no`).
+    hostVerifier: createHostVerifier(entry.host),
   };
   if (authMode.kind === "key") {
     if (!privateKeyBytes) {

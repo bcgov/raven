@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { userInfo } from "node:os";
 import { isIP } from "node:net";
 import type { SshResult } from "./types.js";
-import { wrapSshExecWithLimits, sshLimiterOpts, loadEnvVar } from "@nrs/auth";
+import { wrapSshExecWithLimits, sshLimiterOpts, loadEnvVar, shellEscape, assertNoShellControlChars, hasShellControlChars, createHostVerifier } from "@nrs/auth";
 
 /** Read-only command allowlist — matches server-common.sh plus rpm and mount. */
 const ALLOWED_COMMANDS = new Set([
@@ -26,8 +26,19 @@ export const ALLOWED_SUDO_USER_LIST = [...ALLOWED_SUDO_USERS].join(", ");
 /** Valid Unix username pattern: lowercase alphanumeric + underscore, 1-32 chars. */
 const USERNAME_RE = /^[a-z_][a-z0-9_]{0,31}$/;
 
-/** Shell metacharacters that indicate injection attempts. */
+/**
+ * Shell metacharacters that indicate injection attempts.
+ *
+ * Control characters are NOT listed here — they are checked separately by
+ * assertNoShellControlChars. That separation matters: a newline is matched by
+ * `\s`, so `command.trim().split(/\s+/)[0]` below treats it as ordinary
+ * whitespace and validates only the text before it, while the receiving shell
+ * treats it as a statement separator. That combination was RSEC-002.
+ */
 const SHELL_META = /[;&|`$(){}\\<>]/;
+
+/** Quote characters, rejected in paths. See sanitizePath. */
+const QUOTE_CHARS = /['"]/;
 
 /** Validate sudo_user against allowlist and format. */
 export function validateSudoUser(user: string): boolean {
@@ -36,6 +47,7 @@ export function validateSudoUser(user: string): boolean {
 
 /** Validate that a command starts with an allowed binary and has no shell injection. */
 export function validateCommand(command: string): boolean {
+  if (hasShellControlChars(command)) return false;
   if (SHELL_META.test(command)) return false;
   const firstToken = command.trim().split(/\s+/)[0];
   return ALLOWED_COMMANDS.has(firstToken);
@@ -49,15 +61,17 @@ export function sanitizePath(path: string): string {
   if (path.includes("..")) {
     throw new Error("Path traversal (..) is not allowed");
   }
+  assertNoShellControlChars(path, "Path");
+  if (QUOTE_CHARS.test(path)) {
+    // Quotes are rejected rather than escaped so the value stays a single
+    // shell word after shellEscape without introducing a backslash, which
+    // SHELL_META would then reject downstream in validateCommand.
+    throw new Error("Path contains quote characters");
+  }
   if (SHELL_META.test(path)) {
     throw new Error("Path contains invalid characters");
   }
   return path;
-}
-
-/** Shell-escape a single argument (wrap in single quotes). */
-function shellEscape(s: string): string {
-  return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
 /** Derive an SSH username from an explicit override or an OS username. */
@@ -182,8 +196,10 @@ export function buildConnectOpts(
     port: 22,
     username,
     readyTimeout: 30_000,
-    // Match server-cmd.exp: ssh -o StrictHostKeyChecking=no
-    hostVerifier: () => true,
+    // RSEC-006: verify against ~/.ssh/known_hosts. Set
+    // RAVEN_SSH_INSECURE_HOST_KEYS=true to restore the previous
+    // accept-anything behavior (the old `ssh -o StrictHostKeyChecking=no`).
+    hostVerifier: createHostVerifier(host),
   };
   if (authMode.kind === "key") {
     if (!privateKeyBytes) {
@@ -217,14 +233,19 @@ export function buildConnectOpts(
  * Sudo (when sudoUser is set) always uses SERVER_A_PASSWORD on stdin,
  * regardless of which SSH auth method was used.
  *
- * Security model — designed for trusted internal networks only:
- * Host key verification is intentionally disabled (`hostVerifier: () => true`,
- * matching the legacy `server-cmd.exp` behavior of `StrictHostKeyChecking=no`).
- * RAVEN reaches BC Gov application servers (prod01/test01/int01) over
- * authenticated VPN; the trust boundary is the VPN tunnel and the
- * `SERVER_A_PASSWORD` credential, not TLS-style host key pinning. Do not
- * reuse this helper to talk to hosts outside that trust boundary — an
- * on-path attacker on an untrusted network could MITM the SSH handshake.
+ * Security model:
+ * Host keys are verified against `~/.ssh/known_hosts` (RSEC-006). RAVEN reaches
+ * BC Gov application servers (prod01/test01/int01) over authenticated VPN, but
+ * the VPN tunnel is no longer treated as sufficient on its own: this helper
+ * also sends the `SERVER_A_PASSWORD` credential and pipes the sudo password
+ * over stdin, so an unverified peer is a credential disclosure, not just an
+ * integrity question.
+ *
+ * An unknown or mismatched key fails the connection with an actionable
+ * message. Setting `RAVEN_SSH_INSECURE_HOST_KEYS=true` restores the previous
+ * accept-anything behavior, which is the legacy `server-cmd.exp`
+ * `StrictHostKeyChecking=no` semantics — use it only as a temporary,
+ * deliberate exception.
  */
 async function sshExecRaw(
   host: string,

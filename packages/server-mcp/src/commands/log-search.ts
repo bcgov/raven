@@ -1,4 +1,4 @@
-import type { ServerEntry } from "@nrs/auth";
+import { shellEscape, assertNoShellControlChars, type ServerEntry } from "@nrs/auth";
 import { sshExec } from "../ssh-client.js";
 
 export type LogType = "app" | "catalina" | "access";
@@ -42,7 +42,21 @@ export interface HttpdLogSearchParams {
   contextLines: number;
 }
 
-/** Shell metacharacters that would allow injection in grep patterns. */
+/**
+ * Shell metacharacters rejected outright in grep patterns.
+ *
+ * This stays a narrow denylist on purpose. The pattern is now passed through
+ * {@link shellEscape} before interpolation, which neutralizes every
+ * metacharacter including the single quote that made RSEC-001 exploitable, so
+ * the denylist is defense in depth rather than the primary control.
+ *
+ * Note `|` is deliberately absent: it is `grep -E` alternation, which callers
+ * legitimately use (`ERROR|FATAL`). Blocking it would break real searches;
+ * escaping makes it safe without doing so.
+ *
+ * Control characters are handled separately by assertNoShellControlChars,
+ * because a newline survives quoting as a statement separator.
+ */
 const PATTERN_META = /[;&`$(){}\\<>]/;
 
 /** Valid characters for an httpd virtual-host domain name or "default". */
@@ -72,9 +86,12 @@ function logFilePrefix(component: string, logType: LogType): string {
 export function buildLogSearchCommand(params: LogSearchParams): string {
   const { logsBase, app, component, pattern, logType, date, dateFrom, dateTo, maxLines, contextLines } = params;
 
+  assertNoShellControlChars(pattern, "Pattern");
   if (PATTERN_META.test(pattern)) {
     throw new Error("Pattern contains shell metacharacters");
   }
+  // Escaped once here, then interpolated unquoted everywhere below.
+  const safePattern = shellEscape(pattern);
   if (!APP_COMPONENT_RE.test(app) || !APP_COMPONENT_RE.test(component)) {
     throw new Error("App or component contains invalid characters");
   }
@@ -100,8 +117,8 @@ export function buildLogSearchCommand(params: LogSearchParams): string {
       `( d='${dateFrom}'; end='${dateTo}';`,
       ` while [ "$d" != "$end" ] && [ "$d" \\< "$end" ] || [ "$d" = "$end" ]; do`,
       `   f="${logDir}/${prefix}.$\{d}.log"; fgz="$\{f}.gz";`,
-      `   if [ -f "$f" ]; then grep ${grepOpts} '${pattern}' "$f" 2>/dev/null;`,
-      `   elif [ -f "$fgz" ]; then zgrep ${grepOpts} '${pattern}' "$fgz" 2>/dev/null; fi;`,
+      `   if [ -f "$f" ]; then grep ${grepOpts} ${safePattern} "$f" 2>/dev/null;`,
+      `   elif [ -f "$fgz" ]; then zgrep ${grepOpts} ${safePattern} "$fgz" 2>/dev/null; fi;`,
       `   d=$(date -d "$d + 1 day" +%Y-%m-%d); done`,
       `) | tail -${maxLines}`,
     ].join("\n");
@@ -116,17 +133,17 @@ export function buildLogSearchCommand(params: LogSearchParams): string {
 
     if (date === "today") {
       return (
-        `if [ -f ${current} ]; then grep ${grepOpts} '${pattern}' ${current} | tail -${maxLines};` +
-        ` elif [ -f ${dated} ]; then grep ${grepOpts} '${pattern}' ${dated} | tail -${maxLines};` +
-        ` elif [ -f ${gz} ]; then zgrep ${grepOpts} '${pattern}' ${gz} | tail -${maxLines};` +
+        `if [ -f ${current} ]; then grep ${grepOpts} ${safePattern} ${current} | tail -${maxLines};` +
+        ` elif [ -f ${dated} ]; then grep ${grepOpts} ${safePattern} ${dated} | tail -${maxLines};` +
+        ` elif [ -f ${gz} ]; then zgrep ${grepOpts} ${safePattern} ${gz} | tail -${maxLines};` +
         ` else newest=$(${fallbackLs} | head -1);` +
-        `   if [ -n "$newest" ]; then grep ${grepOpts} '${pattern}' "$newest" | tail -${maxLines};` +
+        `   if [ -n "$newest" ]; then grep ${grepOpts} ${safePattern} "$newest" | tail -${maxLines};` +
         `   else echo 'Log file not found in ${logDir}'; fi; fi`
       );
     }
     return (
-      `if [ -f ${dated} ]; then grep ${grepOpts} '${pattern}' ${dated} | tail -${maxLines};` +
-      ` elif [ -f ${gz} ]; then zgrep ${grepOpts} '${pattern}' ${gz} | tail -${maxLines};` +
+      `if [ -f ${dated} ]; then grep ${grepOpts} ${safePattern} ${dated} | tail -${maxLines};` +
+      ` elif [ -f ${gz} ]; then zgrep ${grepOpts} ${safePattern} ${gz} | tail -${maxLines};` +
       ` else echo 'Log file not found: ${dated}'; fi`
     );
   }
@@ -137,9 +154,9 @@ export function buildLogSearchCommand(params: LogSearchParams): string {
     : `${logDir}/${prefix}.$(date +%Y-%m-%d).log`;
 
   return (
-    `if [ -f ${logFile} ]; then grep ${grepOpts} '${pattern}' ${logFile} | tail -${maxLines};` +
+    `if [ -f ${logFile} ]; then grep ${grepOpts} ${safePattern} ${logFile} | tail -${maxLines};` +
     ` else newest=$(${fallbackLs} | head -1);` +
-    `   if [ -n "$newest" ]; then grep ${grepOpts} '${pattern}' "$newest" | tail -${maxLines};` +
+    `   if [ -n "$newest" ]; then grep ${grepOpts} ${safePattern} "$newest" | tail -${maxLines};` +
     `   else echo 'Log file not found: ${logFile}'; fi; fi`
   );
 }
@@ -169,9 +186,12 @@ export function buildHttpdLogSearchCommand(params: HttpdLogSearchParams): string
     date, dateFrom, dateTo, maxLines, contextLines,
   } = params;
 
+  assertNoShellControlChars(pattern, "Pattern");
   if (PATTERN_META.test(pattern)) {
     throw new Error("Pattern contains shell metacharacters");
   }
+  // Escaped once here, then interpolated unquoted everywhere below.
+  const safePattern = shellEscape(pattern);
 
   if (!HTTPD_DOMAIN_RE.test(domain)) {
     throw new Error("Domain contains invalid characters");
@@ -193,8 +213,8 @@ export function buildHttpdLogSearchCommand(params: HttpdLogSearchParams): string
       `( d='${dateFrom}'; end='${dateTo}';`,
       ` while [ "$d" != "$end" ] && [ "$d" \\< "$end" ] || [ "$d" = "$end" ]; do`,
       `   fd=$(echo "$d" | tr '-' '.'); f="${logDir}/${prefix}.$\{fd}.log"; fgz="$\{f}.gz";`,
-      `   if [ -f "$f" ]; then grep ${grepOpts} '${pattern}' "$f" 2>/dev/null;`,
-      `   elif [ -f "$fgz" ]; then zgrep ${grepOpts} '${pattern}' "$fgz" 2>/dev/null; fi;`,
+      `   if [ -f "$f" ]; then grep ${grepOpts} ${safePattern} "$f" 2>/dev/null;`,
+      `   elif [ -f "$fgz" ]; then zgrep ${grepOpts} ${safePattern} "$fgz" 2>/dev/null; fi;`,
       `   d=$(date -d "$d + 1 day" +%Y-%m-%d); done`,
       `) | tail -${maxLines}`,
     ].join("\n");
@@ -206,10 +226,10 @@ export function buildHttpdLogSearchCommand(params: HttpdLogSearchParams): string
       const dated = `${logDir}/${prefix}.$(date +%Y.%m.%d).log`;
       const gz = `${dated}.gz`;
       return (
-        `if [ -f ${dated} ]; then grep ${grepOpts} '${pattern}' ${dated} | tail -${maxLines};` +
-        ` elif [ -f ${gz} ]; then zgrep ${grepOpts} '${pattern}' ${gz} | tail -${maxLines};` +
+        `if [ -f ${dated} ]; then grep ${grepOpts} ${safePattern} ${dated} | tail -${maxLines};` +
+        ` elif [ -f ${gz} ]; then zgrep ${grepOpts} ${safePattern} ${gz} | tail -${maxLines};` +
         ` else newest=$(ls -t ${logDir}/${prefix}*.log* 2>/dev/null | head -1);` +
-        `   if [ -n "$newest" ]; then zgrep ${grepOpts} '${pattern}' "$newest" | tail -${maxLines};` +
+        `   if [ -n "$newest" ]; then zgrep ${grepOpts} ${safePattern} "$newest" | tail -${maxLines};` +
         `   else echo 'No log files found in ${logDir} for ${prefix}'; fi; fi`
       );
     }
@@ -218,8 +238,8 @@ export function buildHttpdLogSearchCommand(params: HttpdLogSearchParams): string
     const dated = `${logDir}/${prefix}.${fileDate}.log`;
     const gz = `${dated}.gz`;
     return (
-      `if [ -f ${dated} ]; then grep ${grepOpts} '${pattern}' ${dated} | tail -${maxLines};` +
-      ` elif [ -f ${gz} ]; then zgrep ${grepOpts} '${pattern}' ${gz} | tail -${maxLines};` +
+      `if [ -f ${dated} ]; then grep ${grepOpts} ${safePattern} ${dated} | tail -${maxLines};` +
+      ` elif [ -f ${gz} ]; then zgrep ${grepOpts} ${safePattern} ${gz} | tail -${maxLines};` +
       ` else echo 'Log file not found: ${dated}'; fi`
     );
   }
@@ -227,7 +247,7 @@ export function buildHttpdLogSearchCommand(params: HttpdLogSearchParams): string
   // No date specified — search the newest available log file (plain or gzipped)
   return (
     `newest=$(ls -t ${logDir}/${prefix}*.log* 2>/dev/null | head -1);` +
-    ` if [ -n "$newest" ]; then zgrep ${grepOpts} '${pattern}' "$newest" | tail -${maxLines};` +
+    ` if [ -n "$newest" ]; then zgrep ${grepOpts} ${safePattern} "$newest" | tail -${maxLines};` +
     ` else echo 'No log files found in ${logDir} for ${prefix}'; fi`
   );
 }

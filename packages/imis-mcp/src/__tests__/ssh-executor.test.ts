@@ -312,3 +312,61 @@ describe("sshExec defense-in-depth validation", () => {
     expect(result.stderr).toMatch(/sudoUser rejected/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// RSEC-002 / RSEC-003 regression: newline and carriage-return bypass.
+//
+// SHELL_META blocked `|` and `;` but not \n or \r, while
+// command.trim().split(/\s+/) treats a newline as ordinary whitespace — so
+// firstToken resolved to the harmless allowlisted binary and the payload
+// survived on a second line. buildRemoteCommand then concatenated the string
+// straight into the remote shell, where a newline separates statements.
+// ---------------------------------------------------------------------------
+
+describe("validateCommand — control-character hardening (RSEC-002)", () => {
+  it("rejects a newline-separated second command", () => {
+    expect(validateCommand("cat /etc/hosts\nid")).toBe(false);
+  });
+
+  it("rejects a carriage-return-separated second command", () => {
+    expect(validateCommand("cat /etc/hosts\rid")).toBe(false);
+  });
+
+  it("still rejects pipe and semicolon", () => {
+    expect(validateCommand("cat /etc/hosts | id")).toBe(false);
+    expect(validateCommand("cat /etc/hosts; id")).toBe(false);
+  });
+
+  it("still accepts an ordinary allowlisted command", () => {
+    expect(validateCommand("cat /etc/hosts")).toBe(true);
+    expect(validateCommand("head -n 200 /var/log/app.log")).toBe(true);
+  });
+});
+
+describe("sanitizePath — control-character hardening (RSEC-003)", () => {
+  it("rejects a newline in the path", () => {
+    expect(() => sanitizePath("/var/log/x\nid")).toThrow();
+  });
+
+  it("rejects a carriage return in the path", () => {
+    expect(() => sanitizePath("/var/log/x\rid")).toThrow();
+  });
+
+  it("rejects a single quote in the path", () => {
+    expect(() => sanitizePath("/var/log/it's.log")).toThrow();
+  });
+
+  it("rejects a double quote in the path", () => {
+    expect(() => sanitizePath('/var/log/a"b.log')).toThrow();
+  });
+
+  it("still rejects traversal and relative paths", () => {
+    expect(() => sanitizePath("/var/../etc/passwd")).toThrow();
+    expect(() => sanitizePath("var/log/app.log")).toThrow();
+  });
+
+  it("still accepts an ordinary absolute path", () => {
+    expect(sanitizePath("/var/log/app.log")).toBe("/var/log/app.log");
+    expect(sanitizePath("/apps_ux/logs/RRS/rrs-api")).toBe("/apps_ux/logs/RRS/rrs-api");
+  });
+});

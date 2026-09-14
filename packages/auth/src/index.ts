@@ -31,6 +31,20 @@ export {
 } from "./cookie-cache.js";
 export { PiScrubber } from "./pi-scrubber.js";
 export {
+  createHostVerifier,
+  verifyHostKey,
+  parseKnownHosts,
+  knownHostsPath,
+  INSECURE_HOST_KEYS_ENV,
+} from "./known-hosts.js";
+export type { HostKeyVerdict, KnownHostsEntry } from "./known-hosts.js";
+export {
+  shellEscape,
+  hasShellControlChars,
+  assertNoShellControlChars,
+  SHELL_CONTROL_CHARS,
+} from "./shell.js";
+export {
   loadEnv,
   loadEnvVar,
   loadKeychain,

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { PiScrubber } from "@nrs/auth";
 import { ImisClient } from "./imis-client.js";
 import { validateCommand, validateSudoUser, sanitizePath, sshExec, ALLOWED_SUDO_USER_LIST } from "./ssh-executor.js";
+import { shellEscape } from "@nrs/auth";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { ImisServer } from "./types.js";
@@ -303,7 +304,7 @@ If SSH tools return auth errors, the user needs SERVER_A_PASSWORD set in ~/.rave
         const results: string[] = [];
         for (const dir of dirs) {
           const safePath = sanitizePath(dir);
-          const cmd = `ls -la ${safePath}`;
+          const cmd = `ls -la ${shellEscape(safePath)}`;
           if (!validateCommand(cmd)) {
             results.push(`## ${dir}\n(rejected: invalid path or command)`);
             continue;
@@ -388,7 +389,7 @@ Requires VPN connection and SERVER_A_PASSWORD in ~/.raven/.env.`,
 
         const safePath = sanitizePath(path);
         const maxLines = lines ?? 200;
-        const command = `head -n ${maxLines} ${safePath}`;
+        const command = `head -n ${maxLines} ${shellEscape(safePath)}`;
 
         if (!validateCommand(command)) {
           return {
