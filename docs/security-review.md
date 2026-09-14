@@ -769,9 +769,9 @@ No `helmet` or manual headers. `Content-Security-Policy`, `X-Frame-Options`, `X-
 
 - **Classification:** `Confirmed` · **Location:** root `package.json`, `origin/main`
 
-Coverage reports `0.0%` and fails the quality gate's `new_coverage` condition. The cause is not scan configuration: there is **no coverage provider in the dependency tree at all** — no `@vitest/coverage-v8`, no `vitest.config.*`, and `"test": "vitest run"` carries no `--coverage`. Enabling `runTests` on a scan would still yield 0%, because no LCOV report is ever produced.
+Coverage reports `0.0%` and fails the quality gate's `new_coverage` condition. The cause is not scan configuration: there is **no coverage provider in the dependency tree at all**. A `vitest.config.ts` does exist and sets `globals` and `include`, but it declares no `coverage` block, `@vitest/coverage-v8` is absent, and `"test": "vitest run"` carries no `--coverage`. Enabling `runTests` on a scan would still yield 0%, because no LCOV report is ever produced.
 
-**Remediation.** `npm i -D @vitest/coverage-v8`; add a root `vitest.config.ts` with `coverage: { reporter: ['text','lcov'] }`; add `"test:coverage"`; re-scan to establish a real baseline before setting any coverage threshold.
+**Remediation.** `npm i -D @vitest/coverage-v8`; add a `coverage: { reporter: ['text','lcov'] }` block to the existing `vitest.config.ts`; add a `"test:coverage"` script; re-scan to establish a real baseline before setting any coverage threshold.
 
 ---
 
