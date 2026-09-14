@@ -83,3 +83,36 @@ describe("checkLocalRequest — state changes (CSRF)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review follow-up (Issue 4): browsers omit Origin on no-cors requests
+// (<img src>, <script src>, <form method=get>), so those passed on Host alone
+// and could trigger GET routes that do SSH work. Sec-Fetch-Site is the
+// signal that survives.
+// ---------------------------------------------------------------------------
+
+describe("checkLocalRequest — Sec-Fetch-Site (no-cors embeds)", () => {
+  it("denies a cross-site no-cors GET that carries no Origin", () => {
+    expect(checkLocalRequest("GET", OK_HOST, undefined, false, PORT, "cross-site"))
+      .toBe("Cross-site request denied");
+  });
+
+  it("denies same-site (another local port) too", () => {
+    expect(checkLocalRequest("GET", OK_HOST, undefined, false, PORT, "same-site"))
+      .toBe("Cross-site request denied");
+  });
+
+  it("allows same-origin and user-initiated navigations", () => {
+    expect(checkLocalRequest("GET", OK_HOST, undefined, false, PORT, "same-origin")).toBeNull();
+    expect(checkLocalRequest("GET", OK_HOST, undefined, false, PORT, "none")).toBeNull();
+  });
+
+  it("fails open when the header is absent, since Origin still governs writes", () => {
+    expect(checkLocalRequest("GET", OK_HOST, undefined, false, PORT, undefined)).toBeNull();
+  });
+
+  it("applies to state changes as well", () => {
+    expect(checkLocalRequest("POST", OK_HOST, OK_ORIGIN, false, PORT, "cross-site"))
+      .toBe("Cross-site request denied");
+  });
+});
