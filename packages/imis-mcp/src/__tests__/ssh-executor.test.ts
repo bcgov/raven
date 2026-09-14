@@ -400,7 +400,11 @@ describe("validateCommand — argument policy for allowlisted binaries", () => {
   it("accepts rpm only in query mode", () => {
     expect(validateCommand("rpm -e somepackage")).toBe(false);
     expect(validateCommand("rpm -U somepackage.rpm")).toBe(false);
-    expect(validateCommand("rpm")).toBe(false);
+    // Bare `rpm` prints usage and exits. Under the allowlist policy an empty
+    // argument list is vacuously acceptable — the same property that lets
+    // bare `mount` through. The earlier rejection was an artifact of the
+    // "some -q flag must be present" design, not a security property.
+    expect(validateCommand("rpm")).toBe(true);
     expect(validateCommand("rpm -qa")).toBe(true);
     expect(validateCommand("rpm -qi somepackage")).toBe(true);
   });
@@ -415,5 +419,104 @@ describe("validateCommand — argument policy for allowlisted binaries", () => {
     expect(validateCommand("sort /tmp/a.txt")).toBe(true);
     expect(validateCommand("cat /etc/hosts")).toBe(true);
     expect(validateCommand("grep -n ERROR /var/log/app.log")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review follow-up (Issue 1): the argument policy had the wrong shape. A
+// presence check ("some arg starts with -q") restricts nothing else on the
+// line; rpm --pipe is a popen() and composes with -q. And uniq, date, hostname
+// were never in the policy at all. Per-command rules are now allowlists.
+// ---------------------------------------------------------------------------
+
+describe("validateCommand — rpm accepts only query flags and package/path positionals", () => {
+  it("rejects --pipe in every position and form (popen)", () => {
+    expect(validateCommand("rpm -qa --pipe id")).toBe(false);
+    expect(validateCommand("rpm --pipe id -qa")).toBe(false);
+    expect(validateCommand("rpm -q --pipe=id somepkg")).toBe(false);
+    expect(validateCommand("rpm -qa --dbpath /tmp/x --pipe id")).toBe(false);
+  });
+
+  it("rejects macro and config options that can evaluate or load code", () => {
+    expect(validateCommand("rpm -qa --eval %{_bindir}")).toBe(false);
+    expect(validateCommand("rpm -qa --define x")).toBe(false);
+    expect(validateCommand("rpm -qa --macros /tmp/m")).toBe(false);
+    expect(validateCommand("rpm -qa --rcfile /tmp/rc")).toBe(false);
+  });
+
+  it("rejects any long option at all — the allowed set is short query flags only", () => {
+    expect(validateCommand("rpm -qa --queryformat %{NAME}")).toBe(false);
+    expect(validateCommand("rpm --query --all")).toBe(false);
+  });
+
+  it("still rejects mutating modes", () => {
+    expect(validateCommand("rpm -e somepackage")).toBe(false);
+    expect(validateCommand("rpm -U somepackage.rpm")).toBe(false);
+    expect(validateCommand("rpm -qa -e somepackage")).toBe(false);
+  });
+
+  it("accepts ordinary query usage", () => {
+    expect(validateCommand("rpm -qa")).toBe(true);
+    expect(validateCommand("rpm -qi somepackage")).toBe(true);
+    expect(validateCommand("rpm -ql somepackage")).toBe(true);
+    expect(validateCommand("rpm -qf /usr/bin/java")).toBe(true);
+    expect(validateCommand("rpm -qip somepackage-1.0-1.el8.x86_64.rpm")).toBe(true);
+  });
+});
+
+describe("validateCommand — uniq, date, hostname, sort mutation paths", () => {
+  it("rejects uniq with an output positional (POSIX: uniq [input [output]])", () => {
+    expect(validateCommand("uniq /etc/hosts /tmp/evil")).toBe(false);
+    expect(validateCommand("uniq -c /etc/hosts /tmp/evil")).toBe(false);
+  });
+
+  it("accepts uniq with at most one input positional", () => {
+    expect(validateCommand("uniq /tmp/a.txt")).toBe(true);
+    expect(validateCommand("uniq -c /tmp/a.txt")).toBe(true);
+    expect(validateCommand("uniq")).toBe(true);
+  });
+
+  it("rejects date -s / --set (sets the clock)", () => {
+    expect(validateCommand("date -s 2020-01-01")).toBe(false);
+    expect(validateCommand("date --set=2020-01-01")).toBe(false);
+    expect(validateCommand("date --set 2020-01-01")).toBe(false);
+  });
+
+  it("accepts date display forms", () => {
+    expect(validateCommand("date")).toBe(true);
+    expect(validateCommand("date +%Y-%m-%d")).toBe(true);
+    expect(validateCommand("date -u")).toBe(true);
+  });
+
+  it("rejects hostname with a name or a -F file (sets the hostname)", () => {
+    expect(validateCommand("hostname pwned")).toBe(false);
+    expect(validateCommand("hostname -F /tmp/name")).toBe(false);
+    expect(validateCommand("hostname --file /tmp/name")).toBe(false);
+  });
+
+  it("accepts hostname display forms", () => {
+    expect(validateCommand("hostname")).toBe(true);
+    expect(validateCommand("hostname -f")).toBe(true);
+    expect(validateCommand("hostname -I")).toBe(true);
+  });
+
+  it("rejects sort --compress-program, which executes a program", () => {
+    expect(validateCommand("sort --compress-program=id /tmp/a")).toBe(false);
+    expect(validateCommand("sort --compress-program id /tmp/a")).toBe(false);
+  });
+});
+
+describe("validateCommand — file -C writes a compiled magic database", () => {
+  it("rejects -C, the bundled -Cm form, and --compile", () => {
+    expect(validateCommand("file -C -m /tmp/x")).toBe(false);
+    expect(validateCommand("file -Cm /tmp/x")).toBe(false);
+    expect(validateCommand("file --compile /tmp/x")).toBe(false);
+  });
+
+  it("accepts ordinary read-only usage, including lowercase -c", () => {
+    expect(validateCommand("file /usr/bin/java")).toBe(true);
+    expect(validateCommand("file -b /usr/bin/java")).toBe(true);
+    expect(validateCommand("file -i /usr/bin/java")).toBe(true);
+    expect(validateCommand("file -c /usr/bin/java")).toBe(true);
   });
 });

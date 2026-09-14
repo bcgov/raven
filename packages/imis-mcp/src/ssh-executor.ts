@@ -41,41 +41,67 @@ const SHELL_META = /[;&|`$(){}\\<>]/;
 const QUOTE_CHARS = /['"]/;
 
 /**
- * Per-command forbidden arguments.
+ * Per-command argument policy.
  *
- * Allowlisting the binary is not sufficient to make this tool read-only.
- * Several allowlisted utilities can execute other programs or mutate the
+ * Allowlisting the binary is not sufficient to make this tool read-only:
+ * several allowlisted utilities execute other programs or mutate the
  * filesystem through their own options, with no shell metacharacter and no
- * control character involved:
+ * control character involved. Each policy below exists because a concrete
+ * bypass was demonstrated:
  *
- * - `find … -exec rm -rf … +` runs an arbitrary program
- * - `find … -delete` removes files
- * - `find … -fprintf FILE` writes a file
- * - `sort -o FILE` overwrites a file
- * - `rpm -e pkg` erases a package
- * - `mount …` with any argument changes what is mounted
+ * - `find … -exec rm -rf … +` runs a program; `-delete` removes; `-fprintf` writes
+ * - `sort -o FILE` overwrites; `sort --compress-program=PROG` runs PROG
+ * - `rpm --pipe CMD` is a popen() and composes with `-q`; `--eval`/`--define`
+ *   evaluate macros
+ * - `uniq INPUT OUTPUT` writes OUTPUT (POSIX positional form, any user)
+ * - `date -s` sets the clock; `hostname NAME` / `-F FILE` sets the hostname
+ * - `mount …` with any argument changes mount state
+ * - `file -C` / `--compile` writes a compiled magic database
  *
- * Each of those has `find` / `sort` / `rpm` / `mount` as its first token, so
- * first-token validation alone accepts them and runs them under the selected
- * sudo account.
+ * The first version of this policy was a denylist plus a "some `-q` flag is
+ * present" check for rpm. Both were the wrong shape: a denylist has to
+ * enumerate every dangerous option, and a presence check restricts nothing
+ * else on the line. Where a binary has any executing or writing option, the
+ * policy is now an ALLOWLIST — every argument must match a known-safe form.
  *
- * `rpm` is handled separately: rather than enumerate its mutating options, it
- * is accepted only in query mode, because `-i` means "info" under `-q` but
- * "install" on its own.
+ * `allow`:          every argument must match at least one pattern
+ * `forbid`:         any argument matching a pattern rejects the command
+ * `maxPositionals`: cap on arguments that do not start with `-`
  */
-const FORBIDDEN_ARGS: Record<string, RegExp> = {
-  // -exec/-execdir/-ok/-okdir run programs; the rest write or delete.
-  find: /^-(exec|execdir|ok|okdir|delete|fprintf?|fprint0|fls)$/,
-  // Matches -o, -oFILE, --output and --output=FILE.
-  sort: /^-{1,2}o/,
-  // Any argument to mount changes mount state; bare `mount` just lists.
-  mount: /./,
-};
+interface ArgPolicy {
+  allow?: RegExp[];
+  forbid?: RegExp[];
+  maxPositionals?: number;
+}
 
-/** Commands accepted only in an explicitly read-only mode. */
-const QUERY_ONLY: Record<string, RegExp> = {
-  // rpm is safe only under -q / --query (e.g. -qa, -qi, -ql).
-  rpm: /^-{1,2}q/,
+/** Positional that names a package, a file path, or a plain identifier. */
+const NAME_OR_PATH = /^[A-Za-z0-9/][A-Za-z0-9._+/-]*$/;
+
+const ARG_POLICY: Record<string, ArgPolicy> = {
+  // GNU find actions that execute or write. Every other action prints.
+  find: { forbid: [/^-(exec|execdir|ok|okdir|delete|fprintf?|fprint0|fls)$/] },
+  // -o/-oFILE/--output write; --compress-program executes.
+  sort: { forbid: [/^-{1,2}o/, /^--compress-program/] },
+  // Query mode only, expressed as an allowlist so --pipe, --eval, --define,
+  // --macros, --rcfile and every other long option are excluded by shape.
+  // `-i` is "info" under -q but "install" alone, which is why a denylist
+  // could never be right here.
+  rpm: { allow: [/^-q[a-zA-Z]*$/, NAME_OR_PATH] },
+  // POSIX: uniq [OPTION]... [INPUT [OUTPUT]]. A second positional is a write.
+  // Note this also rejects the separated `-f N FILE` form (N reads as a
+  // positional); use the attached `-fN` form instead.
+  uniq: { maxPositionals: 1 },
+  // -s / --set write the clock. Display and +FORMAT forms are fine.
+  date: { forbid: [/^(-s|--set)(=|$)/] },
+  // Only the short display flags. Any positional sets the name; -F reads it
+  // from a file.
+  hostname: { allow: [/^-[fiIsdaAy]$/] },
+  // Bare `mount` lists; anything else changes mount state.
+  mount: { allow: [] },
+  // `file -C` / `--compile` writes a compiled magic database (.mgc). The
+  // short flag can be bundled (`-Cm FILE`), so match any cluster containing
+  // uppercase C; lowercase `-c` is a harmless checking printout.
+  file: { forbid: [/^-[a-zA-Z0-9]*C/, /^--compile/] },
 };
 
 /** Validate sudo_user against allowlist and format. */
@@ -93,15 +119,15 @@ export function validateCommand(command: string): boolean {
   if (!binary || !ALLOWED_COMMANDS.has(binary)) return false;
 
   const args = tokens.slice(1);
+  const policy = ARG_POLICY[binary];
+  if (!policy) return true;
 
-  // Reject the binary's own execution and mutation options.
-  const forbidden = FORBIDDEN_ARGS[binary];
-  if (forbidden && args.some((a) => forbidden.test(a))) return false;
-
-  // Require an explicit read-only mode where the binary has one.
-  const queryFlag = QUERY_ONLY[binary];
-  if (queryFlag && !args.some((a) => queryFlag.test(a))) return false;
-
+  if (policy.forbid && args.some((a) => policy.forbid!.some((rx) => rx.test(a)))) return false;
+  if (policy.allow && !args.every((a) => policy.allow!.some((rx) => rx.test(a)))) return false;
+  if (policy.maxPositionals !== undefined) {
+    const positionals = args.filter((a) => !a.startsWith("-"));
+    if (positionals.length > policy.maxPositionals) return false;
+  }
   return true;
 }
 
