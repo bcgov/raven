@@ -161,3 +161,73 @@ describe("verifyHostKey — revocation and host patterns", () => {
     expect(v.ok).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review follow-up (Issue 8): createHostVerifier is the function wired into
+// both ssh2 clients. It owns the env gate, path resolution and the file read,
+// and had no test — an inverted comparison would reopen RSEC-006 with green CI.
+// ---------------------------------------------------------------------------
+
+import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { vi, beforeEach, afterEach } from "vitest";
+import { createHostVerifier } from "../known-hosts.js";
+
+describe("createHostVerifier (wired integration point)", () => {
+  let dir: string;
+  let file: string;
+  let stderrSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "raven-kh-"));
+    file = join(dir, "known_hosts");
+    process.env["RAVEN_KNOWN_HOSTS_PATH"] = file;
+    delete process.env["RAVEN_SSH_INSECURE_HOST_KEYS"];
+    stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    stderrSpy.mockRestore();
+    delete process.env["RAVEN_KNOWN_HOSTS_PATH"];
+    delete process.env["RAVEN_SSH_INSECURE_HOST_KEYS"];
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("accepts a key that matches the file", () => {
+    writeFileSync(file, `prod01 ssh-rsa ${KEY_B64}\n`);
+    expect(createHostVerifier("prod01")(KEY)).toBe(true);
+    expect(stderrSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects a mismatched key and explains why on stderr", () => {
+    writeFileSync(file, `prod01 ssh-rsa ${KEY_B64}\n`);
+    expect(createHostVerifier("prod01")(OTHER_KEY)).toBe(false);
+    expect(String(stderrSpy.mock.calls[0]?.[0])).toContain("HOST KEY MISMATCH");
+  });
+
+  it("rejects an unknown host", () => {
+    writeFileSync(file, `prod01 ssh-rsa ${KEY_B64}\n`);
+    expect(createHostVerifier("unknown01")(KEY)).toBe(false);
+  });
+
+  it("rejects when the file does not exist", () => {
+    rmSync(file, { force: true });
+    expect(createHostVerifier("prod01")(KEY)).toBe(false);
+    expect(String(stderrSpy.mock.calls[0]?.[0])).toContain("No known_hosts file");
+  });
+
+  it("accepts anything under the explicit insecure opt-in, warning once per host", () => {
+    process.env["RAVEN_SSH_INSECURE_HOST_KEYS"] = "true";
+    const verify = createHostVerifier("insecure-host-" + Date.now());
+    expect(verify(OTHER_KEY)).toBe(true);
+    expect(verify(OTHER_KEY)).toBe(true);
+    expect(stderrSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not treat other truthy-looking values as the opt-in", () => {
+    writeFileSync(file, `prod01 ssh-rsa ${KEY_B64}\n`);
+    process.env["RAVEN_SSH_INSECURE_HOST_KEYS"] = "1";
+    expect(createHostVerifier("prod01")(OTHER_KEY)).toBe(false);
+  });
+});
