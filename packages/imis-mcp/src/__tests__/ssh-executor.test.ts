@@ -370,3 +370,50 @@ describe("sanitizePath — control-character hardening (RSEC-003)", () => {
     expect(sanitizePath("/apps_ux/logs/RRS/rrs-api")).toBe("/apps_ux/logs/RRS/rrs-api");
   });
 });
+
+// ---------------------------------------------------------------------------
+// PR review follow-up: allowlisting the binary does not make the tool
+// read-only. Several allowlisted utilities execute programs or mutate the
+// filesystem through their own options, with no shell metacharacter involved.
+// ---------------------------------------------------------------------------
+
+describe("validateCommand — argument policy for allowlisted binaries", () => {
+  it("rejects find -exec, which runs an arbitrary program", () => {
+    expect(validateCommand("find /tmp -exec rm -rf /tmp/x +")).toBe(false);
+    expect(validateCommand("find /tmp -execdir rm {} +")).toBe(false);
+    expect(validateCommand("find /tmp -ok rm {} ;".replace(";", ""))).toBe(false);
+  });
+
+  it("rejects find options that delete or write", () => {
+    expect(validateCommand("find /tmp -name x -delete")).toBe(false);
+    expect(validateCommand("find /tmp -fprintf /tmp/out %p")).toBe(false);
+    expect(validateCommand("find /tmp -fprint /tmp/out")).toBe(false);
+    expect(validateCommand("find /tmp -fls /tmp/out")).toBe(false);
+  });
+
+  it("rejects sort -o, which overwrites a file", () => {
+    expect(validateCommand("sort -o /etc/hosts /etc/hosts")).toBe(false);
+    expect(validateCommand("sort -o/etc/hosts /etc/hosts")).toBe(false);
+    expect(validateCommand("sort --output=/etc/hosts /etc/hosts")).toBe(false);
+  });
+
+  it("accepts rpm only in query mode", () => {
+    expect(validateCommand("rpm -e somepackage")).toBe(false);
+    expect(validateCommand("rpm -U somepackage.rpm")).toBe(false);
+    expect(validateCommand("rpm")).toBe(false);
+    expect(validateCommand("rpm -qa")).toBe(true);
+    expect(validateCommand("rpm -qi somepackage")).toBe(true);
+  });
+
+  it("accepts mount only with no arguments", () => {
+    expect(validateCommand("mount /dev/sda1 /mnt")).toBe(false);
+    expect(validateCommand("mount")).toBe(true);
+  });
+
+  it("still accepts ordinary read-only usage", () => {
+    expect(validateCommand("find /apps_ux/logs -name app.log")).toBe(true);
+    expect(validateCommand("sort /tmp/a.txt")).toBe(true);
+    expect(validateCommand("cat /etc/hosts")).toBe(true);
+    expect(validateCommand("grep -n ERROR /var/log/app.log")).toBe(true);
+  });
+});

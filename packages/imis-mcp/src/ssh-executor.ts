@@ -40,6 +40,44 @@ const SHELL_META = /[;&|`$(){}\\<>]/;
 /** Quote characters, rejected in paths. See sanitizePath. */
 const QUOTE_CHARS = /['"]/;
 
+/**
+ * Per-command forbidden arguments.
+ *
+ * Allowlisting the binary is not sufficient to make this tool read-only.
+ * Several allowlisted utilities can execute other programs or mutate the
+ * filesystem through their own options, with no shell metacharacter and no
+ * control character involved:
+ *
+ * - `find … -exec rm -rf … +` runs an arbitrary program
+ * - `find … -delete` removes files
+ * - `find … -fprintf FILE` writes a file
+ * - `sort -o FILE` overwrites a file
+ * - `rpm -e pkg` erases a package
+ * - `mount …` with any argument changes what is mounted
+ *
+ * Each of those has `find` / `sort` / `rpm` / `mount` as its first token, so
+ * first-token validation alone accepts them and runs them under the selected
+ * sudo account.
+ *
+ * `rpm` is handled separately: rather than enumerate its mutating options, it
+ * is accepted only in query mode, because `-i` means "info" under `-q` but
+ * "install" on its own.
+ */
+const FORBIDDEN_ARGS: Record<string, RegExp> = {
+  // -exec/-execdir/-ok/-okdir run programs; the rest write or delete.
+  find: /^-(exec|execdir|ok|okdir|delete|fprintf?|fprint0|fls)$/,
+  // Matches -o, -oFILE, --output and --output=FILE.
+  sort: /^-{1,2}o/,
+  // Any argument to mount changes mount state; bare `mount` just lists.
+  mount: /./,
+};
+
+/** Commands accepted only in an explicitly read-only mode. */
+const QUERY_ONLY: Record<string, RegExp> = {
+  // rpm is safe only under -q / --query (e.g. -qa, -qi, -ql).
+  rpm: /^-{1,2}q/,
+};
+
 /** Validate sudo_user against allowlist and format. */
 export function validateSudoUser(user: string): boolean {
   return USERNAME_RE.test(user) && ALLOWED_SUDO_USERS.has(user);
@@ -49,8 +87,22 @@ export function validateSudoUser(user: string): boolean {
 export function validateCommand(command: string): boolean {
   if (hasShellControlChars(command)) return false;
   if (SHELL_META.test(command)) return false;
-  const firstToken = command.trim().split(/\s+/)[0];
-  return ALLOWED_COMMANDS.has(firstToken);
+
+  const tokens = command.trim().split(/\s+/);
+  const binary = tokens[0];
+  if (!binary || !ALLOWED_COMMANDS.has(binary)) return false;
+
+  const args = tokens.slice(1);
+
+  // Reject the binary's own execution and mutation options.
+  const forbidden = FORBIDDEN_ARGS[binary];
+  if (forbidden && args.some((a) => forbidden.test(a))) return false;
+
+  // Require an explicit read-only mode where the binary has one.
+  const queryFlag = QUERY_ONLY[binary];
+  if (queryFlag && !args.some((a) => queryFlag.test(a))) return false;
+
+  return true;
 }
 
 /** Validate and return an absolute path, rejecting traversal and injection. */

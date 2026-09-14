@@ -45,9 +45,14 @@ export interface KnownHostsEntry {
  * Parse the contents of a known_hosts file.
  *
  * Understands plain comma-separated host lists and the `|1|salt|hash` hashed
- * form written by `HashKnownHosts yes`. Marker lines (`@cert-authority`,
- * `@revoked`) are skipped: this verifier deliberately does not honour
- * certificate authorities, because doing so would widen trust silently.
+ * form written by `HashKnownHosts yes`.
+ *
+ * Marker lines are retained and tagged, not skipped. `@revoked` has to survive
+ * parsing so {@link verifyHostKey} can enforce it — sshd(8) is explicit that
+ * such a key "must not ever be accepted". `@cert-authority` also survives
+ * parsing, but is deliberately not honoured for authorization, because
+ * trusting a CA would silently widen trust to anything it signs. An unknown
+ * marker causes the line to be ignored rather than guessed at.
  *
  * @param contents - Raw file contents.
  * @returns Parsed entries, ignoring comments and unparseable lines.
