@@ -63,36 +63,51 @@ export function parseKnownHosts(contents: string): KnownHostsEntry[] {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) continue;
 
-    let parts = line.split(/\s+/);
-    let marker: KnownHostsEntry["marker"] = "none";
-    if (parts[0]?.startsWith("@")) {
-      // A marker consumes the first field. @revoked is an explicit deny and
-      // must be retained; @cert-authority is retained only so it can be
-      // ignored deliberately rather than silently widening trust.
-      if (parts[0] === "@revoked") marker = "revoked";
-      else if (parts[0] === "@cert-authority") marker = "cert-authority";
-      else continue; // unknown marker — ignore the line rather than guess
-      parts = parts.slice(1);
-    }
-    if (parts.length < 3) continue;
-    const [hostField, , keyB64] = parts as [string, string, string];
+    const marked = takeMarker(line.split(/\s+/));
+    if (!marked || marked.rest.length < 3) continue;
+    const [hostField, , keyB64] = marked.rest as [string, string, string];
 
-    if (hostField.startsWith("|1|")) {
-      const segments = hostField.split("|");
-      // Format: "" | "1" | salt | hash
-      if (segments.length !== 4) continue;
-      entries.push({ marker, hosts: [], hashSalt: segments[2]!, hashValue: segments[3]!, key: keyB64 });
-    } else {
-      entries.push({
-        marker,
-        hosts: hostField.split(",").map((h) => h.toLowerCase()),
-        hashSalt: null,
-        hashValue: null,
-        key: keyB64,
-      });
-    }
+    const hosts = parseHostField(hostField);
+    if (!hosts) continue;
+    entries.push({ marker: marked.marker, ...hosts, key: keyB64 });
   }
   return entries;
+}
+
+/**
+ * Split a leading OpenSSH marker off a line's fields.
+ *
+ * `@revoked` is retained so it can be enforced; `@cert-authority` is retained
+ * so it can be ignored deliberately rather than silently widening trust. An
+ * unknown marker makes the whole line unparseable rather than guessed at.
+ *
+ * @param parts - Whitespace-split fields of one known_hosts line.
+ * @returns The marker and the remaining fields, or null for an unknown marker.
+ */
+function takeMarker(parts: string[]): { marker: KnownHostsEntry["marker"]; rest: string[] } | null {
+  const first = parts[0];
+  if (!first?.startsWith("@")) return { marker: "none", rest: parts };
+  if (first === "@revoked") return { marker: "revoked", rest: parts.slice(1) };
+  if (first === "@cert-authority") return { marker: "cert-authority", rest: parts.slice(1) };
+  return null;
+}
+
+/**
+ * Parse a host field into literal patterns or the `|1|salt|hash` hashed form.
+ *
+ * @param field - The first non-marker field of a known_hosts line.
+ * @returns Host-matching data for the entry, or null when a hashed field is malformed.
+ */
+function parseHostField(
+  field: string,
+): Pick<KnownHostsEntry, "hosts" | "hashSalt" | "hashValue"> | null {
+  if (!field.startsWith("|1|")) {
+    return { hosts: field.split(",").map((h) => h.toLowerCase()), hashSalt: null, hashValue: null };
+  }
+  // Format: "" | "1" | salt | hash
+  const segments = field.split("|");
+  if (segments.length !== 4) return null;
+  return { hosts: [], hashSalt: segments[2], hashValue: segments[3] };
 }
 
 /**
@@ -138,7 +153,7 @@ function hostPatternMatches(pattern: string, host: string): boolean {
     return pattern === host || pattern === `[${host}]:22`;
   }
   const rx = new RegExp(
-    "^" + pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$",
+    "^" + pattern.replaceAll(/[.+^${}()|[\]\\]/g, "\\$&").replaceAll(/\*/g, ".*").replaceAll(/\?/g, ".") + "$",
   );
   return rx.test(host);
 }

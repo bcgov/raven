@@ -84,7 +84,7 @@ function assertDate(value: string | undefined, label: string, allowToday: boolea
 }
 
 /** Valid characters for an httpd virtual-host domain name or "default". */
-const HTTPD_DOMAIN_RE = /^[a-zA-Z0-9][a-zA-Z0-9.\-]*$/;
+const HTTPD_DOMAIN_RE = /^[a-zA-Z0-9][a-zA-Z0-9.-]*$/;
 
 /**
  * Valid app / component identifier. Same spirit as HTTPD_DOMAIN_RE:
@@ -92,7 +92,7 @@ const HTTPD_DOMAIN_RE = /^[a-zA-Z0-9][a-zA-Z0-9.\-]*$/;
  * whitespace, shell metacharacters, and path traversal ("../"), since both
  * values are interpolated unquoted into the remote `logDir` and shell globs.
  */
-const APP_COMPONENT_RE = /^[a-zA-Z0-9][a-zA-Z0-9._\-]*$/;
+const APP_COMPONENT_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
 function logFilePrefix(component: string, logType: LogType): string {
   switch (logType) {
@@ -132,7 +132,8 @@ export function buildLogSearchCommand(params: LogSearchParams): string {
 
   const logDir = `${logsBase}/${app}/${component}`;
   const prefix = logFilePrefix(component, logType);
-  const grepOpts = `-E -n -a${contextLines > 0 ? ` -C ${contextLines}` : ""}`;
+  const contextOpt = contextLines > 0 ? ` -C ${contextLines}` : "";
+  const grepOpts = `-E -n -a${contextOpt}`;
 
   // When the conventional ${component}.log isn't present, discover the real
   // app log by listing the dir and excluding Tomcat's own logs (catalina,
@@ -238,7 +239,8 @@ export function buildHttpdLogSearchCommand(params: HttpdLogSearchParams): string
 
   const logDir = `${logsBase}/${subdir}`;
   const prefix = `${domain}-${logType}`;
-  const grepOpts = `-E -n -a${contextLines > 0 ? ` -C ${contextLines}` : ""}`;
+  const contextOpt = contextLines > 0 ? ` -C ${contextLines}` : "";
+  const grepOpts = `-E -n -a${contextOpt}`;
 
   // Cold logs are gzip-rotated (…-access.YYYY.MM.DD.log.gz), while hot logs are
   // plain .log. We handle both: match a .log* glob (covers .log and .log.gz)
@@ -273,7 +275,7 @@ export function buildHttpdLogSearchCommand(params: HttpdLogSearchParams): string
       );
     }
     // Convert YYYY-MM-DD to YYYY.MM.DD for the filename
-    const fileDate = date.replace(/-/g, ".");
+    const fileDate = date.replaceAll("-", ".");
     const dated = `${logDir}/${prefix}.${fileDate}.log`;
     const gz = `${dated}.gz`;
     return (

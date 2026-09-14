@@ -122,11 +122,13 @@ export function validateCommand(command: string): boolean {
   const policy = ARG_POLICY[binary];
   if (!policy) return true;
 
-  if (policy.forbid && args.some((a) => policy.forbid!.some((rx) => rx.test(a)))) return false;
-  if (policy.allow && !args.every((a) => policy.allow!.some((rx) => rx.test(a)))) return false;
-  if (policy.maxPositionals !== undefined) {
+  // Bound to consts so the narrowing survives into the arrow callbacks.
+  const { forbid, allow, maxPositionals } = policy;
+  if (forbid && args.some((a) => forbid.some((rx) => rx.test(a)))) return false;
+  if (allow && !args.every((a) => allow.some((rx) => rx.test(a)))) return false;
+  if (maxPositionals !== undefined) {
     const positionals = args.filter((a) => !a.startsWith("-"));
-    if (positionals.length > policy.maxPositionals) return false;
+    if (positionals.length > maxPositionals) return false;
   }
   return true;
 }

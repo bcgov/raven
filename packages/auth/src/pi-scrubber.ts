@@ -84,14 +84,24 @@ const IDIR_STOPLIST = new Set([
   "SERVICE", "PROXY", "BACKUP", "NOBODY", "ANONYMOUS", "SCHEDULER",
 ]);
 
-const PI_PATTERNS: Array<{
-  pattern: RegExp;
-  replacement: string | ((match: string, ...groups: string[]) => string);
-}> = [
+/** A replacer: receives the match and any capture groups, returns the substitute. */
+type Replacer = (match: string, ...groups: string[]) => string;
+
+/**
+ * Lift a literal replacement into replacer form so every rule has one shape.
+ *
+ * None of the literal substitutes use `$&`/`$1` backreferences, so returning
+ * the string unchanged is exactly equivalent to `String#replace` with a
+ * string argument. Having one shape removes the two-branch call in
+ * scrubText that existed only to satisfy the `replace` overloads.
+ */
+const lit = (s: string): Replacer => () => s;
+
+const PI_PATTERNS: Array<{ pattern: RegExp; replacement: Replacer }> = [
   // SMSESSION tokens (long hex/base64 strings after SMSESSION=)
-  { pattern: /SMSESSION=[A-Za-z0-9+/=%\-_.]{10,}/g, replacement: "SMSESSION=[TOKEN]" },
+  { pattern: /SMSESSION=[A-Za-z0-9+/=%\-_.]{10,}/g, replacement: lit("SMSESSION=[TOKEN]") },
   // Bearer tokens
-  { pattern: /Bearer\s+[A-Za-z0-9\-_.~+/]+=*/g, replacement: "Bearer [TOKEN]" },
+  { pattern: /Bearer\s+[A-Za-z0-9\-_.~+/]+=*/g, replacement: lit("Bearer [TOKEN]") },
   // Generic API keys / tokens. The minimum length is 8 rather than 16: an
   // eight-character password is weak, not absent, and leaking it is the same
   // disclosure as leaking a long one.
@@ -101,20 +111,20 @@ const PI_PATTERNS: Array<{
   // stray character came before the minimum length, failed to match at all
   // and leaked the whole value). The quoted branches find their own closing
   // quote; the unquoted branch stops at whitespace and nothing else.
-  { pattern: /(?:api[_-]?key|token|secret|password)\s*[:=]\s*(?:"[^"\r\n]{4,}"|'[^'\r\n]{4,}'|[^\s]{6,})/gi, replacement: "[CREDENTIAL]" },
+  { pattern: /(?:api[_-]?key|token|secret|password)\s*[:=]\s*(?:"[^"\r\n]{4,}"|'[^'\r\n]{4,}'|[^\s]{6,})/gi, replacement: lit("[CREDENTIAL]") },
   // SIN, separated: 123-456-789 or 123 456 789. No checksum gate here — a
   // three-three-three grouping is already a strong signal on its own.
-  { pattern: /\b\d{3}[\s-]\d{3}[\s-]\d{3}\b/g, replacement: "[SIN]" },
+  { pattern: /\b\d{3}[\s-]\d{3}[\s-]\d{3}\b/g, replacement: lit("[SIN]") },
   // SIN, unseparated: nine consecutive digits that pass the Luhn check.
   { pattern: /\b\d{9}\b/g, replacement: (m: string) => (passesLuhn(m) ? "[SIN]" : m) },
   // Email addresses
-  { pattern: /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g, replacement: "[EMAIL]" },
+  { pattern: /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g, replacement: lit("[EMAIL]") },
   // IDIR usernames (uppercase letters, typically 5-8 chars, appearing after common prefixes)
-  { pattern: /(?:username|author|idir)[:=]\s*[A-Z]{3,8}\b/gi, replacement: "[IDIR]" },
+  { pattern: /(?:username|author|idir)[:=]\s*[A-Z]{3,8}\b/gi, replacement: lit("[IDIR]") },
   // IDIR format: USER@idir or USER@IDIR (also handles surrounding whitespace context)
-  { pattern: /[A-Za-z0-9]+@[Ii][Dd][Ii][Rr]\b/g, replacement: "[IDIR]" },
+  { pattern: /[A-Za-z0-9]+@[Ii][Dd][Ii][Rr]\b/g, replacement: lit("[IDIR]") },
   // IDIR domain-qualified form: IDIR\JSMITH
-  { pattern: /\bIDIR\\[A-Za-z0-9._-]+/gi, replacement: "[IDIR]" },
+  { pattern: /\bIDIR\\[A-Za-z0-9._-]+/gi, replacement: lit("[IDIR]") },
   // Bare IDIR in attribution context: "assigned to JSMITH", "reported by
   // JGAGAN", "owner: MSMITH". A blanket uppercase rule would redact
   // ERROR/WARN/HTTP and destroy log utility, so this requires all three of:
@@ -127,11 +137,11 @@ const PI_PATTERNS: Array<{
   },
   // Phone numbers: North American formats
   // (250) 555-1234, 250-555-1234, 250.555.1234, +1-250-555-1234, 1-800-555-1234
-  { pattern: /(?:\+?1[\s.-]?)?\(?[2-9]\d{2}\)?[\s.-]\d{3}[\s.-]\d{4}\b/g, replacement: "[PHONE]" },
+  { pattern: /(?:\+?1[\s.-]?)?\(?[2-9]\d{2}\)?[\s.-]\d{3}[\s.-]\d{4}\b/g, replacement: lit("[PHONE]") },
   // Phone numbers, unseparated ten-digit NANP. Both the area code and the
   // exchange must start 2-9, which excludes epoch-second timestamps (they
   // start with 1 for any plausible date) and most numeric identifiers.
-  { pattern: /\b[2-9]\d{2}[2-9]\d{6}\b/g, replacement: "[PHONE]" },
+  { pattern: /\b[2-9]\d{2}[2-9]\d{6}\b/g, replacement: lit("[PHONE]") },
 ];
 export class PiScrubber {
   /** Map from original displayName to anonymized label. */
@@ -185,9 +195,7 @@ export class PiScrubber {
     for (const { pattern, replacement } of PI_PATTERNS) {
       // Reset lastIndex for global regexes reused across calls
       pattern.lastIndex = 0;
-      result = typeof replacement === "string"
-        ? result.replace(pattern, replacement)
-        : result.replace(pattern, replacement);
+      result = result.replace(pattern, replacement);
     }
 
     // Layer 2: Known name replacement
