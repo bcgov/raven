@@ -5,6 +5,8 @@ application: "Resource Analytics, Visibility & Enterprise Navigator"
 application_acronym: "RAVEN"
 reviewed_ref: "origin/main @ fd982f6"
 overall_risk: HIGH
+remediation_status: "RSEC-001..007 fixed on security-remediation-2026-09-14; RSEC-011..013 open"
+remediation_branch: "security-remediation-2026-09-14"
 total_findings: 13
 critical_count: 2
 high_count: 2
@@ -38,6 +40,41 @@ Security posture, framework currency, dependency audit, static analysis summary,
 | Version | Date | Author | Changes |
 | :--- | :--- | :--- | :--- |
 | `1.0` | `2026-09-14` | `Crow Security & Dependency Review Agent (Claude Opus 5)` | `Initial review against origin/main @ fd982f6. Manual review with executable probes, codebase-memory call-graph tracing, npm audit, and a SonarQube scan of main.` |
+
+---
+
+## 0. Remediation Status
+
+All seven Critical, High and Medium findings were remediated on branch
+`security-remediation-2026-09-14`, branched from `fd982f6`. Verification:
+clean `tsc --build`, full suite **1184 passed / 1 skipped / 0 failed**, and a
+SonarQube scan of the branch returning quality gate **OK** with **28 hotspots —
+identical to `main`, none in the new code**.
+
+| Finding | Status | Fix |
+| :--- | :--- | :--- |
+| `RSEC-001` | **Fixed** | Grep pattern escaped per-argument via a shared helper; `|` still works as `grep -E` alternation |
+| `RSEC-002` | **Fixed** | CR/LF rejected before the allowlist tokenizer sees them |
+| `RSEC-003` | **Fixed** | `sanitizePath` rejects control and quote characters; output escaped at interpolation |
+| `RSEC-004` | **Fixed** | Unseparated SIN (Luhn-gated), unseparated NANP phone, domain-qualified IDIR; credential minimum 16 → 8 |
+| `RSEC-005` | **Fixed** | `localGuard` validates Host and Origin ahead of every API router |
+| `RSEC-006` | **Fixed** | `known_hosts` verification in **both** SSH clients, one shared implementation |
+| `RSEC-007` | **Fixed** | TLS validation on by default; `SMTP_INSECURE_TLS=true` to opt out |
+| `RSEC-008` to `RSEC-013` | Open | Out of the agreed remediation scope (Low and Informational) |
+
+The three duplicated `shellEscape` copies and both `hostVerifier` sites were
+consolidated into `@nrs/auth`, which addresses the duplicated-security-logic
+technical debt item as a side effect rather than leaving two copies to drift
+again.
+
+### Operator action required before merge
+
+`RSEC-006` changes default behaviour. An unknown or mismatched SSH host key now
+**fails the connection**. Before this branch is used against real servers, each
+BC Gov application server must appear in `~/.ssh/known_hosts` — connect once
+with the ordinary `ssh` client to record each key. `RAVEN_SSH_INSECURE_HOST_KEYS=true`
+restores the previous accept-anything behaviour as a deliberate, logged
+exception. A key *mismatch* deliberately does not suggest that flag.
 
 ---
 
