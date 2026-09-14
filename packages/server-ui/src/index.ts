@@ -15,7 +15,7 @@ loadEnv();
 
 const PORT = parseInt(process.env["SERVER_UI_PORT"] ?? "3777", 10);
 const LOG_FILE = join(homedir(), ".raven", "logs", "server-ui.log");
-const app = createApp();
+const app = createApp(PORT);
 
 app.listen(PORT, "127.0.0.1", () => {
   console.log(`Server Monitor UI → http://localhost:${PORT}`);
