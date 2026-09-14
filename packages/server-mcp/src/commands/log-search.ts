@@ -59,6 +59,30 @@ export interface HttpdLogSearchParams {
  */
 const PATTERN_META = /[;&`$(){}\\<>]/;
 
+/**
+ * Strict calendar-date shape. Every date parameter is interpolated into the
+ * remote shell command — `date` unquoted inside a path, `dateFrom`/`dateTo`
+ * inside single quotes — so anything looser than this is an injection vector.
+ * RSEC-001 hardened `pattern`; this closes the sibling parameters.
+ */
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Reject a date parameter that is not YYYY-MM-DD (or, where permitted, "today").
+ *
+ * @param value - Caller-supplied value, or undefined when not provided.
+ * @param label - Parameter name for the error message.
+ * @param allowToday - Whether the literal "today" is acceptable.
+ * @throws Error when the value is present and malformed.
+ */
+function assertDate(value: string | undefined, label: string, allowToday: boolean): void {
+  if (value === undefined) return;
+  if (allowToday && value === "today") return;
+  if (!DATE_RE.test(value)) {
+    throw new Error(`${label} must be YYYY-MM-DD${allowToday ? ' or "today"' : ""}`);
+  }
+}
+
 /** Valid characters for an httpd virtual-host domain name or "default". */
 const HTTPD_DOMAIN_RE = /^[a-zA-Z0-9][a-zA-Z0-9.\-]*$/;
 
@@ -90,6 +114,9 @@ export function buildLogSearchCommand(params: LogSearchParams): string {
   if (PATTERN_META.test(pattern)) {
     throw new Error("Pattern contains shell metacharacters");
   }
+  assertDate(date, "date", true);
+  assertDate(dateFrom, "dateFrom", false);
+  assertDate(dateTo, "dateTo", false);
   // Escaped once here, then interpolated unquoted everywhere below.
   //
   // The leading `-e` is load-bearing, not decoration. Quoting stops the shell
@@ -197,6 +224,9 @@ export function buildHttpdLogSearchCommand(params: HttpdLogSearchParams): string
   if (PATTERN_META.test(pattern)) {
     throw new Error("Pattern contains shell metacharacters");
   }
+  assertDate(date, "date", true);
+  assertDate(dateFrom, "dateFrom", false);
+  assertDate(dateTo, "dateTo", false);
   // Escaped once here, then interpolated unquoted everywhere below.
   // See buildLogSearchCommand: `-e` keeps grep from reading a leading-dash
   // pattern as options.

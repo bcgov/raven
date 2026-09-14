@@ -122,6 +122,7 @@ export function createServerMonitoringServer(): McpServer {
         ),
       date: z
         .string()
+        .regex(/^(\d{4}-\d{2}-\d{2}|today)$/, "must be YYYY-MM-DD or 'today'")
         .optional()
         .describe(
           "Date for log file (YYYY-MM-DD or 'today'). Omit for current active log."
@@ -199,6 +200,7 @@ export function createServerMonitoringServer(): McpServer {
         ),
       date: z
         .string()
+        .regex(/^(\d{4}-\d{2}-\d{2}|today)$/, "must be YYYY-MM-DD or 'today'")
         .optional()
         .describe(
           "Date for log file (YYYY-MM-DD or 'today'). Omit to search the newest available log file."

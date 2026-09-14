@@ -381,3 +381,46 @@ describe("buildLogSearchCommand — grep option-injection guard", () => {
     expect(cmd).toContain("-e '-v'");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review follow-up (Issue 2): RSEC-001 hardened `pattern` but the `date`
+// parameter, interpolated unquoted into the same command, was never validated.
+// ---------------------------------------------------------------------------
+
+describe("buildLogSearchCommand — date parameters are validated (RSEC-001 completion)", () => {
+  it("rejects shell in date", () => {
+    expect(() => buildLogSearchCommand({ ...baseParams, pattern: "ERROR", date: "x ]; id; [ -f y" })).toThrow();
+    expect(() => buildLogSearchCommand({ ...baseParams, pattern: "ERROR", date: "$(id)" })).toThrow();
+    expect(() => buildLogSearchCommand({ ...baseParams, pattern: "ERROR", date: "2026-09-14`id`" })).toThrow();
+  });
+
+  it("rejects shell in dateFrom / dateTo", () => {
+    expect(() => buildLogSearchCommand({ ...baseParams, pattern: "ERROR", dateFrom: "2026-09-01'; id; '", dateTo: "2026-09-02" })).toThrow();
+    expect(() => buildLogSearchCommand({ ...baseParams, pattern: "ERROR", dateFrom: "2026-09-01", dateTo: "$(id)" })).toThrow();
+  });
+
+  it("accepts the two documented forms", () => {
+    expect(buildLogSearchCommand({ ...baseParams, pattern: "ERROR", date: "today" })).toContain("date +%Y-%m-%d");
+    expect(buildLogSearchCommand({ ...baseParams, pattern: "ERROR", date: "2026-09-14" })).toContain("rrs-api.2026-09-14.log");
+    expect(buildLogSearchCommand({ ...baseParams, pattern: "ERROR", dateFrom: "2026-09-01", dateTo: "2026-09-02" })).toContain("d='2026-09-01'");
+  });
+});
+
+describe("buildHttpdLogSearchCommand — date parameters are validated", () => {
+  const httpdBase = { logsBase: "/sw_ux/httpd01/logs", domain: "portalext.example.gov.bc.ca",
+    logType: "access" as const, pattern: "404", maxLines: 10, contextLines: 0 };
+
+  it("rejects shell in date", () => {
+    expect(() => buildHttpdLogSearchCommand({ ...httpdBase, date: "x ]; id; [ -f y" })).toThrow();
+    expect(() => buildHttpdLogSearchCommand({ ...httpdBase, date: "$(id)" })).toThrow();
+  });
+
+  it("rejects shell in dateFrom / dateTo", () => {
+    expect(() => buildHttpdLogSearchCommand({ ...httpdBase, dateFrom: "'; id; '", dateTo: "2026-09-02" })).toThrow();
+  });
+
+  it("accepts documented forms", () => {
+    expect(buildHttpdLogSearchCommand({ ...httpdBase, date: "2026-09-14" })).toContain("access.2026.09.14.log");
+    expect(buildHttpdLogSearchCommand({ ...httpdBase, date: "today" })).toContain("date +%Y.%m.%d");
+  });
+});
