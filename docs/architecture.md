@@ -10,6 +10,17 @@ This document provides a comprehensive blueprint and technology assessment of **
 | :--- | :--- | :--- | :--- |
 | `1.0` | `2026-09-14` | `Crow Architecture Review Agent` | `Initial generation from source evidence on branch feature/44-persistent-auth-profile at commit 08b0af3, using the codebase-memory graph (3,340 nodes / 9,466 edges, 0 skipped files).` |
 
+> **Read this as a snapshot, not as the current state.** The assessment below
+> was generated from commit `08b0af3`, before any remediation. Its security
+> sections therefore describe `RSEC-001` through `RSEC-007` as open — no origin
+> or host checking on the dashboard routers, unseparated identifiers missing
+> from the PI scrubber, SSH host key verification disabled — and all seven are
+> fixed on `security-remediation-2026-09-14`. The remediation table in
+> `docs/security-review.md` is the current state. Regenerate this document with
+> the Crow Architecture Review Agent once that branch merges, rather than
+> editing the analysis by hand, so it stays consistent with the executive
+> report generated from the same data.
+
 ---
 
 ## 1. Metadata & Organizational Alignment
