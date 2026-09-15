@@ -617,3 +617,35 @@ describe("validateCommand — GNU long-option abbreviation", () => {
     expect(validateCommand("ls --time-style=iso /var/log")).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Self-review, round 4. Quote removal can be modelled exactly; expansion
+// cannot, because it depends on the remote filesystem. Where the policy
+// depends on how many arguments there are, an argument that can expand into
+// more of them defeats it. Confirmed in a scratch directory holding two files:
+//
+//   $ uniq *          # became `uniq aaa.txt zzz.txt` and overwrote zzz.txt
+// ---------------------------------------------------------------------------
+
+describe("validateCommand — expansion happens after validation", () => {
+  it("rejects a glob where the policy caps positionals", () => {
+    expect(validateCommand("uniq *")).toBe(false);
+    expect(validateCommand("uniq /tmp/*")).toBe(false);
+    expect(validateCommand("uniq -c *.txt")).toBe(false);
+    expect(validateCommand("uniq ?.txt")).toBe(false);
+    expect(validateCommand("uniq [ab].txt")).toBe(false);
+  });
+
+  it("still accepts a literal single input", () => {
+    expect(validateCommand("uniq /var/log/app.log")).toBe(true);
+    expect(validateCommand("uniq -c /var/log/app.log")).toBe(true);
+    expect(validateCommand("uniq")).toBe(true);
+  });
+
+  it("leaves globs alone where the argument count carries no policy", () => {
+    expect(validateCommand("ls /var/log/*.log")).toBe(true);
+    expect(validateCommand("grep -n ERROR /var/log/*.log")).toBe(true);
+    expect(validateCommand("file /usr/bin/*")).toBe(true);
+    expect(validateCommand("sort /var/log/*.log")).toBe(true);
+  });
+});

@@ -84,6 +84,9 @@ const QUOTE_CHARS = /['"]/;
  * `maxPositionals`:   cap on arguments that do not start with `-`
  * `shortValueFlags`:  short options that take an attached value; declaring
  *                     them turns on cluster expansion for `forbid`
+ *
+ * A policy that sets `maxPositionals` additionally rejects glob characters in
+ * its positionals, since the shell expands them after this check runs.
  */
 interface ArgPolicy {
   allow?: RegExp[];
@@ -126,6 +129,15 @@ function expandShortCluster(arg: string, valueFlags: string): string[] {
   }
   return flags;
 }
+
+/**
+ * Characters that make an argument expandable by the shell.
+ *
+ * Quote removal is modelled exactly by tokenizeCommand, but expansion cannot
+ * be: it depends on the remote filesystem. Where a policy depends on how many
+ * arguments there are, one that can expand into several defeats it.
+ */
+const GLOB_META = /[*?[]/;
 
 /** Positional that names a package, a file path, or a plain identifier. */
 const NAME_OR_PATH = /^[A-Za-z0-9/][A-Za-z0-9._+/-]*$/;
@@ -244,6 +256,13 @@ export function validateCommand(command: string): boolean {
   if (maxPositionals !== undefined) {
     const positionals = args.filter((a) => !a.startsWith("-"));
     if (positionals.length > maxPositionals) return false;
+    // The count above is the count before expansion. `uniq *` is one
+    // positional here and two after the shell expands it, and uniq's second
+    // positional is an output file: in a directory holding two files it
+    // overwrote the second. Commands whose policy does not count arguments
+    // keep their globs, because `ls *.log` and `grep ERROR *.log` are the
+    // ordinary way to use this tool.
+    if (positionals.some((a) => GLOB_META.test(a))) return false;
   }
   return true;
 }
