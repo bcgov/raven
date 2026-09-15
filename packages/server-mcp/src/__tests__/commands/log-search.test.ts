@@ -90,7 +90,7 @@ describe("buildLogSearchCommand", () => {
   it("accepts legitimate dotted/dashed app and component names", () => {
     expect(() => buildLogSearchCommand({
       logsBase: "/apps_ux/logs",
-      app: "RAR2", component: "dms-document-api",
+      app: "RAR2.beta", component: "dms-document_api.v2",
       pattern: "ERROR", logType: "app",
       maxLines: 100, contextLines: 0,
     })).not.toThrow();
@@ -122,6 +122,43 @@ describe("buildLogSearchCommand", () => {
     });
     expect(cmd).toContain("ls -t /apps_ux/logs/FTA/fta/catalina*.log");
     expect(cmd).not.toContain("grep -vE");
+  });
+});
+
+describe("log command builders reject trailing input terminators", () => {
+  // ECMAScript's $ requires the end of input without the m flag. Exercise
+  // the actual builders so a future regex flag/validation change cannot let
+  // a valid-looking prefix introduce an unexpected shell-bound suffix.
+  it.each([
+    { label: "LF", suffix: "\n" },
+    { label: "CR", suffix: "\r" },
+    { label: "CRLF", suffix: "\r\n" },
+    { label: "LINE SEPARATOR", suffix: "\u2028" },
+    { label: "PARAGRAPH SEPARATOR", suffix: "\u2029" },
+    { label: "NUL", suffix: "\0" },
+  ])("rejects $label in every date and path identifier", ({ suffix }) => {
+    const appBase = {
+      logsBase: "/logs", app: "APP", component: "api",
+      pattern: "ERROR", logType: "app" as const,
+      maxLines: 100, contextLines: 0,
+    };
+    const httpdBase = {
+      logsBase: "/logs", domain: "portal.example.invalid",
+      pattern: "ERROR", logType: "access" as const,
+      maxLines: 100, contextLines: 0,
+    };
+    for (const field of ["date", "dateFrom", "dateTo"] as const) {
+      const invalid = { [field]: `2026-09-15${suffix}` };
+      expect(() => buildLogSearchCommand({ ...appBase, ...invalid })).toThrow(/YYYY-MM-DD/);
+      expect(() => buildHttpdLogSearchCommand({ ...httpdBase, ...invalid })).toThrow(/YYYY-MM-DD/);
+    }
+    expect(() => buildLogSearchCommand({ ...appBase, date: `today${suffix}` })).toThrow(/YYYY-MM-DD/);
+    expect(() => buildHttpdLogSearchCommand({ ...httpdBase, date: `today${suffix}` })).toThrow(/YYYY-MM-DD/);
+    for (const field of ["app", "component"] as const) {
+      expect(() => buildLogSearchCommand({ ...appBase, [field]: `APP${suffix}` })).toThrow(/invalid characters/);
+    }
+    expect(() => buildHttpdLogSearchCommand({ ...httpdBase, domain: `portal.example.invalid${suffix}` }))
+      .toThrow(/invalid characters/);
   });
 });
 
@@ -272,5 +309,155 @@ describe("searchLogs (stdout/stderr selection)", () => {
     });
     const { output } = await searchLogs(entry, params);
     expect(output).toBe("12: matched");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RSEC-001 regression: single-quote breakout in the grep pattern.
+//
+// PATTERN_META never blocked the single quote, and the pattern was interpolated
+// between literal quotes ('${pattern}'). A quote therefore closed the string
+// literal and everything after it ran as shell. The fix escapes the pattern
+// per-argument instead of widening the denylist, because `|` is legitimate
+// grep -E alternation and must keep working.
+// ---------------------------------------------------------------------------
+
+/** POSIX single-quote escaping, redefined here so the test is independent of the implementation. */
+const posixQuote = (s: string): string => "'" + s.replace(/'/g, "'\\''") + "'";
+
+const baseParams = {
+  logsBase: "/apps_ux/logs",
+  app: "RRS",
+  component: "rrs-api",
+  logType: "app" as const,
+  maxLines: 100,
+  contextLines: 0,
+};
+
+describe("buildLogSearchCommand — shell injection hardening (RSEC-001)", () => {
+  it("neutralizes a single-quote breakout instead of emitting a live pipeline", () => {
+    const pattern = "FATAL' | id | '";
+    const cmd = buildLogSearchCommand({ ...baseParams, pattern });
+
+    // The vulnerable build emitted: grep -E -n -a 'FATAL' | id | '' /path
+    expect(cmd).not.toContain("'FATAL' | id | ''");
+    // The pattern must appear exactly as one escaped argument.
+    expect(cmd).toContain(posixQuote(pattern));
+  });
+
+  it("still supports grep -E alternation, which legitimately uses the pipe", () => {
+    const cmd = buildLogSearchCommand({ ...baseParams, pattern: "ERROR|FATAL" });
+    expect(cmd).toContain(posixQuote("ERROR|FATAL"));
+  });
+
+  it("rejects a newline in the pattern", () => {
+    expect(() => buildLogSearchCommand({ ...baseParams, pattern: "FATAL\nid" })).toThrow();
+  });
+
+  it("rejects a carriage return in the pattern", () => {
+    expect(() => buildLogSearchCommand({ ...baseParams, pattern: "FATAL\rid" })).toThrow();
+  });
+
+  it("escapes the pattern in every branch of a date-range search", () => {
+    // Uses the pipe form, not a semicolon: PATTERN_META already rejects `;`,
+    // so a semicolon payload would never reach the interpolation under test.
+    const pattern = "x' | id | '";
+    const cmd = buildLogSearchCommand({
+      ...baseParams, pattern, dateFrom: "2026-09-01", dateTo: "2026-09-02",
+    });
+    expect(cmd).not.toContain("'x' | id | ''");
+    expect(cmd.split(posixQuote(pattern)).length - 1).toBeGreaterThanOrEqual(2); // grep + zgrep branches
+  });
+});
+
+describe("buildHttpdLogSearchCommand — shell injection hardening (RSEC-001)", () => {
+  const httpdBase = {
+    logsBase: "/sw_ux/httpd01/logs",
+    domain: "portalext.example.gov.bc.ca",
+    logType: "access" as const,
+    maxLines: 100,
+    contextLines: 0,
+  };
+
+  it("neutralizes a single-quote breakout", () => {
+    const pattern = "404' | id | '";
+    const cmd = buildHttpdLogSearchCommand({ ...httpdBase, pattern });
+    expect(cmd).not.toContain("'404' | id | ''");
+    expect(cmd).toContain(posixQuote(pattern));
+  });
+
+  it("rejects a newline in the pattern", () => {
+    expect(() => buildHttpdLogSearchCommand({ ...httpdBase, pattern: "404\nid" })).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR review follow-up: quoting does not stop grep's own option parsing. A
+// pattern beginning with `-` is consumed as flags; `-v` additionally leaves
+// grep with no pattern, so it takes the log path as the pattern and blocks on
+// stdin until the SSH timeout fires.
+// ---------------------------------------------------------------------------
+
+describe("buildLogSearchCommand — grep option-injection guard", () => {
+  it("passes a leading-dash pattern after -e so grep cannot read it as flags", () => {
+    const cmd = buildLogSearchCommand({ ...baseParams, pattern: "-v" });
+    expect(cmd).toContain("-e '-v'");
+    expect(cmd).not.toMatch(/-a '-v'/);
+  });
+
+  it("guards the -e pattern form too", () => {
+    const cmd = buildLogSearchCommand({ ...baseParams, pattern: "-e" });
+    expect(cmd).toContain("-e '-e'");
+  });
+
+  it("applies the guard in the httpd builder as well", () => {
+    const cmd = buildHttpdLogSearchCommand({
+      logsBase: "/sw_ux/httpd01/logs", domain: "portalext.example.gov.bc.ca",
+      logType: "access", pattern: "-v", maxLines: 10, contextLines: 0,
+    });
+    expect(cmd).toContain("-e '-v'");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review follow-up (Issue 2): RSEC-001 hardened `pattern` but the `date`
+// parameter, interpolated unquoted into the same command, was never validated.
+// ---------------------------------------------------------------------------
+
+describe("buildLogSearchCommand — date parameters are validated (RSEC-001 completion)", () => {
+  it("rejects shell in date", () => {
+    expect(() => buildLogSearchCommand({ ...baseParams, pattern: "ERROR", date: "x ]; id; [ -f y" })).toThrow();
+    expect(() => buildLogSearchCommand({ ...baseParams, pattern: "ERROR", date: "$(id)" })).toThrow();
+    expect(() => buildLogSearchCommand({ ...baseParams, pattern: "ERROR", date: "2026-09-14`id`" })).toThrow();
+  });
+
+  it("rejects shell in dateFrom / dateTo", () => {
+    expect(() => buildLogSearchCommand({ ...baseParams, pattern: "ERROR", dateFrom: "2026-09-01'; id; '", dateTo: "2026-09-02" })).toThrow();
+    expect(() => buildLogSearchCommand({ ...baseParams, pattern: "ERROR", dateFrom: "2026-09-01", dateTo: "$(id)" })).toThrow();
+  });
+
+  it("accepts the two documented forms", () => {
+    expect(buildLogSearchCommand({ ...baseParams, pattern: "ERROR", date: "today" })).toContain("date +%Y-%m-%d");
+    expect(buildLogSearchCommand({ ...baseParams, pattern: "ERROR", date: "2026-09-14" })).toContain("rrs-api.2026-09-14.log");
+    expect(buildLogSearchCommand({ ...baseParams, pattern: "ERROR", dateFrom: "2026-09-01", dateTo: "2026-09-02" })).toContain("d='2026-09-01'");
+  });
+});
+
+describe("buildHttpdLogSearchCommand — date parameters are validated", () => {
+  const httpdBase = { logsBase: "/sw_ux/httpd01/logs", domain: "portalext.example.gov.bc.ca",
+    logType: "access" as const, pattern: "404", maxLines: 10, contextLines: 0 };
+
+  it("rejects shell in date", () => {
+    expect(() => buildHttpdLogSearchCommand({ ...httpdBase, date: "x ]; id; [ -f y" })).toThrow();
+    expect(() => buildHttpdLogSearchCommand({ ...httpdBase, date: "$(id)" })).toThrow();
+  });
+
+  it("rejects shell in dateFrom / dateTo", () => {
+    expect(() => buildHttpdLogSearchCommand({ ...httpdBase, dateFrom: "'; id; '", dateTo: "2026-09-02" })).toThrow();
+  });
+
+  it("accepts documented forms", () => {
+    expect(buildHttpdLogSearchCommand({ ...httpdBase, date: "2026-09-14" })).toContain("access.2026.09.14.log");
+    expect(buildHttpdLogSearchCommand({ ...httpdBase, date: "today" })).toContain("date +%Y.%m.%d");
   });
 });

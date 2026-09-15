@@ -1,19 +1,15 @@
-import { Client, type ConnectConfig } from "ssh2";
+import { Client, type ConnectConfig, type ServerHostKeyAlgorithm } from "ssh2";
+import { createRequire } from "node:module";
 import type { Readable } from "node:stream";
 import { readFileSync, existsSync } from "node:fs";
 import { isIP } from "node:net";
 import type { ServerEntry } from "@nrs/auth";
-import { wrapSshExecWithLimits, sshLimiterOpts, loadEnvVar } from "@nrs/auth";
+import { wrapSshExecWithLimits, sshLimiterOpts, loadEnvVar, shellEscape, createHostVerifier, preferKnownHostKeyAlgorithms, assertSafeServerBasePath } from "@nrs/auth";
 
 export interface SshResult {
   stdout: string;
   stderr: string;
   exitCode: number;
-}
-
-/** Shell-escape a single argument (wrap in single quotes). */
-function shellEscape(s: string): string {
-  return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
 /**
@@ -125,8 +121,8 @@ export function buildRemoteCommand(command: string, sudoUser: string): string {
   // succeeds. Without this, any command that legitimately produces empty
   // stdout (e.g. a log search with zero matches) surfaces that prompt and
   // looks like an auth failure. Genuine sudo errors still print to stderr.
-  // sudoUser comes from servers.conf (config-trusted, not end-user input),
-  // but shell-escape it anyway as defense-in-depth so a malformed/hostile
+  // sudoUser comes from servers.conf, which the settings API can update.
+  // Shell-escape it as one argument so a malformed/hostile
   // entry can't break out of the `sudo -u` argument into the command line.
   return `${nohist} && sudo -S -p '' -u ${shellEscape(sudoUser)} bash -c ${inner}`;
 }
@@ -154,13 +150,21 @@ export function buildConnectOpts(
   passphrase: string | undefined,
   privateKeyBytes: Buffer | undefined,
 ): ConnectConfig {
+  // ssh2 exposes no public default list. Read its installed defaults instead
+  // of copying them and accidentally re-enabling a disabled algorithm later.
+  const { DEFAULT_SERVER_HOST_KEY } = createRequire(import.meta.url)("ssh2/lib/protocol/constants.js") as {
+    DEFAULT_SERVER_HOST_KEY: ServerHostKeyAlgorithm[];
+  };
   const opts: ConnectConfig = {
     host: entry.host,
     port: 22,
     username: entry.sshUser,
     readyTimeout: 30_000,
-    // Match server-cmd.exp: ssh -o StrictHostKeyChecking=no
-    hostVerifier: () => true,
+    // RSEC-006: verify against ~/.ssh/known_hosts. Set
+    // RAVEN_SSH_INSECURE_HOST_KEYS=true to restore the previous
+    // accept-anything behavior (the old `ssh -o StrictHostKeyChecking=no`).
+    hostVerifier: createHostVerifier(entry.host),
+    algorithms: { serverHostKey: preferKnownHostKeyAlgorithms(entry.host, DEFAULT_SERVER_HOST_KEY) },
   };
   if (authMode.kind === "key") {
     if (!privateKeyBytes) {
@@ -208,6 +212,16 @@ function prepareConnection(
 ):
   | { ok: true; connectOpts: ConnectConfig; password: string | undefined }
   | { ok: false; stderr: string } {
+  // Legacy files remain visible in settings so operators can repair them.
+  // Reject unsafe base paths before either transport reads credentials or
+  // connects, even when an entry did not pass through the settings writer.
+  try {
+    assertSafeServerBasePath(entry.appsBase, "appsBase");
+    assertSafeServerBasePath(entry.logsBase, "logsBase");
+  } catch (err) {
+    return { ok: false, stderr: err instanceof Error ? err.message : String(err) };
+  }
+
   const authMode = getSshAuthMode(
     entry.host,
     loadEnvVar("SSH_KEY_PATH"),

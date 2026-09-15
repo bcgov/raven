@@ -1,4 +1,4 @@
-import type { ServerEntry } from "@nrs/auth";
+import { assertSafeServerIdentifier, type ServerEntry } from "@nrs/auth";
 import { sshExec } from "../ssh-client.js";
 
 export interface HeapMetrics {
@@ -34,6 +34,8 @@ const kbToMb = (kb: number): number => Math.floor(kb / 1024);
  * Outputs: HDATA:pid|xmx|<jstat -gc columns>  or  HERR:<reason>
  */
 export function buildHeapCommand(app: string, component: string): string {
+  assertSafeServerIdentifier(app, "App");
+  assertSafeServerIdentifier(component, "Component");
   return `
 psline=$(ps -ef | grep "[j]ava.*catalina.base=.*/${app}/${component}" | head -1)
 if [ -z "$psline" ]; then

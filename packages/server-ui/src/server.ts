@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { requestLogger } from "./lib/logger.js";
 import { loadServerConfig } from "./lib/server-config.js";
+import { localGuard } from "./lib/local-guard.js";
 import { discoverRouter } from "./routes/discover.js";
 import { versionsRouter } from "./routes/versions.js";
 import { dashboardRouter } from "./routes/dashboard.js";
@@ -29,7 +30,9 @@ import { deploysRouter } from "./routes/deploys.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-export function createApp(): express.Express {
+export function createApp(
+  port: number = parseInt(process.env["SERVER_UI_PORT"] ?? "3777", 10),
+): express.Express {
   // Load (and seed) server config on startup
   loadServerConfig();
 
@@ -37,6 +40,11 @@ export function createApp(): express.Express {
 
   // JSON body parsing for PUT /api/servers
   app.use(express.json());
+
+  // --- Local-origin guard (RSEC-005) ---
+  // Mounted before every API router and before the logger, so a rejected
+  // cross-origin or rebound request never reaches a handler.
+  app.use("/api", localGuard(port));
 
   // --- Request logging (API routes only) ---
   app.use("/api", requestLogger);

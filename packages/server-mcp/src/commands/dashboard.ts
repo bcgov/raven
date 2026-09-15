@@ -1,4 +1,4 @@
-import type { ServerEntry } from "@nrs/auth";
+import { assertSafeServerBasePath, shellEscape, type ServerEntry } from "@nrs/auth";
 import { sshExec } from "../ssh-client.js";
 
 export interface DashboardData {
@@ -15,8 +15,10 @@ const SKIP_DIRS = ["logs", "liferay", "temp", "wwwadm", "wwwsvr", "midtadm", "nr
  * Mirrors ~/bin/server-dashboard build_dashboard_cmd().
  */
 export function buildDashboardCommand(appsBase: string, logsBase: string, appFilter?: string): string {
+  assertSafeServerBasePath(appsBase, "appsBase");
+  assertSafeServerBasePath(logsBase, "logsBase");
   const skipCase = SKIP_DIRS.join("|");
-  const filterClause = appFilter ? `    [ "$app" != "${appFilter}" ] && continue\n` : "";
+  const filterClause = appFilter ? `    [ "$app" != ${shellEscape(appFilter)} ] && continue\n` : "";
 
   return `
 for app_dir in ${appsBase}/*/; do

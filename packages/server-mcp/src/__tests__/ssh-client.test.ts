@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -178,6 +178,19 @@ describe("sshExecStream (fast-fail before connect)", () => {
 });
 
 describe("buildConnectOpts (single-method invariant)", () => {
+  let knownHostsDir: string;
+  beforeAll(() => {
+    knownHostsDir = mkdtempSync(join(tmpdir(), "raven-connect-options-"));
+    const knownHosts = join(knownHostsDir, "known_hosts");
+    writeFileSync(knownHosts, "");
+    vi.stubEnv("RAVEN_KNOWN_HOSTS_PATH", knownHosts);
+    vi.stubEnv("RAVEN_SSH_INSECURE_HOST_KEYS", "");
+  });
+  afterAll(() => {
+    vi.unstubAllEnvs();
+    rmSync(knownHostsDir, { recursive: true, force: true });
+  });
+
   // The strict invariant: connectOpts MUST have exactly one of `privateKey`
   // or `password`, never both. Combined with the host-aware getSshAuthMode,
   // this guarantees one auth attempt per connection — a rejected publickey

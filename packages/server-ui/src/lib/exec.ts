@@ -9,7 +9,7 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { loadEnvVar } from "@nrs/auth";
+import { loadEnvVar, shellEscape } from "@nrs/auth";
 import { logger } from "./logger.js";
 
 const execAsync = promisify(exec);
@@ -23,11 +23,6 @@ const BIN_DIR =
  */
 function loadPassword(): string | undefined {
   return loadEnvVar("SERVER_A_PASSWORD");
-}
-
-/** Shell-escape a single argument. */
-function shellEscape(s: string): string {
-  return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
 export interface ExecResult {

@@ -1,4 +1,4 @@
-import type { ServerEntry } from "@nrs/auth";
+import { shellEscape, assertNoShellControlChars, assertSafeServerIdentifier, type ServerEntry } from "@nrs/auth";
 import { sshExec } from "../ssh-client.js";
 
 export type LogType = "app" | "catalina" | "access";
@@ -42,19 +42,50 @@ export interface HttpdLogSearchParams {
   contextLines: number;
 }
 
-/** Shell metacharacters that would allow injection in grep patterns. */
+/**
+ * Shell metacharacters rejected outright in grep patterns.
+ *
+ * This stays a narrow denylist on purpose. The pattern is now passed through
+ * {@link shellEscape} before interpolation, which neutralizes every
+ * metacharacter including the single quote that made RSEC-001 exploitable, so
+ * the denylist is defense in depth rather than the primary control.
+ *
+ * Note `|` is deliberately absent: it is `grep -E` alternation, which callers
+ * legitimately use (`ERROR|FATAL`). Blocking it would break real searches;
+ * escaping makes it safe without doing so.
+ *
+ * Control characters are rejected separately at the input boundary by
+ * assertNoShellControlChars. Single quoting also keeps a newline literal;
+ * it does not become a shell statement separator inside the quoted argument.
+ */
 const PATTERN_META = /[;&`$(){}\\<>]/;
 
-/** Valid characters for an httpd virtual-host domain name or "default". */
-const HTTPD_DOMAIN_RE = /^[a-zA-Z0-9][a-zA-Z0-9.\-]*$/;
+/**
+ * Strict calendar-date shape. Every date parameter is interpolated into the
+ * remote shell command — `date` unquoted inside a path, `dateFrom`/`dateTo`
+ * inside single quotes — so anything looser than this is an injection vector.
+ * RSEC-001 hardened `pattern`; this closes the sibling parameters.
+ */
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
- * Valid app / component identifier. Same spirit as HTTPD_DOMAIN_RE:
- * alphanumeric start, then letters/digits/dot/dash/underscore. Blocks "/",
- * whitespace, shell metacharacters, and path traversal ("../"), since both
- * values are interpolated unquoted into the remote `logDir` and shell globs.
+ * Reject a date parameter that is not YYYY-MM-DD (or, where permitted, "today").
+ *
+ * @param value - Caller-supplied value, or undefined when not provided.
+ * @param label - Parameter name for the error message.
+ * @param allowToday - Whether the literal "today" is acceptable.
+ * @throws Error when the value is present and malformed.
  */
-const APP_COMPONENT_RE = /^[a-zA-Z0-9][a-zA-Z0-9._\-]*$/;
+function assertDate(value: string | undefined, label: string, allowToday: boolean): void {
+  if (value === undefined) return;
+  if (allowToday && value === "today") return;
+  if (!DATE_RE.test(value)) {
+    throw new Error(`${label} must be YYYY-MM-DD${allowToday ? ' or "today"' : ""}`);
+  }
+}
+
+/** Valid characters for an httpd virtual-host domain name or "default". */
+const HTTPD_DOMAIN_RE = /^[a-zA-Z0-9][a-zA-Z0-9.-]*$/;
 
 function logFilePrefix(component: string, logType: LogType): string {
   switch (logType) {
@@ -72,16 +103,29 @@ function logFilePrefix(component: string, logType: LogType): string {
 export function buildLogSearchCommand(params: LogSearchParams): string {
   const { logsBase, app, component, pattern, logType, date, dateFrom, dateTo, maxLines, contextLines } = params;
 
+  assertNoShellControlChars(pattern, "Pattern");
   if (PATTERN_META.test(pattern)) {
     throw new Error("Pattern contains shell metacharacters");
   }
-  if (!APP_COMPONENT_RE.test(app) || !APP_COMPONENT_RE.test(component)) {
-    throw new Error("App or component contains invalid characters");
-  }
+  assertDate(date, "date", true);
+  assertDate(dateFrom, "dateFrom", false);
+  assertDate(dateTo, "dateTo", false);
+  // Escaped once here, then interpolated unquoted everywhere below.
+  //
+  // The leading `-e` is load-bearing, not decoration. Quoting stops the shell
+  // from expanding the value but does nothing about grep's own option parsing:
+  // a pattern beginning with `-` is consumed as flags. `-v` inverts the match,
+  // and worse, it leaves grep with no pattern at all, so grep takes the log
+  // path as the pattern and blocks reading stdin until the SSH timeout fires.
+  // `-e` marks the next argument as a pattern unambiguously.
+  const safePattern = `-e ${shellEscape(pattern)}`;
+  assertSafeServerIdentifier(app, "App");
+  assertSafeServerIdentifier(component, "Component");
 
   const logDir = `${logsBase}/${app}/${component}`;
   const prefix = logFilePrefix(component, logType);
-  const grepOpts = `-E -n -a${contextLines > 0 ? ` -C ${contextLines}` : ""}`;
+  const contextOpt = contextLines > 0 ? ` -C ${contextLines}` : "";
+  const grepOpts = `-E -n -a${contextOpt}`;
 
   // When the conventional ${component}.log isn't present, discover the real
   // app log by listing the dir and excluding Tomcat's own logs (catalina,
@@ -100,8 +144,8 @@ export function buildLogSearchCommand(params: LogSearchParams): string {
       `( d='${dateFrom}'; end='${dateTo}';`,
       ` while [ "$d" != "$end" ] && [ "$d" \\< "$end" ] || [ "$d" = "$end" ]; do`,
       `   f="${logDir}/${prefix}.$\{d}.log"; fgz="$\{f}.gz";`,
-      `   if [ -f "$f" ]; then grep ${grepOpts} '${pattern}' "$f" 2>/dev/null;`,
-      `   elif [ -f "$fgz" ]; then zgrep ${grepOpts} '${pattern}' "$fgz" 2>/dev/null; fi;`,
+      `   if [ -f "$f" ]; then grep ${grepOpts} ${safePattern} "$f" 2>/dev/null;`,
+      `   elif [ -f "$fgz" ]; then zgrep ${grepOpts} ${safePattern} "$fgz" 2>/dev/null; fi;`,
       `   d=$(date -d "$d + 1 day" +%Y-%m-%d); done`,
       `) | tail -${maxLines}`,
     ].join("\n");
@@ -116,17 +160,17 @@ export function buildLogSearchCommand(params: LogSearchParams): string {
 
     if (date === "today") {
       return (
-        `if [ -f ${current} ]; then grep ${grepOpts} '${pattern}' ${current} | tail -${maxLines};` +
-        ` elif [ -f ${dated} ]; then grep ${grepOpts} '${pattern}' ${dated} | tail -${maxLines};` +
-        ` elif [ -f ${gz} ]; then zgrep ${grepOpts} '${pattern}' ${gz} | tail -${maxLines};` +
+        `if [ -f ${current} ]; then grep ${grepOpts} ${safePattern} ${current} | tail -${maxLines};` +
+        ` elif [ -f ${dated} ]; then grep ${grepOpts} ${safePattern} ${dated} | tail -${maxLines};` +
+        ` elif [ -f ${gz} ]; then zgrep ${grepOpts} ${safePattern} ${gz} | tail -${maxLines};` +
         ` else newest=$(${fallbackLs} | head -1);` +
-        `   if [ -n "$newest" ]; then grep ${grepOpts} '${pattern}' "$newest" | tail -${maxLines};` +
+        `   if [ -n "$newest" ]; then grep ${grepOpts} ${safePattern} "$newest" | tail -${maxLines};` +
         `   else echo 'Log file not found in ${logDir}'; fi; fi`
       );
     }
     return (
-      `if [ -f ${dated} ]; then grep ${grepOpts} '${pattern}' ${dated} | tail -${maxLines};` +
-      ` elif [ -f ${gz} ]; then zgrep ${grepOpts} '${pattern}' ${gz} | tail -${maxLines};` +
+      `if [ -f ${dated} ]; then grep ${grepOpts} ${safePattern} ${dated} | tail -${maxLines};` +
+      ` elif [ -f ${gz} ]; then zgrep ${grepOpts} ${safePattern} ${gz} | tail -${maxLines};` +
       ` else echo 'Log file not found: ${dated}'; fi`
     );
   }
@@ -137,9 +181,9 @@ export function buildLogSearchCommand(params: LogSearchParams): string {
     : `${logDir}/${prefix}.$(date +%Y-%m-%d).log`;
 
   return (
-    `if [ -f ${logFile} ]; then grep ${grepOpts} '${pattern}' ${logFile} | tail -${maxLines};` +
+    `if [ -f ${logFile} ]; then grep ${grepOpts} ${safePattern} ${logFile} | tail -${maxLines};` +
     ` else newest=$(${fallbackLs} | head -1);` +
-    `   if [ -n "$newest" ]; then grep ${grepOpts} '${pattern}' "$newest" | tail -${maxLines};` +
+    `   if [ -n "$newest" ]; then grep ${grepOpts} ${safePattern} "$newest" | tail -${maxLines};` +
     `   else echo 'Log file not found: ${logFile}'; fi; fi`
   );
 }
@@ -169,9 +213,17 @@ export function buildHttpdLogSearchCommand(params: HttpdLogSearchParams): string
     date, dateFrom, dateTo, maxLines, contextLines,
   } = params;
 
+  assertNoShellControlChars(pattern, "Pattern");
   if (PATTERN_META.test(pattern)) {
     throw new Error("Pattern contains shell metacharacters");
   }
+  assertDate(date, "date", true);
+  assertDate(dateFrom, "dateFrom", false);
+  assertDate(dateTo, "dateTo", false);
+  // Escaped once here, then interpolated unquoted everywhere below.
+  // See buildLogSearchCommand: `-e` keeps grep from reading a leading-dash
+  // pattern as options.
+  const safePattern = `-e ${shellEscape(pattern)}`;
 
   if (!HTTPD_DOMAIN_RE.test(domain)) {
     throw new Error("Domain contains invalid characters");
@@ -179,7 +231,8 @@ export function buildHttpdLogSearchCommand(params: HttpdLogSearchParams): string
 
   const logDir = `${logsBase}/${subdir}`;
   const prefix = `${domain}-${logType}`;
-  const grepOpts = `-E -n -a${contextLines > 0 ? ` -C ${contextLines}` : ""}`;
+  const contextOpt = contextLines > 0 ? ` -C ${contextLines}` : "";
+  const grepOpts = `-E -n -a${contextOpt}`;
 
   // Cold logs are gzip-rotated (…-access.YYYY.MM.DD.log.gz), while hot logs are
   // plain .log. We handle both: match a .log* glob (covers .log and .log.gz)
@@ -193,8 +246,8 @@ export function buildHttpdLogSearchCommand(params: HttpdLogSearchParams): string
       `( d='${dateFrom}'; end='${dateTo}';`,
       ` while [ "$d" != "$end" ] && [ "$d" \\< "$end" ] || [ "$d" = "$end" ]; do`,
       `   fd=$(echo "$d" | tr '-' '.'); f="${logDir}/${prefix}.$\{fd}.log"; fgz="$\{f}.gz";`,
-      `   if [ -f "$f" ]; then grep ${grepOpts} '${pattern}' "$f" 2>/dev/null;`,
-      `   elif [ -f "$fgz" ]; then zgrep ${grepOpts} '${pattern}' "$fgz" 2>/dev/null; fi;`,
+      `   if [ -f "$f" ]; then grep ${grepOpts} ${safePattern} "$f" 2>/dev/null;`,
+      `   elif [ -f "$fgz" ]; then zgrep ${grepOpts} ${safePattern} "$fgz" 2>/dev/null; fi;`,
       `   d=$(date -d "$d + 1 day" +%Y-%m-%d); done`,
       `) | tail -${maxLines}`,
     ].join("\n");
@@ -206,20 +259,20 @@ export function buildHttpdLogSearchCommand(params: HttpdLogSearchParams): string
       const dated = `${logDir}/${prefix}.$(date +%Y.%m.%d).log`;
       const gz = `${dated}.gz`;
       return (
-        `if [ -f ${dated} ]; then grep ${grepOpts} '${pattern}' ${dated} | tail -${maxLines};` +
-        ` elif [ -f ${gz} ]; then zgrep ${grepOpts} '${pattern}' ${gz} | tail -${maxLines};` +
+        `if [ -f ${dated} ]; then grep ${grepOpts} ${safePattern} ${dated} | tail -${maxLines};` +
+        ` elif [ -f ${gz} ]; then zgrep ${grepOpts} ${safePattern} ${gz} | tail -${maxLines};` +
         ` else newest=$(ls -t ${logDir}/${prefix}*.log* 2>/dev/null | head -1);` +
-        `   if [ -n "$newest" ]; then zgrep ${grepOpts} '${pattern}' "$newest" | tail -${maxLines};` +
+        `   if [ -n "$newest" ]; then zgrep ${grepOpts} ${safePattern} "$newest" | tail -${maxLines};` +
         `   else echo 'No log files found in ${logDir} for ${prefix}'; fi; fi`
       );
     }
     // Convert YYYY-MM-DD to YYYY.MM.DD for the filename
-    const fileDate = date.replace(/-/g, ".");
+    const fileDate = date.replaceAll("-", ".");
     const dated = `${logDir}/${prefix}.${fileDate}.log`;
     const gz = `${dated}.gz`;
     return (
-      `if [ -f ${dated} ]; then grep ${grepOpts} '${pattern}' ${dated} | tail -${maxLines};` +
-      ` elif [ -f ${gz} ]; then zgrep ${grepOpts} '${pattern}' ${gz} | tail -${maxLines};` +
+      `if [ -f ${dated} ]; then grep ${grepOpts} ${safePattern} ${dated} | tail -${maxLines};` +
+      ` elif [ -f ${gz} ]; then zgrep ${grepOpts} ${safePattern} ${gz} | tail -${maxLines};` +
       ` else echo 'Log file not found: ${dated}'; fi`
     );
   }
@@ -227,7 +280,7 @@ export function buildHttpdLogSearchCommand(params: HttpdLogSearchParams): string
   // No date specified — search the newest available log file (plain or gzipped)
   return (
     `newest=$(ls -t ${logDir}/${prefix}*.log* 2>/dev/null | head -1);` +
-    ` if [ -n "$newest" ]; then zgrep ${grepOpts} '${pattern}' "$newest" | tail -${maxLines};` +
+    ` if [ -n "$newest" ]; then zgrep ${grepOpts} ${safePattern} "$newest" | tail -${maxLines};` +
     ` else echo 'No log files found in ${logDir} for ${prefix}'; fi`
   );
 }

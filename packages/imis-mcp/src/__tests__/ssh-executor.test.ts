@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { writeFileSync, rmSync, mkdtempSync } from "node:fs";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { writeFileSync, readFileSync, rmSync, mkdtempSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -190,6 +191,19 @@ describe("deriveSshUser", () => {
 });
 
 describe("buildConnectOpts (single-method invariant)", () => {
+  let knownHostsDir: string;
+  beforeAll(() => {
+    knownHostsDir = mkdtempSync(join(tmpdir(), "raven-connect-options-"));
+    const knownHosts = join(knownHostsDir, "known_hosts");
+    writeFileSync(knownHosts, "");
+    vi.stubEnv("RAVEN_KNOWN_HOSTS_PATH", knownHosts);
+    vi.stubEnv("RAVEN_SSH_INSECURE_HOST_KEYS", "");
+  });
+  afterAll(() => {
+    vi.unstubAllEnvs();
+    rmSync(knownHostsDir, { recursive: true, force: true });
+  });
+
   // connectOpts MUST have exactly one of `privateKey` or `password`,
   // never both. Routing happens upstream via getSshAuthMode.
 
@@ -310,5 +324,525 @@ describe("sshExec defense-in-depth validation", () => {
     const result = await sshExec("any-host", "ls /tmp", "wwwsvr; rm -rf /", 1_000);
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toMatch(/sudoUser rejected/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RSEC-002 / RSEC-003 regression: newline and carriage-return bypass.
+//
+// SHELL_META blocked `|` and `;` but not \n or \r, while
+// command.trim().split(/\s+/) treats a newline as ordinary whitespace — so
+// firstToken resolved to the harmless allowlisted binary and the payload
+// survived on a second line. buildRemoteCommand then concatenated the string
+// straight into the remote shell, where a newline separates statements.
+// ---------------------------------------------------------------------------
+
+describe("validateCommand — control-character hardening (RSEC-002)", () => {
+  it("rejects a newline-separated second command", () => {
+    expect(validateCommand("cat /etc/hosts\nid")).toBe(false);
+  });
+
+  it("rejects a carriage-return-separated second command", () => {
+    expect(validateCommand("cat /etc/hosts\rid")).toBe(false);
+  });
+
+  it("still rejects pipe and semicolon", () => {
+    expect(validateCommand("cat /etc/hosts | id")).toBe(false);
+    expect(validateCommand("cat /etc/hosts; id")).toBe(false);
+  });
+
+  it("still accepts an ordinary allowlisted command", () => {
+    expect(validateCommand("cat /etc/hosts")).toBe(true);
+    expect(validateCommand("head -n 200 /var/log/app.log")).toBe(true);
+  });
+});
+
+describe("sanitizePath — control-character hardening (RSEC-003)", () => {
+  it("rejects a newline in the path", () => {
+    expect(() => sanitizePath("/var/log/x\nid")).toThrow();
+  });
+
+  it("rejects a carriage return in the path", () => {
+    expect(() => sanitizePath("/var/log/x\rid")).toThrow();
+  });
+
+  it("rejects a single quote in the path", () => {
+    expect(() => sanitizePath("/var/log/it's.log")).toThrow();
+  });
+
+  it("rejects a double quote in the path", () => {
+    expect(() => sanitizePath('/var/log/a"b.log')).toThrow();
+  });
+
+  it("still rejects traversal and relative paths", () => {
+    expect(() => sanitizePath("/var/../etc/passwd")).toThrow();
+    expect(() => sanitizePath("var/log/app.log")).toThrow();
+  });
+
+  it("still accepts an ordinary absolute path", () => {
+    expect(sanitizePath("/var/log/app.log")).toBe("/var/log/app.log");
+    expect(sanitizePath("/apps_ux/logs/RRS/rrs-api")).toBe("/apps_ux/logs/RRS/rrs-api");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR review follow-up: allowlisting the binary does not make the tool
+// read-only. Several allowlisted utilities execute programs or mutate the
+// filesystem through their own options, with no shell metacharacter involved.
+// ---------------------------------------------------------------------------
+
+describe("validateCommand — argument policy for allowlisted binaries", () => {
+  it("rejects find -exec, which runs an arbitrary program", () => {
+    expect(validateCommand("find /tmp -exec rm -rf /tmp/x +")).toBe(false);
+    expect(validateCommand("find /tmp -execdir rm {} +")).toBe(false);
+    expect(validateCommand("find /tmp -ok rm {} ;".replace(";", ""))).toBe(false);
+  });
+
+  it("rejects find options that delete or write", () => {
+    expect(validateCommand("find /tmp -name x -delete")).toBe(false);
+    expect(validateCommand("find /tmp -fprintf /tmp/out %p")).toBe(false);
+    expect(validateCommand("find /tmp -fprint /tmp/out")).toBe(false);
+    expect(validateCommand("find /tmp -fls /tmp/out")).toBe(false);
+  });
+
+  it("rejects sort -o, which overwrites a file", () => {
+    expect(validateCommand("sort -o /etc/hosts /etc/hosts")).toBe(false);
+    expect(validateCommand("sort -o/etc/hosts /etc/hosts")).toBe(false);
+    expect(validateCommand("sort --output=/etc/hosts /etc/hosts")).toBe(false);
+  });
+
+  it("accepts rpm only in query mode", () => {
+    expect(validateCommand("rpm -e somepackage")).toBe(false);
+    expect(validateCommand("rpm -U somepackage.rpm")).toBe(false);
+    // Bare `rpm` prints usage and exits. Under the allowlist policy an empty
+    // argument list is vacuously acceptable — the same property that lets
+    // bare `mount` through. The earlier rejection was an artifact of the
+    // "some -q flag must be present" design, not a security property.
+    expect(validateCommand("rpm")).toBe(true);
+    expect(validateCommand("rpm -qa")).toBe(true);
+    expect(validateCommand("rpm -qi somepackage")).toBe(true);
+  });
+
+  it("accepts mount only with no arguments", () => {
+    expect(validateCommand("mount /dev/sda1 /mnt")).toBe(false);
+    expect(validateCommand("mount")).toBe(true);
+  });
+
+  it("still accepts ordinary read-only usage", () => {
+    expect(validateCommand("find /apps_ux/logs -name app.log")).toBe(true);
+    expect(validateCommand("sort /tmp/a.txt")).toBe(true);
+    expect(validateCommand("cat /etc/hosts")).toBe(true);
+    expect(validateCommand("grep -n ERROR /var/log/app.log")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review follow-up (Issue 1): the argument policy had the wrong shape. A
+// presence check ("some arg starts with -q") restricts nothing else on the
+// line; rpm --pipe is a popen() and composes with -q. And uniq, date, hostname
+// were never in the policy at all. Per-command rules are now allowlists.
+// ---------------------------------------------------------------------------
+
+describe("validateCommand — rpm accepts only query flags and package/path positionals", () => {
+  it("rejects --pipe in every position and form (popen)", () => {
+    expect(validateCommand("rpm -qa --pipe id")).toBe(false);
+    expect(validateCommand("rpm --pipe id -qa")).toBe(false);
+    expect(validateCommand("rpm -q --pipe=id somepkg")).toBe(false);
+    expect(validateCommand("rpm -qa --dbpath /tmp/x --pipe id")).toBe(false);
+  });
+
+  it("rejects macro and config options that can evaluate or load code", () => {
+    expect(validateCommand("rpm -qa --eval %{_bindir}")).toBe(false);
+    expect(validateCommand("rpm -qa --define x")).toBe(false);
+    expect(validateCommand("rpm -qa --macros /tmp/m")).toBe(false);
+    expect(validateCommand("rpm -qa --rcfile /tmp/rc")).toBe(false);
+  });
+
+  it("rejects any long option at all — the allowed set is short query flags only", () => {
+    expect(validateCommand("rpm -qa --queryformat %{NAME}")).toBe(false);
+    expect(validateCommand("rpm --query --all")).toBe(false);
+  });
+
+  it("still rejects mutating modes", () => {
+    expect(validateCommand("rpm -e somepackage")).toBe(false);
+    expect(validateCommand("rpm -U somepackage.rpm")).toBe(false);
+    expect(validateCommand("rpm -qa -e somepackage")).toBe(false);
+  });
+
+  it("accepts ordinary query usage", () => {
+    expect(validateCommand("rpm -qa")).toBe(true);
+    expect(validateCommand("rpm -qi somepackage")).toBe(true);
+    expect(validateCommand("rpm -ql somepackage")).toBe(true);
+    expect(validateCommand("rpm -qf /usr/bin/java")).toBe(true);
+    expect(validateCommand("rpm -qip somepackage-1.0-1.el8.x86_64.rpm")).toBe(true);
+  });
+});
+
+describe("validateCommand — uniq, date, hostname, sort mutation paths", () => {
+  it("rejects uniq with an output positional (POSIX: uniq [input [output]])", () => {
+    expect(validateCommand("uniq /etc/hosts /tmp/evil")).toBe(false);
+    expect(validateCommand("uniq -c /etc/hosts /tmp/evil")).toBe(false);
+  });
+
+  it("accepts uniq with at most one input positional", () => {
+    expect(validateCommand("uniq /tmp/a.txt")).toBe(true);
+    expect(validateCommand("uniq -c /tmp/a.txt")).toBe(true);
+    expect(validateCommand("uniq")).toBe(true);
+  });
+
+  it("rejects date -s / --set (sets the clock)", () => {
+    expect(validateCommand("date -s 2020-01-01")).toBe(false);
+    expect(validateCommand("date --set=2020-01-01")).toBe(false);
+    expect(validateCommand("date --set 2020-01-01")).toBe(false);
+  });
+
+  it("accepts date display forms", () => {
+    expect(validateCommand("date")).toBe(true);
+    expect(validateCommand("date +%Y-%m-%d")).toBe(true);
+    expect(validateCommand("date -u")).toBe(true);
+  });
+
+  it("rejects hostname with a name or a -F file (sets the hostname)", () => {
+    expect(validateCommand("hostname pwned")).toBe(false);
+    expect(validateCommand("hostname -F /tmp/name")).toBe(false);
+    expect(validateCommand("hostname --file /tmp/name")).toBe(false);
+  });
+
+  it("accepts hostname display forms", () => {
+    expect(validateCommand("hostname")).toBe(true);
+    expect(validateCommand("hostname -f")).toBe(true);
+    expect(validateCommand("hostname -I")).toBe(true);
+  });
+
+  it("rejects sort --compress-program, which executes a program", () => {
+    expect(validateCommand("sort --compress-program=id /tmp/a")).toBe(false);
+    expect(validateCommand("sort --compress-program id /tmp/a")).toBe(false);
+  });
+});
+
+describe("validateCommand — file -C writes a compiled magic database", () => {
+  it("rejects -C, the bundled -Cm form, and --compile", () => {
+    expect(validateCommand("file -C -m /tmp/x")).toBe(false);
+    expect(validateCommand("file -Cm /tmp/x")).toBe(false);
+    expect(validateCommand("file --compile /tmp/x")).toBe(false);
+  });
+
+  it("accepts ordinary read-only usage, including lowercase -c", () => {
+    expect(validateCommand("file /usr/bin/java")).toBe(true);
+    expect(validateCommand("file -b /usr/bin/java")).toBe(true);
+    expect(validateCommand("file -i /usr/bin/java")).toBe(true);
+    expect(validateCommand("file -c /usr/bin/java")).toBe(true);
+  });
+});
+
+describe("validateCommand — jstat must not forward arbitrary JVM options", () => {
+  // Confirmed locally on OpenJDK 21: this creates a GC log even with -help.
+  // The same launcher forwarding accepts -javaagent/-agentpath. These cases
+  // exercise validation only; no JVM or agent is started by the test suite.
+  it.each([
+    "jstat -J-Xlog:gc:file=/tmp/proof.log -help",
+    "jstat -J-javaagent:/tmp/agent.jar -help",
+    "jstat -J-agentpath:/tmp/agent.so -help",
+    "jstat -J -Xlog:gc:file=/tmp/proof.log -help",
+    "jstat -gc 12345 -J-Xlog:gc:file=/tmp/proof.log",
+    "jstat -'J'-Xlog:gc:file=/tmp/proof.log -help",
+    'jstat -"J"-javaagent:/tmp/agent.jar -help',
+    "jstat '-J-Xlog:gc:file=/tmp/proof.log' -help",
+    "jstat -[J]-Xlog:gc:file=proof.log -help",
+    "jstat -?Xlog:gc:file=proof.log -help",
+    "jstat -* -help",
+  ])("rejects VM forwarding and expandable arguments: %s", (command) => {
+    expect(validateCommand(command)).toBe(false);
+  });
+
+  it.each([
+    "jstat -gc 12345 1000 1",
+    "jstat -gcutil -t -h 20 12345 1s 5",
+    "jstat -class 12345@localhost:1099 1000 1",
+    "jstat -options",
+    "jstat -help",
+    "jstat --help",
+    "jstat '-?'",
+  ])("preserves statistics and help options: %s", (command) => {
+    expect(validateCommand(command)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Self-review follow-up: every `forbid` pattern anchors at the start of the
+// argument, so it only sees a short option that comes first in its token.
+// Classic getopt clustering puts the dangerous flag last, where it still
+// consumes the following word as its value. Both were verified against real
+// binaries before this test was written:
+//
+//   $ sort -uo canary.txt in.txt   # wrote canary.txt — BSD sort and GNU sort
+//   $ date -us '2020-01-01'        # GNU: "cannot set date: Operation not
+//                                  # permitted" — parsed, reached the syscall
+// ---------------------------------------------------------------------------
+
+describe("validateCommand — dangerous short options hidden in a cluster", () => {
+  it("rejects a clustered sort -o, which still overwrites the file", () => {
+    expect(validateCommand("sort -uo /etc/hosts /etc/hosts")).toBe(false);
+    expect(validateCommand("sort -buo /etc/hosts /etc/hosts")).toBe(false);
+    expect(validateCommand("sort -ro/etc/hosts /etc/hosts")).toBe(false);
+  });
+
+  it("rejects a clustered date -s, which still sets the clock", () => {
+    expect(validateCommand("date -us 2020-01-01")).toBe(false);
+    expect(validateCommand("date -Rus 2020-01-01")).toBe(false);
+  });
+
+  it("keeps accepting a value-taking flag whose value contains the letter", () => {
+    // Expansion stops at the first flag that consumes the rest of its token,
+    // so these stay legal: -I takes an optional attached format, -t takes the
+    // field separator, -k takes the key spec.
+    expect(validateCommand("date -Iseconds")).toBe(true);
+    expect(validateCommand("sort -to /etc/passwd")).toBe(true);
+    expect(validateCommand("sort -k2,2 -t: /etc/passwd")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Copilot review round 4. Two ways an argument reaches the binary in a shape
+// the policy never sees, both confirmed against real binaries first:
+//
+//   $ sort -'o' /tmp/o2 /tmp/in.txt   # wrote /tmp/o2 — the shell strips the
+//                                     # quotes and sort receives -o
+//   $ gdate --s '2020-01-01'          # "cannot set date: Operation not
+//                                     # permitted" — GNU accepts any
+//                                     # unambiguous long-option abbreviation
+// ---------------------------------------------------------------------------
+
+describe("validateCommand — arguments the remote shell reassembles", () => {
+  it("rejects a forbidden flag split by quotes", () => {
+    expect(validateCommand("sort -'o' /tmp/out /tmp/in")).toBe(false);
+    expect(validateCommand('sort -"o" /tmp/out /tmp/in')).toBe(false);
+    expect(validateCommand("sort '-o' /tmp/out /tmp/in")).toBe(false);
+    expect(validateCommand("sort -o'' /tmp/out /tmp/in")).toBe(false);
+    expect(validateCommand("date -'s' 2020-01-01")).toBe(false);
+    expect(validateCommand("find /tmp -'delete'")).toBe(false);
+  });
+
+  it("rejects a quoted binary name that resolves to a policed command", () => {
+    expect(validateCommand("'sort' -o /tmp/out /tmp/in")).toBe(false);
+  });
+
+  it("rejects an unterminated quote, which the remote shell cannot parse either", () => {
+    expect(validateCommand("grep 'foo /var/log/app.log")).toBe(false);
+    expect(validateCommand('cat "/etc/hosts')).toBe(false);
+  });
+
+  it("still accepts a quoted multi-word argument", () => {
+    expect(validateCommand("grep 'foo bar' /var/log/app.log")).toBe(true);
+    expect(validateCommand('grep "ERROR 500" /var/log/app.log')).toBe(true);
+  });
+});
+
+describe("validateCommand — GNU long-option abbreviation", () => {
+  it("rejects abbreviated forms of a forbidden long option", () => {
+    expect(validateCommand("date --se 2020-01-01")).toBe(false);
+    expect(validateCommand("date --s 2020-01-01")).toBe(false);
+    expect(validateCommand("sort --compress-prog=id /tmp/a")).toBe(false);
+    expect(validateCommand("sort --compress=id /tmp/a")).toBe(false);
+    expect(validateCommand("sort --out=/tmp/x /tmp/a")).toBe(false);
+    expect(validateCommand("file --comp /tmp/x")).toBe(false);
+  });
+
+  it("rejects every long option on the commands that have a dangerous one", () => {
+    // An abbreviation prefix cannot be enumerated, so for these three the
+    // allowed set is short flags only; each has a short equivalent.
+    expect(validateCommand("sort --numeric-sort /tmp/a")).toBe(false);
+    expect(validateCommand("date --utc")).toBe(false);
+    expect(validateCommand("file --brief /tmp/x")).toBe(false);
+    expect(validateCommand("sort -n /tmp/a")).toBe(true);
+    expect(validateCommand("date -u")).toBe(true);
+    expect(validateCommand("file -b /tmp/x")).toBe(true);
+  });
+
+  it("leaves long options alone on commands with no dangerous option", () => {
+    expect(validateCommand("grep --color=never ERROR /var/log/app.log")).toBe(true);
+    expect(validateCommand("ls --time-style=iso /var/log")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Self-review, round 4. Quote removal can be modelled exactly; expansion
+// cannot, because it depends on the remote filesystem. Where the policy
+// depends on how many arguments there are, an argument that can expand into
+// more of them defeats it. Confirmed in a scratch directory holding two files:
+//
+//   $ uniq *          # became `uniq aaa.txt zzz.txt` and overwrote zzz.txt
+// ---------------------------------------------------------------------------
+
+describe("validateCommand — expansion happens after validation", () => {
+  it("rejects a glob where the policy caps positionals", () => {
+    expect(validateCommand("uniq *")).toBe(false);
+    expect(validateCommand("uniq /tmp/*")).toBe(false);
+    expect(validateCommand("uniq -c *.txt")).toBe(false);
+    expect(validateCommand("uniq ?.txt")).toBe(false);
+    expect(validateCommand("uniq [ab].txt")).toBe(false);
+  });
+
+  it("still accepts a literal single input", () => {
+    expect(validateCommand("uniq /var/log/app.log")).toBe(true);
+    expect(validateCommand("uniq -c /var/log/app.log")).toBe(true);
+    expect(validateCommand("uniq")).toBe(true);
+  });
+
+  it("leaves globs alone on commands without an argument policy", () => {
+    expect(validateCommand("ls /var/log/*.log")).toBe(true);
+    expect(validateCommand("grep -n ERROR /var/log/*.log")).toBe(true);
+    expect(validateCommand("file /usr/bin/*")).toBe(false);
+    expect(validateCommand("sort /var/log/*.log")).toBe(false);
+  });
+});
+
+describe("validateCommand — complete operand and expansion grammar", () => {
+  it.each([
+    "uniq - output.txt",
+    "uniq -- -input.txt -output.txt",
+    "uniq -c -- - output.txt",
+    "uniq -f 1 input.txt output.txt",
+    "uniq -f1 - output.txt",
+    // Options must precede the input, even if GNU getopt would normally
+    // permute them: POSIXLY_CORRECT can make -c an output filename here.
+    "uniq input.txt -c",
+    "uniq - -c",
+    "uniq -f",
+    "uniq -w -1 input.txt",
+    "uniq --skip-fields 1 input.txt",
+    "uniq -x input.txt",
+  ])("rejects ambiguous, unsupported or writing uniq syntax: %s", (command) => {
+    expect(validateCommand(command)).toBe(false);
+  });
+
+  it.each([
+    "uniq -",
+    "uniq -- -input.txt",
+    "uniq -c -- -",
+    "uniq -f 1 -s 2 -w 3 input.txt",
+    "uniq -if1 -s2 -w3 input.txt",
+    "uniq -cdiDuz input.txt",
+    "uniq --",
+    "uniq '/tmp/*.txt'",
+  ])("accepts one literal uniq input with parsed option values: %s", (command) => {
+    expect(validateCommand(command)).toBe(true);
+  });
+
+  it.each([
+    "date 09151200",
+    "date 0915120026",
+    "date 091512002026.30",
+    "date -u 091512002026",
+    "date -- 091512002026",
+    "date -d now 091512002026",
+    "date +%Y 091512002026",
+    "date -I seconds",
+    "date -d",
+    "date -r",
+    "date -f",
+    "date -Iunknown",
+    "date -x",
+  ])("rejects setting operands and unsupported date syntax without executing it: %s", (command) => {
+    expect(validateCommand(command)).toBe(false);
+  });
+
+  it.each([
+    "date -uR +%Y",
+    "date -d 'next Friday' +%F",
+    "date -d091512002026",
+    "date -ur 091512002026 +%Y",
+    "date -f - +%F",
+    "date -I",
+    "date -Iseconds",
+    "date -uIns",
+    "date -- +%Y",
+    "date -d -s +%Y",
+  ])("preserves date display flags, values and format operands: %s", (command) => {
+    expect(validateCommand(command)).toBe(true);
+  });
+
+  it.each([
+    "sort -[o] output.txt input.txt",
+    "sort -['o'] output.txt input.txt",
+    "sort -* output.txt input.txt",
+    "sort -? output.txt input.txt",
+    "find /tmp -[d]elete",
+    "find /tmp -name *.log",
+    "file -[C] -m magic.txt",
+    "date -[s] 091512002026",
+    "uniq -- -[io]nput.txt",
+  ])("rejects shell expansion before restricted options are interpreted: %s", (command) => {
+    expect(validateCommand(command)).toBe(false);
+  });
+
+  it.each([
+    "find /tmp -name '*.log'",
+    'find /tmp -name "[ab]?.log"',
+    "sort '/var/log/*.log'",
+    "sort -'['o']' input.txt",
+    "file '/tmp/[a]'",
+  ])("preserves quoted literal patterns: %s", (command) => {
+    expect(validateCommand(command)).toBe(true);
+  });
+
+  it("splits only on shell spaces and tabs, preserving non-breaking spaces in filenames", () => {
+    expect(validateCommand("uniq\tinput.txt")).toBe(true);
+    expect(validateCommand("uniq input\u00a0file.txt")).toBe(true);
+    expect(validateCommand("uniq\u00a0input.txt")).toBe(false);
+    expect(validateCommand("date +%Y\u00a0091512002026")).toBe(true);
+  });
+
+  it.each([
+    ["uniq - output.txt", "output.txt"],
+    ["uniq -- -input.txt -output.txt", "-output.txt"],
+    ["sort -[o] output.txt input.txt", "output.txt"],
+  ])("preserves an output sentinel behind the validation gate: %s", (command, output) => {
+    const dir = mkdtempSync(join(tmpdir(), "raven-command-policy-"));
+    try {
+      for (const name of ["input.txt", "-input.txt"]) {
+        writeFileSync(join(dir, name), "b\na\na\n");
+      }
+      writeFileSync(join(dir, "-o"), "");
+      writeFileSync(join(dir, output), "UNCHANGED\n");
+      if (validateCommand(command)) {
+        execFileSync("/bin/sh", ["-c", command], { cwd: dir, input: "" });
+      }
+      expect(readFileSync(join(dir, output), "utf8")).toBe("UNCHANGED\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("executes accepted uniq options and quoted input exactly as validated", () => {
+    const dir = mkdtempSync(join(tmpdir(), "raven-command-policy-"));
+    try {
+      writeFileSync(join(dir, "-input file.txt"), "first same\nsecond same\n");
+      const command = "uniq -f 1 -- '-input file.txt'";
+      expect(validateCommand(command)).toBe(true);
+      expect(execFileSync("/bin/sh", ["-c", command], { cwd: dir, encoding: "utf8" }))
+        .toBe("first same\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps quoted wildcards literal for uniq and passes patterns intact to find", () => {
+    const dir = mkdtempSync(join(tmpdir(), "raven-command-policy-"));
+    try {
+      writeFileSync(join(dir, "*.txt"), "one\none\n");
+      writeFileSync(join(dir, "other.txt"), "UNCHANGED\n");
+      for (const [command, output] of [
+        ["uniq '*.txt'", "one\n"],
+        ["find . -name 'other.*'", "./other.txt\n"],
+      ]) {
+        expect(validateCommand(command)).toBe(true);
+        expect(execFileSync("/bin/sh", ["-c", command], { cwd: dir, encoding: "utf8" }))
+          .toBe(output);
+      }
+      expect(readFileSync(join(dir, "other.txt"), "utf8")).toBe("UNCHANGED\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

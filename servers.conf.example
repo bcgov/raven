@@ -20,6 +20,9 @@
 #
 # Blank lines and lines starting with # are ignored.
 # The last two fields (apps_base, logs_base) can be omitted if your servers use the defaults.
+# Fields cannot contain pipes or control characters. Base paths must be absolute,
+# using ASCII letters, digits, dots, underscores, hyphens and slashes; no . or .. segments.
+# Unsafe base paths remain visible in settings but are rejected before SSH connects.
 
 # ── BC Gov NR Sector example layout ──────────────────────────────────────────
 

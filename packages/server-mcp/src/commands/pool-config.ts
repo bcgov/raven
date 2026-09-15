@@ -1,4 +1,4 @@
-import type { ServerEntry } from "@nrs/auth";
+import { assertSafeServerBasePath, assertSafeServerIdentifier, type ServerEntry } from "@nrs/auth";
 import { sshExec } from "../ssh-client.js";
 
 /**
@@ -10,6 +10,9 @@ import { sshExec } from "../ssh-client.js";
  * Mirrors ~/bin/server-read-config for the context.xml case.
  */
 export function buildReadContextCommand(appsBase: string, app: string, component: string): string {
+  assertSafeServerBasePath(appsBase, "appsBase");
+  assertSafeServerIdentifier(app, "App");
+  assertSafeServerIdentifier(component, "Component");
   const appBase = `${appsBase}/${app}/${component}/current`;
   return (
     `echo '___CONFIG_BEGIN___' && (` +

@@ -1,4 +1,4 @@
-import type { ServerEntry } from "@nrs/auth";
+import { assertSafeServerBasePath, shellEscape, type ServerEntry } from "@nrs/auth";
 import { sshExec } from "../ssh-client.js";
 
 export interface DeployEntry {
@@ -21,8 +21,9 @@ const SKIP_DIRS = ["logs", "jdk", "liferay", "s6_", "temp", "wwwadm", "wwwsvr", 
  * Mirrors ~/bin/server-deploy-history remote_cmd.
  */
 export function buildDeployHistoryCommand(appsBase: string, appFilter?: string): string {
+  assertSafeServerBasePath(appsBase, "appsBase");
   const skipCase = SKIP_DIRS.map((d) => (d.endsWith("_") ? `${d}*` : d)).join("|");
-  const filterClause = appFilter ? `    [ "$app" != "${appFilter}" ] && continue\n` : "";
+  const filterClause = appFilter ? `    [ "$app" != ${shellEscape(appFilter)} ] && continue\n` : "";
   return `
 for app_dir in ${appsBase}/*/; do
   [ -d "$app_dir" ] || continue
