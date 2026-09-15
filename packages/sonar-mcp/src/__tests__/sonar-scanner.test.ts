@@ -327,6 +327,11 @@ describe("MSBuild/DotNet detection and execution tests", () => {
         serverUrl: "https://sonar.example.com",
         token: "sonar-tok-456",
         exclusions: "**/obj/**",
+        extraArgs: [
+          "-Dsonar.projectName=WWW SQL Designer",
+          "-Dsonar.projectVersion=1.2.3",
+          "-Dsonar.verbose=true",
+        ],
         useMsBuild: true,
       });
 
@@ -371,9 +376,17 @@ describe("MSBuild/DotNet detection and execution tests", () => {
           "/d:sonar.token=sonar-tok-456",
           "/d:sonar.branch.name=main",
           "/d:sonar.exclusions=**/obj/**",
+          "/n:WWW SQL Designer",
+          "/v:1.2.3",
+          "/d:sonar.verbose=true",
         ]),
         expect.any(Object)
       );
+      const firstBeginArgs = vi.mocked(spawn).mock.calls[0]?.[1];
+      expect(firstBeginArgs).toContain("/n:WWW SQL Designer");
+      expect(firstBeginArgs).toContain("/v:1.2.3");
+      expect(firstBeginArgs).not.toContain("/d:sonar.projectName=WWW SQL Designer");
+      expect(firstBeginArgs).not.toContain("/d:sonar.projectVersion=1.2.3");
 
       // Verify arguments of Step 2
       expect(spawn).toHaveBeenNthCalledWith(
