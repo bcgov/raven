@@ -76,3 +76,18 @@ export function assertNoShellControlChars(value: string, label: string): void {
     throw new Error(`${label} contains a control character (newline, carriage return, or NUL)`);
   }
 }
+
+/** Require a portable absolute server base path without rewriting its value. */
+export function assertSafeServerBasePath(value: string, label: string): void {
+  if (!value.startsWith("/") || /[^A-Za-z0-9._/-]/.test(value)
+    || value.split("/").some((segment) => segment === "." || segment === "..")) {
+    throw new Error(`${label} must be an absolute POSIX path using letters, digits, '.', '_', '-' and '/', without '.' or '..' segments`);
+  }
+}
+
+/** Validate app/component path names, including leading underscores and hyphens. */
+export function assertSafeServerIdentifier(value: string, label: string): void {
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(value)) {
+    throw new Error(`${label} contains invalid characters (use letters, digits, '.', '_' or '-', without a leading dot)`);
+  }
+}

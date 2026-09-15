@@ -136,3 +136,57 @@ Validation for this follow-up on 2026-09-15:
 - Tool inventory and `git diff --check`: passed.
 - No application server, real credential or system clock was modified.
 - Local Node runtime: 25.9.0; CI remains the separate Node 20 check.
+
+## Copilot follow-up at `3d4229a`
+
+The [2026-09-15 review](https://github.com/bcgov/raven/pull/65#pullrequestreview-5213900723)
+identified one actionable finding: an accepted local settings request could
+persist shell syntax in a base path, which a later SSH command interpolated.
+The local request guard is still required, but does not make configuration
+values safe for the file format or shell.
+
+The fix validates the complete settings batch at the writer boundary before
+replacing `servers.conf` or refreshing its cache. Non-string field values
+(except unset base paths), embedded separators and control characters are
+rejected before trimming. Base
+paths must be absolute and contain only ASCII letters, digits, dots,
+underscores, hyphens and slashes, with no `.` or `..` path segments. Invalid
+requests return HTTP 400; they leave the existing file and cache unchanged.
+
+Self-review traced the same values through discovery, version checks,
+dashboards, configuration reads, log searches and downloads. Both buffered
+and streaming SSH now reject unsafe configured base paths before accessing
+credentials or connecting. Existing configurations remain readable so
+operators can repair rejected paths. Direct MCP application/component inputs
+are also checked where command paths are built; optional application filters
+are quoted as literal arguments in their existing exact-match comparisons.
+
+Compatibility retained: raw IPv6 hosts, username case, empty sudo accounts,
+Unicode descriptions, default base paths, `/`, trailing path slashes, and
+application/component names beginning with `_` or `-`. Log search uses the
+same identifier guard as the other command builders.
+Normalized paths containing whitespace or shell syntax must be corrected before use;
+they are not silently rewritten. No host, service account or application
+server was changed while reproducing these findings.
+
+Regression evidence:
+
+- `packages/server-ui/__tests__/server-config-write.test.ts`: guarded HTTP
+  writes and direct writer calls reject invalid data without changing the
+  file/cache; legacy rows remain GET-visible, no-sudo saves work through the
+  frontend code, and actual filesystem failures remain HTTP 500.
+- `packages/server-mcp/src/__tests__/ssh-config-validation.test.ts`: both
+  transports reject unsafe base paths before credential access or connection
+  construction; valid paths proceed to the ordinary authentication checks.
+- `packages/server-mcp/src/__tests__/commands/input-boundaries.test.ts`:
+  invalid paths/identifiers fail before execution; harmless local shell
+  comparisons prove filters are literal and retain exact-match behavior.
+- `packages/server-mcp/src/__tests__/command-inputs.test.ts`: actual MCP
+  requests exercise these protections independently of dashboard validation.
+- `packages/auth/src/__tests__/shell.test.ts`: shared path and identifier
+  grammar, including positive compatibility controls.
+
+Validation on 2026-09-15: workspace TypeScript build passed; **1,735 tests
+passed, 1 skipped, 0 failed** across 81 passing test files; tool inventory
+and diff whitespace checks passed. The previous Sonar analysis remains
+separate and does not cover this follow-up.

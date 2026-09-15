@@ -4,7 +4,7 @@ import type { Readable } from "node:stream";
 import { readFileSync, existsSync } from "node:fs";
 import { isIP } from "node:net";
 import type { ServerEntry } from "@nrs/auth";
-import { wrapSshExecWithLimits, sshLimiterOpts, loadEnvVar, shellEscape, createHostVerifier, preferKnownHostKeyAlgorithms } from "@nrs/auth";
+import { wrapSshExecWithLimits, sshLimiterOpts, loadEnvVar, shellEscape, createHostVerifier, preferKnownHostKeyAlgorithms, assertSafeServerBasePath } from "@nrs/auth";
 
 export interface SshResult {
   stdout: string;
@@ -121,8 +121,8 @@ export function buildRemoteCommand(command: string, sudoUser: string): string {
   // succeeds. Without this, any command that legitimately produces empty
   // stdout (e.g. a log search with zero matches) surfaces that prompt and
   // looks like an auth failure. Genuine sudo errors still print to stderr.
-  // sudoUser comes from servers.conf (config-trusted, not end-user input),
-  // but shell-escape it anyway as defense-in-depth so a malformed/hostile
+  // sudoUser comes from servers.conf, which the settings API can update.
+  // Shell-escape it as one argument so a malformed/hostile
   // entry can't break out of the `sudo -u` argument into the command line.
   return `${nohist} && sudo -S -p '' -u ${shellEscape(sudoUser)} bash -c ${inner}`;
 }
@@ -212,6 +212,16 @@ function prepareConnection(
 ):
   | { ok: true; connectOpts: ConnectConfig; password: string | undefined }
   | { ok: false; stderr: string } {
+  // Legacy files remain visible in settings so operators can repair them.
+  // Reject unsafe base paths before either transport reads credentials or
+  // connects, even when an entry did not pass through the settings writer.
+  try {
+    assertSafeServerBasePath(entry.appsBase, "appsBase");
+    assertSafeServerBasePath(entry.logsBase, "logsBase");
+  } catch (err) {
+    return { ok: false, stderr: err instanceof Error ? err.message : String(err) };
+  }
+
   const authMode = getSshAuthMode(
     entry.host,
     loadEnvVar("SSH_KEY_PATH"),

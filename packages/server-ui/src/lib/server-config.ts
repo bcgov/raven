@@ -14,6 +14,7 @@ import {
   reloadServerConfig as _reloadServerConfig,
   getServerNames as _getServerNames,
   getServerConfig as _getServerConfig,
+  assertSafeServerBasePath,
 } from "@nrs/auth";
 import type { ServerEntry } from "@nrs/auth";
 
@@ -21,6 +22,68 @@ export type { ServerEntry };
 
 const BIN_DIR = process.env["SERVER_TOOLS_BIN"] ?? join(homedir(), "bin");
 const SERVERS_CONF = join(BIN_DIR, "servers.conf");
+
+export class ServerConfigValidationError extends Error {}
+
+/** Validate every field before trimming or serializing the pipe-delimited file. */
+function validateServerConfig(value: unknown): ServerEntry[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new ServerConfigValidationError("Expected a non-empty array of servers");
+  }
+
+  const names = new Set<string>();
+  return value.map((entry: unknown) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new ServerConfigValidationError("Each server must be an object");
+    }
+    const input = entry as Record<string, unknown>;
+    const readField = (field: keyof ServerEntry, fallback = ""): string => {
+      const raw = input[field];
+      if (raw === undefined || (raw === null && (field === "appsBase" || field === "logsBase"))) {
+        return fallback;
+      }
+      if (typeof raw !== "string") {
+        throw new ServerConfigValidationError(`Server field "${field}" must be a string`);
+      }
+      if (/[|\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(raw)) {
+        throw new ServerConfigValidationError(`Server field "${field}" cannot contain pipes or control characters`);
+      }
+      return raw.trim() || fallback;
+    };
+
+    const server: ServerEntry = {
+      name: readField("name").toLowerCase(),
+      host: readField("host"),
+      sshUser: readField("sshUser"),
+      sudoUser: readField("sudoUser"),
+      role: readField("role"),
+      description: readField("description"),
+      appsBase: readField("appsBase", "/apps_ux"),
+      logsBase: readField("logsBase", "/apps_ux/logs"),
+    };
+    if (!/^[a-z0-9_-]+$/.test(server.name)) {
+      throw new ServerConfigValidationError("Invalid server name. Use lowercase letters, numbers, hyphens, underscores.");
+    }
+    for (const field of ["host", "sshUser", "role"] as const) {
+      if (!server[field]) {
+        throw new ServerConfigValidationError(`Server "${server.name}" requires "${field}"`);
+      }
+    }
+    // Host and SSH user are passed to ssh2; the sudo user is shell-quoted or empty for direct SSH.
+    // Base paths are interpolated into shell commands and need a stricter grammar.
+    try {
+      assertSafeServerBasePath(server.appsBase, "appsBase");
+      assertSafeServerBasePath(server.logsBase, "logsBase");
+    } catch (error) {
+      throw new ServerConfigValidationError(error instanceof Error ? error.message : "Invalid server base path");
+    }
+    if (names.has(server.name)) {
+      throw new ServerConfigValidationError(`Duplicate server name: "${server.name}"`);
+    }
+    names.add(server.name);
+    return server;
+  });
+}
 
 /** Load server config (delegates to @nrs/auth, adds logging on first load). */
 export function loadServerConfig(): ServerEntry[] {
@@ -80,7 +143,8 @@ function serializeServersConf(servers: ServerEntry[]): string {
 /**
  * Save server configuration to ~/bin/servers.conf and update the in-memory cache.
  */
-export function saveServerConfig(servers: ServerEntry[]): void {
+export function saveServerConfig(value: unknown): void {
+  const servers = validateServerConfig(value);
   writeFileSync(SERVERS_CONF, serializeServersConf(servers), "utf-8");
   _reloadServerConfig();
   logger.info("Saved server config", {

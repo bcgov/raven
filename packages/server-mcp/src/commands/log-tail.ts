@@ -1,4 +1,4 @@
-import type { ServerEntry } from "@nrs/auth";
+import { assertSafeServerBasePath, assertSafeServerIdentifier, type ServerEntry } from "@nrs/auth";
 import { sshExec } from "../ssh-client.js";
 import type { LogType } from "./log-search.js";
 
@@ -18,6 +18,9 @@ export function buildTailCommand(
   logType: LogType,
   lines: number,
 ): string {
+  assertSafeServerBasePath(logsBase, "logsBase");
+  assertSafeServerIdentifier(app, "App");
+  assertSafeServerIdentifier(component, "Component");
   const logDir = `${logsBase}/${app}/${component}`;
   let logFile: string;
   let fallbackGlob: string;

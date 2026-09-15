@@ -1,4 +1,4 @@
-import { shellEscape, assertNoShellControlChars, type ServerEntry } from "@nrs/auth";
+import { shellEscape, assertNoShellControlChars, assertSafeServerIdentifier, type ServerEntry } from "@nrs/auth";
 import { sshExec } from "../ssh-client.js";
 
 export type LogType = "app" | "catalina" | "access";
@@ -87,14 +87,6 @@ function assertDate(value: string | undefined, label: string, allowToday: boolea
 /** Valid characters for an httpd virtual-host domain name or "default". */
 const HTTPD_DOMAIN_RE = /^[a-zA-Z0-9][a-zA-Z0-9.-]*$/;
 
-/**
- * Valid app / component identifier. Same spirit as HTTPD_DOMAIN_RE:
- * alphanumeric start, then letters/digits/dot/dash/underscore. Blocks "/",
- * whitespace, shell metacharacters, and path traversal ("../"), since both
- * values are interpolated unquoted into the remote `logDir` and shell globs.
- */
-const APP_COMPONENT_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
-
 function logFilePrefix(component: string, logType: LogType): string {
   switch (logType) {
     case "app":      return component;
@@ -127,9 +119,8 @@ export function buildLogSearchCommand(params: LogSearchParams): string {
   // path as the pattern and blocks reading stdin until the SSH timeout fires.
   // `-e` marks the next argument as a pattern unambiguously.
   const safePattern = `-e ${shellEscape(pattern)}`;
-  if (!APP_COMPONENT_RE.test(app) || !APP_COMPONENT_RE.test(component)) {
-    throw new Error("App or component contains invalid characters");
-  }
+  assertSafeServerIdentifier(app, "App");
+  assertSafeServerIdentifier(component, "Component");
 
   const logDir = `${logsBase}/${app}/${component}`;
   const prefix = logFilePrefix(component, logType);

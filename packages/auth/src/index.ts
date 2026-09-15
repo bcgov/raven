@@ -43,6 +43,8 @@ export {
   shellEscape,
   hasShellControlChars,
   assertNoShellControlChars,
+  assertSafeServerBasePath,
+  assertSafeServerIdentifier,
   SHELL_CONTROL_CHARS,
 } from "./shell.js";
 export {
