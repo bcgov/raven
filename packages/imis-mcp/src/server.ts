@@ -327,7 +327,7 @@ If SSH tools return auth errors, the user needs SERVER_A_PASSWORD set in ~/.rave
     "explore_server",
     `Run a read-only command on a remote IMIS server. The server must exist in the IMIS inventory.
 Allowed commands: ls, cat, head, tail, grep, zgrep, zcat, find, df, du, ps, stat, file, echo, date, hostname, uptime, free, wc, readlink, basename, vmstat, rpm, mount, sort, uniq, tr, cut, diff, which, jstat, strings, lsof.
-Options that execute or write are rejected even on allowed commands: find -exec/-delete/-fprintf, sort -o/--compress-program, rpm anything but -q* query flags (no --pipe), uniq with an OUTPUT file, date -s, hostname NAME, mount with arguments.
+Options that execute or write are rejected even on allowed commands: find -exec/-delete/-fprintf, sort -o, file -C, rpm anything but -q* query flags (no --pipe), uniq with an OUTPUT file, date -s, hostname NAME, mount with arguments. Long options are rejected outright on sort, date and file because GNU accepts abbreviations; use the short equivalents. Quoting does not get around this -- the command is parsed the way the remote shell parses it.
 Requires VPN connection and SERVER_A_PASSWORD in ~/.raven/.env.`,
     {
       server: z.string().describe("Server name from IMIS inventory (case-insensitive)"),

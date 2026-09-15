@@ -554,3 +554,66 @@ describe("validateCommand — dangerous short options hidden in a cluster", () =
     expect(validateCommand("sort -k2,2 -t: /etc/passwd")).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Copilot review round 4. Two ways an argument reaches the binary in a shape
+// the policy never sees, both confirmed against real binaries first:
+//
+//   $ sort -'o' /tmp/o2 /tmp/in.txt   # wrote /tmp/o2 — the shell strips the
+//                                     # quotes and sort receives -o
+//   $ gdate --s '2020-01-01'          # "cannot set date: Operation not
+//                                     # permitted" — GNU accepts any
+//                                     # unambiguous long-option abbreviation
+// ---------------------------------------------------------------------------
+
+describe("validateCommand — arguments the remote shell reassembles", () => {
+  it("rejects a forbidden flag split by quotes", () => {
+    expect(validateCommand("sort -'o' /tmp/out /tmp/in")).toBe(false);
+    expect(validateCommand('sort -"o" /tmp/out /tmp/in')).toBe(false);
+    expect(validateCommand("sort '-o' /tmp/out /tmp/in")).toBe(false);
+    expect(validateCommand("sort -o'' /tmp/out /tmp/in")).toBe(false);
+    expect(validateCommand("date -'s' 2020-01-01")).toBe(false);
+    expect(validateCommand("find /tmp -'delete'")).toBe(false);
+  });
+
+  it("rejects a quoted binary name that resolves to a policed command", () => {
+    expect(validateCommand("'sort' -o /tmp/out /tmp/in")).toBe(false);
+  });
+
+  it("rejects an unterminated quote, which the remote shell cannot parse either", () => {
+    expect(validateCommand("grep 'foo /var/log/app.log")).toBe(false);
+    expect(validateCommand('cat "/etc/hosts')).toBe(false);
+  });
+
+  it("still accepts a quoted multi-word argument", () => {
+    expect(validateCommand("grep 'foo bar' /var/log/app.log")).toBe(true);
+    expect(validateCommand('grep "ERROR 500" /var/log/app.log')).toBe(true);
+  });
+});
+
+describe("validateCommand — GNU long-option abbreviation", () => {
+  it("rejects abbreviated forms of a forbidden long option", () => {
+    expect(validateCommand("date --se 2020-01-01")).toBe(false);
+    expect(validateCommand("date --s 2020-01-01")).toBe(false);
+    expect(validateCommand("sort --compress-prog=id /tmp/a")).toBe(false);
+    expect(validateCommand("sort --compress=id /tmp/a")).toBe(false);
+    expect(validateCommand("sort --out=/tmp/x /tmp/a")).toBe(false);
+    expect(validateCommand("file --comp /tmp/x")).toBe(false);
+  });
+
+  it("rejects every long option on the commands that have a dangerous one", () => {
+    // An abbreviation prefix cannot be enumerated, so for these three the
+    // allowed set is short flags only; each has a short equivalent.
+    expect(validateCommand("sort --numeric-sort /tmp/a")).toBe(false);
+    expect(validateCommand("date --utc")).toBe(false);
+    expect(validateCommand("file --brief /tmp/x")).toBe(false);
+    expect(validateCommand("sort -n /tmp/a")).toBe(true);
+    expect(validateCommand("date -u")).toBe(true);
+    expect(validateCommand("file -b /tmp/x")).toBe(true);
+  });
+
+  it("leaves long options alone on commands with no dangerous option", () => {
+    expect(validateCommand("grep --color=never ERROR /var/log/app.log")).toBe(true);
+    expect(validateCommand("ls --time-style=iso /var/log")).toBe(true);
+  });
+});

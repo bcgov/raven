@@ -58,6 +58,14 @@ const QUOTE_CHARS = /['"]/;
  * - `mount …` with any argument changes mount state
  * - `file -C` / `--compile` writes a compiled magic database
  *
+ * Long options are rejected outright on `sort`, `date` and `file` rather than
+ * named individually. GNU accepts any unambiguous abbreviation — `date --s`
+ * reaches the clock-setting syscall and `sort --compress-prog=CMD` runs CMD —
+ * so a denylist would have to enumerate every prefix of every dangerous
+ * option. Each of the three has a short equivalent for the read-only work this
+ * tool does (`-n`, `-u`, `-b`), so nothing useful is lost. Commands with no
+ * dangerous option keep their long options.
+ *
  * The first version of this policy was a denylist plus a "some `-q` flag is
  * present" check for rpm. Both were the wrong shape: a denylist has to
  * enumerate every dangerous option, and a presence check restricts nothing
@@ -125,9 +133,10 @@ const NAME_OR_PATH = /^[A-Za-z0-9/][A-Za-z0-9._+/-]*$/;
 const ARG_POLICY: Record<string, ArgPolicy> = {
   // GNU find actions that execute or write. Every other action prints.
   find: { forbid: [/^-(exec|execdir|ok|okdir|delete|fprintf?|fprint0|fls)$/] },
-  // -o/-oFILE/--output write; --compress-program executes. -k/-o/-S/-T/-t
-  // take an attached value, which bounds cluster expansion.
-  sort: { forbid: [/^-{1,2}o/, /^--compress-program/], shortValueFlags: "koSTt" },
+  // -o/-oFILE write; --output and --compress-program are covered by the
+  // blanket long-option rule below. -k/-o/-S/-T/-t take an attached value,
+  // which bounds cluster expansion.
+  sort: { forbid: [/^-o/, /^--/], shortValueFlags: "koSTt" },
   // Query mode only, expressed as an allowlist so --pipe, --eval, --define,
   // --macros, --rcfile and every other long option are excluded by shape.
   // `-i` is "info" under -q but "install" alone, which is why a denylist
@@ -137,19 +146,71 @@ const ARG_POLICY: Record<string, ArgPolicy> = {
   // Note this also rejects the separated `-f N FILE` form (N reads as a
   // positional); use the attached `-fN` form instead.
   uniq: { maxPositionals: 1 },
-  // -s / --set write the clock. Display and +FORMAT forms are fine. -d/-f/-r/
-  // -s/-I take an attached value, which bounds cluster expansion.
-  date: { forbid: [/^(-s|--set)(=|$)/], shortValueFlags: "dfrsI" },
+  // -s writes the clock; --set and its abbreviations fall under the blanket
+  // long-option rule. Display and +FORMAT forms are fine. -d/-f/-r/-s/-I take
+  // an attached value, which bounds cluster expansion.
+  date: { forbid: [/^-s/, /^--/], shortValueFlags: "dfrsI" },
   // Only the short display flags. Any positional sets the name; -F reads it
   // from a file.
   hostname: { allow: [/^-[fiIsdaAy]$/] },
   // Bare `mount` lists; anything else changes mount state.
   mount: { allow: [] },
-  // `file -C` / `--compile` writes a compiled magic database (.mgc). The
-  // short flag can be bundled (`-Cm FILE`), so match any cluster containing
-  // uppercase C; lowercase `-c` is a harmless checking printout.
-  file: { forbid: [/^-[a-zA-Z0-9]*C/, /^--compile/] },
+  // `file -C` writes a compiled magic database (.mgc). The short flag can be
+  // bundled (`-Cm FILE`), so match any cluster containing uppercase C;
+  // lowercase `-c` is a harmless checking printout. `--compile` and its
+  // abbreviations fall under the blanket long-option rule.
+  file: { forbid: [/^-[a-zA-Z0-9]*C/, /^--/] },
 };
+
+/**
+ * Split a command the way the remote shell will.
+ *
+ * The policy used to run on `command.split(/\s+/)`, but this string is handed
+ * to a shell, which removes the quotes and joins the fragments: `-'o'` arrives
+ * at sort as `-o`, and `sort -'o' /tmp/out /tmp/in` was confirmed to write
+ * /tmp/out while passing validation. Every check therefore has to run on the
+ * argv the shell produces, not on the source text.
+ *
+ * The grammar is small because hasShellControlChars and SHELL_META have
+ * already rejected backslash, `$`, backtick and every metacharacter, so the
+ * only constructs left that change tokenization are single and double quotes,
+ * and neither can expand anything.
+ *
+ * @param command - Raw command string, already screened for metacharacters.
+ * @returns The shell's tokens, or null when a quote is never closed.
+ */
+function tokenizeCommand(command: string): string[] | null {
+  const tokens: string[] = [];
+  let current = "";
+  let started = false;
+  let quote: string | null = null;
+  for (const ch of command) {
+    if (quote !== null) {
+      if (ch === quote) quote = null;
+      else current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      // An empty pair still produces an argument, exactly as the shell does.
+      quote = ch;
+      started = true;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (started) {
+        tokens.push(current);
+        current = "";
+        started = false;
+      }
+      continue;
+    }
+    current += ch;
+    started = true;
+  }
+  if (quote !== null) return null;
+  if (started) tokens.push(current);
+  return tokens;
+}
 
 /** Validate sudo_user against allowlist and format. */
 export function validateSudoUser(user: string): boolean {
@@ -161,7 +222,8 @@ export function validateCommand(command: string): boolean {
   if (hasShellControlChars(command)) return false;
   if (SHELL_META.test(command)) return false;
 
-  const tokens = command.trim().split(/\s+/);
+  const tokens = tokenizeCommand(command);
+  if (tokens === null) return false;
   const binary = tokens[0];
   if (!binary || !ALLOWED_COMMANDS.has(binary)) return false;
 
