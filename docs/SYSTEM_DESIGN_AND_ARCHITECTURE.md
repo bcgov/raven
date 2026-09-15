@@ -813,7 +813,7 @@ Stored in `~/.raven/.env` (not committed to version control). The table below li
 
 | Component | Technology | Version |
 |-----------|-----------|---------|
-| Runtime | Node.js | >= 20.0.0 |
+| Runtime | Node.js | 22.x >= 22.12, 24.x (recommended), or >= 26 |
 | Language | TypeScript | 5.9+ |
 | MCP SDK | `@modelcontextprotocol/sdk` | 1.12+ |
 | Schema validation | Zod | 3.24+ |
