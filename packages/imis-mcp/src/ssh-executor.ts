@@ -64,14 +64,59 @@ const QUOTE_CHARS = /['"]/;
  * else on the line. Where a binary has any executing or writing option, the
  * policy is now an ALLOWLIST — every argument must match a known-safe form.
  *
- * `allow`:          every argument must match at least one pattern
- * `forbid`:         any argument matching a pattern rejects the command
- * `maxPositionals`: cap on arguments that do not start with `-`
+ * Platform assumption: these policies describe the GNU/RHEL userland the IMIS
+ * inventory runs. They are option-level rules, so a host that shadows a name
+ * with a different implementation can widen what that name accepts — `ugrep`
+ * installed as `grep`, for instance, adds --filter/--pager/--view, all of
+ * which run a program. The binary allowlist, not this table, is what bounds
+ * that case.
+ *
+ * `allow`:            every argument must match at least one pattern
+ * `forbid`:           any argument matching a pattern rejects the command
+ * `maxPositionals`:   cap on arguments that do not start with `-`
+ * `shortValueFlags`:  short options that take an attached value; declaring
+ *                     them turns on cluster expansion for `forbid`
  */
 interface ArgPolicy {
   allow?: RegExp[];
   forbid?: RegExp[];
   maxPositionals?: number;
+  shortValueFlags?: string;
+}
+
+/**
+ * Expand a single-dash short-option cluster into its individual flags.
+ *
+ * Every `forbid` pattern is anchored at the start of the argument, so it sees
+ * only the first option in a token. getopt lets the dangerous flag hide at the
+ * end of a cluster, where it still consumes the next word as its value:
+ * `sort -uo FILE` is `sort -u -o FILE` and overwrites FILE, and `date -us STR`
+ * is `date -u -s STR` and sets the clock. Both were confirmed against real
+ * binaries.
+ *
+ * Expansion stops at the first flag in `valueFlags`, because that flag takes
+ * the rest of the token as its value rather than as more flags. Without that
+ * stop, `date -Iseconds` (ISO-8601 to the second) would read as an `-s` and
+ * `sort -to` (field separator `o`) as an `-o`.
+ *
+ * Only `forbid` policies expand. An `allow` policy already rejects anything it
+ * does not recognise, and splitting rpm's `-qi` into `-q -i` would misread a
+ * query modifier as the standalone install flag.
+ *
+ * @param arg - A single command argument.
+ * @param valueFlags - Short flag letters that take an attached value.
+ * @returns The individual short flags, or [] when arg is not a short cluster.
+ */
+function expandShortCluster(arg: string, valueFlags: string): string[] {
+  // Long options (`--output`) and positionals are not clusters.
+  if (!/^-[a-zA-Z]/.test(arg)) return [];
+  const flags: string[] = [];
+  for (const ch of arg.slice(1)) {
+    if (!/[a-zA-Z]/.test(ch)) break;
+    flags.push(`-${ch}`);
+    if (valueFlags.includes(ch)) break;
+  }
+  return flags;
 }
 
 /** Positional that names a package, a file path, or a plain identifier. */
@@ -80,8 +125,9 @@ const NAME_OR_PATH = /^[A-Za-z0-9/][A-Za-z0-9._+/-]*$/;
 const ARG_POLICY: Record<string, ArgPolicy> = {
   // GNU find actions that execute or write. Every other action prints.
   find: { forbid: [/^-(exec|execdir|ok|okdir|delete|fprintf?|fprint0|fls)$/] },
-  // -o/-oFILE/--output write; --compress-program executes.
-  sort: { forbid: [/^-{1,2}o/, /^--compress-program/] },
+  // -o/-oFILE/--output write; --compress-program executes. -k/-o/-S/-T/-t
+  // take an attached value, which bounds cluster expansion.
+  sort: { forbid: [/^-{1,2}o/, /^--compress-program/], shortValueFlags: "koSTt" },
   // Query mode only, expressed as an allowlist so --pipe, --eval, --define,
   // --macros, --rcfile and every other long option are excluded by shape.
   // `-i` is "info" under -q but "install" alone, which is why a denylist
@@ -91,8 +137,9 @@ const ARG_POLICY: Record<string, ArgPolicy> = {
   // Note this also rejects the separated `-f N FILE` form (N reads as a
   // positional); use the attached `-fN` form instead.
   uniq: { maxPositionals: 1 },
-  // -s / --set write the clock. Display and +FORMAT forms are fine.
-  date: { forbid: [/^(-s|--set)(=|$)/] },
+  // -s / --set write the clock. Display and +FORMAT forms are fine. -d/-f/-r/
+  // -s/-I take an attached value, which bounds cluster expansion.
+  date: { forbid: [/^(-s|--set)(=|$)/], shortValueFlags: "dfrsI" },
   // Only the short display flags. Any positional sets the name; -F reads it
   // from a file.
   hostname: { allow: [/^-[fiIsdaAy]$/] },
@@ -123,8 +170,14 @@ export function validateCommand(command: string): boolean {
   if (!policy) return true;
 
   // Bound to consts so the narrowing survives into the arrow callbacks.
-  const { forbid, allow, maxPositionals } = policy;
-  if (forbid && args.some((a) => forbid.some((rx) => rx.test(a)))) return false;
+  const { forbid, allow, maxPositionals, shortValueFlags } = policy;
+  if (forbid) {
+    const expanded = shortValueFlags
+      ? args.flatMap((a) => expandShortCluster(a, shortValueFlags))
+      : [];
+    const candidates = [...args, ...expanded];
+    if (candidates.some((a) => forbid.some((rx) => rx.test(a)))) return false;
+  }
   if (allow && !args.every((a) => allow.some((rx) => rx.test(a)))) return false;
   if (maxPositionals !== undefined) {
     const positionals = args.filter((a) => !a.startsWith("-"));

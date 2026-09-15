@@ -520,3 +520,37 @@ describe("validateCommand — file -C writes a compiled magic database", () => {
     expect(validateCommand("file -c /usr/bin/java")).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Self-review follow-up: every `forbid` pattern anchors at the start of the
+// argument, so it only sees a short option that comes first in its token.
+// Classic getopt clustering puts the dangerous flag last, where it still
+// consumes the following word as its value. Both were verified against real
+// binaries before this test was written:
+//
+//   $ sort -uo canary.txt in.txt   # wrote canary.txt — BSD sort and GNU sort
+//   $ date -us '2020-01-01'        # GNU: "cannot set date: Operation not
+//                                  # permitted" — parsed, reached the syscall
+// ---------------------------------------------------------------------------
+
+describe("validateCommand — dangerous short options hidden in a cluster", () => {
+  it("rejects a clustered sort -o, which still overwrites the file", () => {
+    expect(validateCommand("sort -uo /etc/hosts /etc/hosts")).toBe(false);
+    expect(validateCommand("sort -buo /etc/hosts /etc/hosts")).toBe(false);
+    expect(validateCommand("sort -ro/etc/hosts /etc/hosts")).toBe(false);
+  });
+
+  it("rejects a clustered date -s, which still sets the clock", () => {
+    expect(validateCommand("date -us 2020-01-01")).toBe(false);
+    expect(validateCommand("date -Rus 2020-01-01")).toBe(false);
+  });
+
+  it("keeps accepting a value-taking flag whose value contains the letter", () => {
+    // Expansion stops at the first flag that consumes the rest of its token,
+    // so these stay legal: -I takes an optional attached format, -t takes the
+    // field separator, -k takes the key spec.
+    expect(validateCommand("date -Iseconds")).toBe(true);
+    expect(validateCommand("sort -to /etc/passwd")).toBe(true);
+    expect(validateCommand("sort -k2,2 -t: /etc/passwd")).toBe(true);
+  });
+});
