@@ -54,11 +54,11 @@ identical to `main`, none in the new code**.
 | Finding | Status | Fix |
 | :--- | :--- | :--- |
 | `RSEC-001` | **Fixed** | Grep pattern escaped per-argument via a shared helper and passed after `-e`; `date`/`dateFrom`/`dateTo` validated to `YYYY-MM-DD` in both builders and at the tool boundary; `|` still works as `grep -E` alternation |
-| `RSEC-002` | **Fixed** | CR/LF rejected before the allowlist tokenizer sees them |
+| `RSEC-002` | **Fixed** | CR/LF rejected before the allowlist tokenizer sees them; per-command argument policy so an allowlisted binary cannot execute or write through its own options, including when the option hides at the end of a short-option cluster (`sort -uo`, `date -us`) |
 | `RSEC-003` | **Fixed** | `sanitizePath` rejects control and quote characters; output escaped at interpolation |
-| `RSEC-004` | **Fixed** | Unseparated SIN (Luhn-gated), unseparated NANP phone, domain-qualified IDIR, and bare IDIR in attribution context (`assigned to JSMITH`, `owner: MSMITH` — 5-8 uppercase after an attribution phrase, common acronyms excluded); credential values matched to whitespace so quotes and punctuation cannot truncate the redaction; credential minimum 16 → 8 |
-| `RSEC-005` | **Fixed** | `localGuard` validates Host and Origin ahead of every API router |
-| `RSEC-006` | **Fixed** | `known_hosts` verification in **both** SSH clients, one shared implementation |
+| `RSEC-004` | **Fixed** | Unseparated SIN (Luhn-gated), unseparated NANP phone, domain-qualified IDIR, and bare IDIR in attribution context (`assigned to JSMITH`, `owner: MSMITH` — 5-8 uppercase after an attribution phrase, common acronyms excluded); credential values matched to whitespace so quotes and punctuation cannot truncate the redaction; quoted key names redacted, so a JSON `"password": "..."` no longer passes through; credential minimum 16 → 8 |
+| `RSEC-005` | **Fixed** | `localGuard` validates Host, Origin and `Sec-Fetch-Site` ahead of every API router — the last catches no-cors embeds that carry no Origin |
+| `RSEC-006` | **Fixed** | `known_hosts` verification in **both** SSH clients, one shared implementation; `@revoked` enforced as an explicit deny and host fields treated as patterns |
 | `RSEC-007` | **Fixed** | TLS validation on by default; `SMTP_INSECURE_TLS=true` to opt out |
 | `RSEC-008` to `RSEC-013` | Open | Out of the agreed remediation scope (Low and Informational) |
 
