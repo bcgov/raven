@@ -23,6 +23,65 @@ describe("allowedHosts / allowedOrigins", () => {
   });
 });
 
+describe.each(["localhost", "127.0.0.1", "[::1]"])("HTTP port 80 — %s", (loopback) => {
+  const url = new URL(`http://${loopback}:80/`);
+  const explicitHost = `${loopback}:80`;
+  const explicitOrigin = `http://${explicitHost}`;
+
+  it("accepts browser-canonical reads and writes while retaining explicit :80 clients", () => {
+    expect(url.host).toBe(loopback);
+    expect(url.origin).toBe(`http://${loopback}`);
+    expect(checkLocalRequest("GET", url.host, undefined, false, 80, "same-origin")).toBeNull();
+    for (const host of [url.host, explicitHost]) {
+      for (const origin of [url.origin, explicitOrigin]) {
+        for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"]) {
+          expect(checkLocalRequest(method, host, origin, false, 80, "same-origin")).toBeNull();
+        }
+      }
+    }
+  });
+
+  it("does not allow a missing port on a nondefault listener", () => {
+    expect(checkLocalRequest("GET", url.host, undefined, false, PORT)).toBe("Invalid Host header");
+    expect(checkLocalRequest("PUT", `${loopback}:${PORT}`, url.origin, false, PORT))
+      .toBe("Cross-origin request denied");
+  });
+
+  it("continues rejecting foreign ports and HTTPS origins", () => {
+    expect(checkLocalRequest("GET", `${loopback}:${PORT}`, undefined, false, 80))
+      .toBe("Invalid Host header");
+    for (const origin of [`http://${loopback}:${PORT}`, `https://${loopback}`, `https://${loopback}:80`]) {
+      expect(checkLocalRequest("PUT", url.host, origin, false, 80)).toBe("Cross-origin request denied");
+    }
+  });
+
+  it("still requires positive caller proof for writes and rejects cross-site reads", () => {
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      expect(checkLocalRequest(method, url.host, undefined, false, 80)).toContain("requires an Origin header");
+      expect(checkLocalRequest(method, url.host, undefined, true, 80)).toBeNull();
+    }
+    for (const site of ["cross-site", "same-site"]) {
+      expect(checkLocalRequest("GET", url.host, undefined, false, 80, site)).toBe("Cross-site request denied");
+    }
+  });
+});
+
+describe("HTTP port 80 — exact loopback allowlists", () => {
+  it("adds only portless loopback spellings", () => {
+    const hosts = ["localhost", "127.0.0.1", "[::1]"];
+    expect(allowedHosts(80)).toEqual(new Set(hosts.flatMap((host) => [host, `${host}:80`])));
+    expect(allowedOrigins(80)).toEqual(new Set(hosts.flatMap((host) => [`http://${host}`, `http://${host}:80`])));
+  });
+
+  it.each(["evil.example", "localhost.evil.example", "127.0.0.1.evil.example"])("denies rebinding host %s", (host) => {
+    expect(checkLocalRequest("PUT", host, `http://${host}`, false, 80)).toBe("Invalid Host header");
+  });
+
+  it.each(["http://localhost:080", "http://localhost/", "http://user@localhost", "http://127.1", " http://localhost"])("does not normalize an unlisted Origin: %s", (origin) => {
+    expect(checkLocalRequest("PUT", "localhost", origin, false, 80)).toBe("Cross-origin request denied");
+  });
+});
+
 describe("checkLocalRequest — reads", () => {
   it("allows a same-origin GET", () => {
     expect(checkLocalRequest("GET", OK_HOST, OK_ORIGIN, false, PORT)).toBeNull();

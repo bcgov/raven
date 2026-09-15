@@ -53,7 +53,11 @@ const CLIENT_HEADER = "x-raven-ui";
  * @returns Acceptable Host header values.
  */
 export function allowedHosts(port: number): Set<string> {
-  return new Set([`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`]);
+  return new Set([
+    `localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`,
+    // Browsers omit HTTP's default port; retain explicit :80 for other clients.
+    ...(port === 80 ? ["localhost", "127.0.0.1", "[::1]"] : []),
+  ]);
 }
 
 /**
@@ -67,6 +71,7 @@ export function allowedOrigins(port: number): Set<string> {
     `http://localhost:${port}`,
     `http://127.0.0.1:${port}`,
     `http://[::1]:${port}`,
+    ...(port === 80 ? ["http://localhost", "http://127.0.0.1", "http://[::1]"] : []),
   ]);
 }
 

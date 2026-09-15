@@ -190,3 +190,23 @@ Validation on 2026-09-15: workspace TypeScript build passed; **1,735 tests
 passed, 1 skipped, 0 failed** across 81 passing test files; tool inventory
 and diff whitespace checks passed. The previous Sonar analysis remains
 separate and does not cover this follow-up.
+
+## Copilot follow-up at `911fc7b`
+
+The [review](https://github.com/bcgov/raven/pull/65#pullrequestreview-5214167367)
+reported no new inline comments and one actionable suppressed finding:
+the local guard rejected canonical browser requests when `SERVER_UI_PORT=80`.
+The [WHATWG URL port parser](https://url.spec.whatwg.org/#port-state) removes
+a scheme's default port. Reproduction with `URL.host`, `URL.origin` and the
+actual guard rejected all three supported loopback spellings on port 80.
+
+The allowlists now include portless loopback forms only for HTTP port 80,
+while retaining explicit `:80` clients. Regression tests cover browser
+canonicalization and state changes, plus rejection of wrong ports, foreign
+hosts, HTTPS origins and unverified writes. No listener on port 80 or
+privileged process is needed for these tests.
+
+Validation on 2026-09-15: workspace TypeScript build passed; **1,756 tests
+passed, 1 skipped, 0 failed**; tool inventory and diff whitespace checks
+passed. The 21 added guard regressions include 15 cases that failed before
+the fix. Prior GitHub build/test and CodeQL checks passed at `911fc7b`.
