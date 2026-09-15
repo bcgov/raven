@@ -1,9 +1,10 @@
-import { Client, type ConnectConfig } from "ssh2";
+import { Client, type ConnectConfig, type ServerHostKeyAlgorithm } from "ssh2";
+import { createRequire } from "node:module";
 import type { Readable } from "node:stream";
 import { readFileSync, existsSync } from "node:fs";
 import { isIP } from "node:net";
 import type { ServerEntry } from "@nrs/auth";
-import { wrapSshExecWithLimits, sshLimiterOpts, loadEnvVar, shellEscape, createHostVerifier } from "@nrs/auth";
+import { wrapSshExecWithLimits, sshLimiterOpts, loadEnvVar, shellEscape, createHostVerifier, preferKnownHostKeyAlgorithms } from "@nrs/auth";
 
 export interface SshResult {
   stdout: string;
@@ -149,6 +150,11 @@ export function buildConnectOpts(
   passphrase: string | undefined,
   privateKeyBytes: Buffer | undefined,
 ): ConnectConfig {
+  // ssh2 exposes no public default list. Read its installed defaults instead
+  // of copying them and accidentally re-enabling a disabled algorithm later.
+  const { DEFAULT_SERVER_HOST_KEY } = createRequire(import.meta.url)("ssh2/lib/protocol/constants.js") as {
+    DEFAULT_SERVER_HOST_KEY: ServerHostKeyAlgorithm[];
+  };
   const opts: ConnectConfig = {
     host: entry.host,
     port: 22,
@@ -158,6 +164,7 @@ export function buildConnectOpts(
     // RAVEN_SSH_INSECURE_HOST_KEYS=true to restore the previous
     // accept-anything behavior (the old `ssh -o StrictHostKeyChecking=no`).
     hostVerifier: createHostVerifier(entry.host),
+    algorithms: { serverHostKey: preferKnownHostKeyAlgorithms(entry.host, DEFAULT_SERVER_HOST_KEY) },
   };
   if (authMode.kind === "key") {
     if (!privateKeyBytes) {

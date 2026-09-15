@@ -21,6 +21,12 @@ This document provides a comprehensive blueprint and technology assessment of **
 > editing the analysis by hand, so it stays consistent with the executive
 > report generated from the same data.
 
+> **Runtime correction (2026-09-15):** The original support conclusion was
+> incorrect even at the assessment date. Node 20 in CI reached EOL on
+> 2026-04-30; the Node 25 review runtime reached EOL on 2026-06-01. Node 22 is
+> Maintenance LTS. See section 1 of `docs/security-review.md` for the outstanding
+> runtime migration and the official release-schedule source.
+
 ---
 
 ## 1. Metadata & Organizational Alignment
@@ -396,7 +402,7 @@ A note on how to read the boxes: the validation contract requires an item to be 
 
 ### Checklist
 
-- [x] **Technical Currency:** Node.js engine `>=20.16.0 <21 || >=22.3.0`, TypeScript 7.0.2, Express 5.2.1, MCP SDK 1.30.0 — all within active support; no EOL runtime. `[Confidence: Verified]`
+- [ ] **Technical Currency:** Node.js engine `>=20.16.0 <21 || >=22.3.0` permits EOL releases. CI uses Node 20 and the review host used Node 25; migrate both to a supported release. TypeScript 7.0.2, Express 5.2.1 and MCP SDK 1.30.0 were recorded at the assessed commit. See the runtime correction above.
 - [ ] **Unicode End-to-End:** No normalization policy, no non-ASCII test, and no Indigenous-language corpus; round-trip behavior is unevidenced in either direction. `[Confidence: Unknown]`
 - [ ] **Globalization Runtime:** Node.js ships full ICU by default and no invariant-globalization flag is set, but there are no production hosts or images to assert this about. `[Confidence: Inferred]`
 - [x] **No Hardcoded Credentials:** SonarQube TextAndSecrets sensor over 339 files plus manual review found no live secret; all 34 high hotspots are test fixtures and example files. `[Confidence: Verified]`

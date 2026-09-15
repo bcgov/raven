@@ -37,6 +37,8 @@ export interface KnownHostsEntry {
   hashSalt: string | null;
   /** Base64 HMAC-SHA1 of the hostname for a hashed entry, else null. */
   hashValue: string | null;
+  /** Public key type; RSA signature algorithms share the ssh-rsa key type. */
+  keyType: string;
   /** Base64 public key blob, as ssh2 presents it. */
   key: string;
 }
@@ -65,11 +67,11 @@ export function parseKnownHosts(contents: string): KnownHostsEntry[] {
 
     const marked = takeMarker(line.split(/\s+/));
     if (!marked || marked.rest.length < 3) continue;
-    const [hostField, , keyB64] = marked.rest as [string, string, string];
+    const [hostField, keyType, keyB64] = marked.rest as [string, string, string];
 
     const hosts = parseHostField(hostField);
     if (!hosts) continue;
-    entries.push({ marker: marked.marker, ...hosts, key: keyB64 });
+    entries.push({ marker: marked.marker, ...hosts, keyType, key: keyB64 });
   }
   return entries;
 }
@@ -165,6 +167,43 @@ function hostPatternMatches(pattern: string, host: string): boolean {
  */
 export function knownHostsPath(): string {
   return loadEnvVar("RAVEN_KNOWN_HOSTS_PATH") ?? join(homedir(), ".ssh", "known_hosts");
+}
+
+/**
+ * Prefer pinned host key types within the SSH library's enabled defaults.
+ *
+ * Negotiation happens before hostVerifier: preferring an unpinned Ed25519 key
+ * can reject a server whose RSA key is already trusted. Reorder only the
+ * caller's enabled algorithms, retaining their relative preference within
+ * each group. Never add an algorithm merely because known_hosts contains it.
+ * The verifier still checks the actual key bytes and revocations afterwards.
+ *
+ * @param host - Hostname or address being contacted.
+ * @param defaults - The installed SSH library's enabled host key algorithms.
+ * @param contents - Optional known_hosts contents for tests; null means absent.
+ * @returns The same algorithms, with trusted key types first.
+ */
+export function preferKnownHostKeyAlgorithms<Algorithm extends string>(
+  host: string,
+  defaults: readonly Algorithm[],
+  contents?: string | null,
+): Algorithm[] {
+  if (loadEnvVar(INSECURE_HOST_KEYS_ENV) === "true") return [...defaults];
+  if (contents === undefined) {
+    const path = knownHostsPath();
+    contents = existsSync(path) ? readFileSync(path, "utf8") : null;
+  }
+  if (contents === null) return [...defaults];
+
+  const entries = parseKnownHosts(contents).filter((entry) => entryMatchesHost(entry, host));
+  const revoked = new Set(entries.filter((entry) => entry.marker === "revoked").map((entry) => entry.key));
+  const trustedTypes = new Set(entries
+    .filter((entry) => entry.marker === "none" && !revoked.has(entry.key))
+    .map((entry) => entry.keyType));
+  const isTrusted = (algorithm: Algorithm): boolean => trustedTypes.has(
+    algorithm === "rsa-sha2-512" || algorithm === "rsa-sha2-256" ? "ssh-rsa" : algorithm,
+  );
+  return [...defaults.filter(isTrusted), ...defaults.filter((algorithm) => !isTrusted(algorithm))];
 }
 
 /** Outcome of a host key check. */

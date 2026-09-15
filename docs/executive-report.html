@@ -20,6 +20,8 @@
   </div>
 </div>
 
+<p class="section-note"><strong>Historical pre-remediation snapshot:</strong> Finding counts and scan metrics describe commit <code>fd982f6</code>, not the current branch. See <a href="security-review.md">remediation status</a> and <a href="pr-65-remediation.md">PR #65 follow-up verification</a>. Runtime support and coverage labels below were corrected on 2026-09-15.</p>
+
 <!-- ===== KPI CARDS ===== -->
 <h2>Key Metrics</h2>
 <div class="kpi-grid">
@@ -465,22 +467,22 @@
 <h2>Architecture Overview</h2>
 <div class="flex-row">
   <div class="flex-col-half">
-    <p><strong>Tech Stack:</strong> Node.js (LTS 20/22), TypeScript 7.0.2, Express 5.2.1, MCP SDK 1.30.0, ssh2, Playwright, Zod 4.5.4, Vitest</p>
+    <p><strong>Tech Stack:</strong> Node.js (CI: 20, EOL; review host: 25, EOL; 22: Maintenance LTS as of 2026-09-15), TypeScript 7.0.2, Express 5.2.1, MCP SDK 1.30.0, ssh2, Playwright, Zod 4.5.4, Vitest</p>
     <p><strong>Architecture:</strong> Local-first MCP server suite — 21 npm workspace packages, 17 stdio servers around a shared @nrs/auth security kernel</p>
     <p><strong>Deployment:</strong> Developer workstation only — no server deployment, no containers, no infrastructure-as-code</p>
     <p><strong>Resilience:</strong> Fails closed throughout. Token bucket and circuit breaker protect shared upstreams; no backup exists for the append-only audit log, which is the single non-reproducible artifact</p>
   </div>
   <div class="flex-col-half">
-    <!-- Coverage baseline gauge -->
-    <h3>Assessment Coverage</h3>
+    <!-- Test coverage metadata is defined in report-data.json; this is not assessment coverage. -->
+    <h3>Test coverage data</h3>
     <div class="gauge-container">
-      <span class="gauge-label">0%</span>
+      <span class="gauge-label">Not measured</span>
       <div class="gauge-bar">
         <div class="gauge-fill" style="width:0%; background: linear-gradient(90deg, #3b82f6, #06b6d4);"></div>
       </div>
-      <span style="font-size:0.8em;">entry points assessed</span>
+      <span style="font-size:0.8em;">No coverage provider or LCOV report; SonarQube reports 0%.</span>
     </div>
-    <p style="font-size:0.8em; color:var(--muted);">1 entry point(s) not fully assessed</p>
+    <p style="font-size:0.8em; color:var(--muted);">Install a coverage provider and generate an LCOV report to establish a baseline.</p>
   </div>
 </div>
 

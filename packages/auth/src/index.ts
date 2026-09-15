@@ -32,6 +32,7 @@ export {
 export { PiScrubber } from "./pi-scrubber.js";
 export {
   createHostVerifier,
+  preferKnownHostKeyAlgorithms,
   verifyHostKey,
   parseKnownHosts,
   knownHostsPath,

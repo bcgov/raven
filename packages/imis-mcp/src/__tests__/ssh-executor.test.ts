@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { writeFileSync, rmSync, mkdtempSync } from "node:fs";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { writeFileSync, readFileSync, rmSync, mkdtempSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -190,6 +191,19 @@ describe("deriveSshUser", () => {
 });
 
 describe("buildConnectOpts (single-method invariant)", () => {
+  let knownHostsDir: string;
+  beforeAll(() => {
+    knownHostsDir = mkdtempSync(join(tmpdir(), "raven-connect-options-"));
+    const knownHosts = join(knownHostsDir, "known_hosts");
+    writeFileSync(knownHosts, "");
+    vi.stubEnv("RAVEN_KNOWN_HOSTS_PATH", knownHosts);
+    vi.stubEnv("RAVEN_SSH_INSECURE_HOST_KEYS", "");
+  });
+  afterAll(() => {
+    vi.unstubAllEnvs();
+    rmSync(knownHostsDir, { recursive: true, force: true });
+  });
+
   // connectOpts MUST have exactly one of `privateKey` or `password`,
   // never both. Routing happens upstream via getSshAuthMode.
 
@@ -642,10 +656,160 @@ describe("validateCommand — expansion happens after validation", () => {
     expect(validateCommand("uniq")).toBe(true);
   });
 
-  it("leaves globs alone where the argument count carries no policy", () => {
+  it("leaves globs alone on commands without an argument policy", () => {
     expect(validateCommand("ls /var/log/*.log")).toBe(true);
     expect(validateCommand("grep -n ERROR /var/log/*.log")).toBe(true);
-    expect(validateCommand("file /usr/bin/*")).toBe(true);
-    expect(validateCommand("sort /var/log/*.log")).toBe(true);
+    expect(validateCommand("file /usr/bin/*")).toBe(false);
+    expect(validateCommand("sort /var/log/*.log")).toBe(false);
+  });
+});
+
+describe("validateCommand — complete operand and expansion grammar", () => {
+  it.each([
+    "uniq - output.txt",
+    "uniq -- -input.txt -output.txt",
+    "uniq -c -- - output.txt",
+    "uniq -f 1 input.txt output.txt",
+    "uniq -f1 - output.txt",
+    // Options must precede the input, even if GNU getopt would normally
+    // permute them: POSIXLY_CORRECT can make -c an output filename here.
+    "uniq input.txt -c",
+    "uniq - -c",
+    "uniq -f",
+    "uniq -w -1 input.txt",
+    "uniq --skip-fields 1 input.txt",
+    "uniq -x input.txt",
+  ])("rejects ambiguous, unsupported or writing uniq syntax: %s", (command) => {
+    expect(validateCommand(command)).toBe(false);
+  });
+
+  it.each([
+    "uniq -",
+    "uniq -- -input.txt",
+    "uniq -c -- -",
+    "uniq -f 1 -s 2 -w 3 input.txt",
+    "uniq -if1 -s2 -w3 input.txt",
+    "uniq -cdiDuz input.txt",
+    "uniq --",
+    "uniq '/tmp/*.txt'",
+  ])("accepts one literal uniq input with parsed option values: %s", (command) => {
+    expect(validateCommand(command)).toBe(true);
+  });
+
+  it.each([
+    "date 09151200",
+    "date 0915120026",
+    "date 091512002026.30",
+    "date -u 091512002026",
+    "date -- 091512002026",
+    "date -d now 091512002026",
+    "date +%Y 091512002026",
+    "date -I seconds",
+    "date -d",
+    "date -r",
+    "date -f",
+    "date -Iunknown",
+    "date -x",
+  ])("rejects setting operands and unsupported date syntax without executing it: %s", (command) => {
+    expect(validateCommand(command)).toBe(false);
+  });
+
+  it.each([
+    "date -uR +%Y",
+    "date -d 'next Friday' +%F",
+    "date -d091512002026",
+    "date -ur 091512002026 +%Y",
+    "date -f - +%F",
+    "date -I",
+    "date -Iseconds",
+    "date -uIns",
+    "date -- +%Y",
+    "date -d -s +%Y",
+  ])("preserves date display flags, values and format operands: %s", (command) => {
+    expect(validateCommand(command)).toBe(true);
+  });
+
+  it.each([
+    "sort -[o] output.txt input.txt",
+    "sort -['o'] output.txt input.txt",
+    "sort -* output.txt input.txt",
+    "sort -? output.txt input.txt",
+    "find /tmp -[d]elete",
+    "find /tmp -name *.log",
+    "file -[C] -m magic.txt",
+    "date -[s] 091512002026",
+    "uniq -- -[io]nput.txt",
+  ])("rejects shell expansion before restricted options are interpreted: %s", (command) => {
+    expect(validateCommand(command)).toBe(false);
+  });
+
+  it.each([
+    "find /tmp -name '*.log'",
+    'find /tmp -name "[ab]?.log"',
+    "sort '/var/log/*.log'",
+    "sort -'['o']' input.txt",
+    "file '/tmp/[a]'",
+  ])("preserves quoted literal patterns: %s", (command) => {
+    expect(validateCommand(command)).toBe(true);
+  });
+
+  it("splits only on shell spaces and tabs, preserving non-breaking spaces in filenames", () => {
+    expect(validateCommand("uniq\tinput.txt")).toBe(true);
+    expect(validateCommand("uniq input\u00a0file.txt")).toBe(true);
+    expect(validateCommand("uniq\u00a0input.txt")).toBe(false);
+    expect(validateCommand("date +%Y\u00a0091512002026")).toBe(true);
+  });
+
+  it.each([
+    ["uniq - output.txt", "output.txt"],
+    ["uniq -- -input.txt -output.txt", "-output.txt"],
+    ["sort -[o] output.txt input.txt", "output.txt"],
+  ])("preserves an output sentinel behind the validation gate: %s", (command, output) => {
+    const dir = mkdtempSync(join(tmpdir(), "raven-command-policy-"));
+    try {
+      for (const name of ["input.txt", "-input.txt"]) {
+        writeFileSync(join(dir, name), "b\na\na\n");
+      }
+      writeFileSync(join(dir, "-o"), "");
+      writeFileSync(join(dir, output), "UNCHANGED\n");
+      if (validateCommand(command)) {
+        execFileSync("/bin/sh", ["-c", command], { cwd: dir, input: "" });
+      }
+      expect(readFileSync(join(dir, output), "utf8")).toBe("UNCHANGED\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("executes accepted uniq options and quoted input exactly as validated", () => {
+    const dir = mkdtempSync(join(tmpdir(), "raven-command-policy-"));
+    try {
+      writeFileSync(join(dir, "-input file.txt"), "first same\nsecond same\n");
+      const command = "uniq -f 1 -- '-input file.txt'";
+      expect(validateCommand(command)).toBe(true);
+      expect(execFileSync("/bin/sh", ["-c", command], { cwd: dir, encoding: "utf8" }))
+        .toBe("first same\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps quoted wildcards literal for uniq and passes patterns intact to find", () => {
+    const dir = mkdtempSync(join(tmpdir(), "raven-command-policy-"));
+    try {
+      writeFileSync(join(dir, "*.txt"), "one\none\n");
+      writeFileSync(join(dir, "other.txt"), "UNCHANGED\n");
+      for (const [command, output] of [
+        ["uniq '*.txt'", "one\n"],
+        ["find . -name 'other.*'", "./other.txt\n"],
+      ]) {
+        expect(validateCommand(command)).toBe(true);
+        expect(execFileSync("/bin/sh", ["-c", command], { cwd: dir, encoding: "utf8" }))
+          .toBe(output);
+      }
+      expect(readFileSync(join(dir, "other.txt"), "utf8")).toBe("UNCHANGED\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

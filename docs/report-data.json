@@ -2,6 +2,8 @@
   "application_name": "Resource Analytics, Visibility & Enterprise Navigator",
   "application_acronym": "RAVEN",
   "report_date": "2026-09-14",
+  "reviewed_ref": "fd982f64a1c9dfd779ab858f1b3c112f27ab9087",
+  "snapshot_notice": "Historical pre-remediation assessment. Finding counts and scan metrics describe the assessed commit, not the current branch. See docs/security-review.md and docs/pr-65-remediation.md for remediation and current verification.",
   "overall_risk": "HIGH",
   "quality_gate_status": "FAILED",
 
@@ -14,6 +16,9 @@
   "probable_count": 3,
   "coverage_gaps": 1,
   "coverage_pct": 0,
+  "coverage_metric": "sonarqube_reported_test_coverage",
+  "coverage_measured": false,
+  "coverage_note": "No coverage provider or LCOV report was available. SonarQube reported 0%; actual test coverage and the percentage of assessed entry points were not measured. Render as Test coverage data / Not measured, never as Assessment Coverage.",
 
   "total_deps": 20,
   "outdated_deps": 8,
@@ -22,7 +27,7 @@
 
   "executive_brief": "RAVEN is in good structural health. Its dependencies are clean — npm audit reports zero open advisories at the reviewed commit, and Dependabot closed four advisory classes within nine days during September. Its security design is better than typical for an internal tool: it never holds more authority than the person running it, its audit log is cryptographically tamper-evident, and personal information is scrubbed before any content reaches an AI model. The material risk is concentrated in one place. Two confirmed command-injection defects allow an attacker who can influence text in a ticket or an application log to run commands on BC Government application servers under a privileged service account. These are not two separate bugs but one duplicated one: two packages independently implement the same shell-safety check, and the two copies have already drifted apart so that each blocks characters the other misses. Reachability analysis shows the affected code is called from the autonomous pipeline, which runs on a schedule with no person watching, widening the exposure beyond what a first-pass review identified. Separately, the FOIPPA privacy scrubber does not redact a social insurance number or phone number written without separators, nor a bare IDIR — a compliance gap in the exact control the privacy posture depends on. None of this is an emergency: every path requires an attacker to already be writing content the system reads. The recommended first step is roughly a day of focused work that closes the whole class rather than the individual instances.",
 
-  "tech_stack_summary": "Node.js (LTS 20/22), TypeScript 7.0.2, Express 5.2.1, MCP SDK 1.30.0, ssh2, Playwright, Zod 4.5.4, Vitest",
+  "tech_stack_summary": "Node.js (CI: 20, EOL; review host: 25, EOL; 22: Maintenance LTS as of 2026-09-15), TypeScript 7.0.2, Express 5.2.1, MCP SDK 1.30.0, ssh2, Playwright, Zod 4.5.4, Vitest",
   "arch_pattern": "Local-first MCP server suite — 21 npm workspace packages, 17 stdio servers around a shared @nrs/auth security kernel",
   "deployment_model": "Developer workstation only — no server deployment, no containers, no infrastructure-as-code",
   "resilience_summary": "Fails closed throughout. Token bucket and circuit breaker protect shared upstreams; no backup exists for the append-only audit log, which is the single non-reproducible artifact",

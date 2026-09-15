@@ -154,7 +154,7 @@ export function createServerMonitoringServer(): McpServer {
           content: [{
             type: "text",
             text: exitCode === 0
-              ? output || "No matches found."
+              ? pi.scrubText(output || "No matches found.")
               : pi.scrubText(`Error: ${output}`),
           }],
           ...(exitCode !== 0 && { isError: true }),
@@ -230,7 +230,7 @@ export function createServerMonitoringServer(): McpServer {
           content: [{
             type: "text",
             text: exitCode === 0
-              ? output || "No matches found."
+              ? pi.scrubText(output || "No matches found.")
               : pi.scrubText(`Error: ${output}`),
           }],
           ...(exitCode !== 0 && { isError: true }),

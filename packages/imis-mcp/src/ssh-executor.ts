@@ -1,9 +1,10 @@
-import { Client, type ConnectConfig } from "ssh2";
+import { Client, type ConnectConfig, type ServerHostKeyAlgorithm } from "ssh2";
+import { createRequire } from "node:module";
 import { readFileSync, existsSync } from "node:fs";
 import { userInfo } from "node:os";
 import { isIP } from "node:net";
 import type { SshResult } from "./types.js";
-import { wrapSshExecWithLimits, sshLimiterOpts, loadEnvVar, shellEscape, assertNoShellControlChars, hasShellControlChars, createHostVerifier } from "@nrs/auth";
+import { wrapSshExecWithLimits, sshLimiterOpts, loadEnvVar, shellEscape, assertNoShellControlChars, hasShellControlChars, createHostVerifier, preferKnownHostKeyAlgorithms } from "@nrs/auth";
 
 /** Read-only command allowlist — matches server-common.sh plus rpm and mount. */
 const ALLOWED_COMMANDS = new Set([
@@ -54,17 +55,17 @@ const QUOTE_CHARS = /['"]/;
  * - `rpm --pipe CMD` is a popen() and composes with `-q`; `--eval`/`--define`
  *   evaluate macros
  * - `uniq INPUT OUTPUT` writes OUTPUT (POSIX positional form, any user)
- * - `date -s` sets the clock; `hostname NAME` / `-F FILE` sets the hostname
+ * - `date -s` or a numeric operand sets the clock; `hostname NAME` / `-F FILE`
+ *   sets the hostname
  * - `mount …` with any argument changes mount state
  * - `file -C` / `--compile` writes a compiled magic database
  *
- * Long options are rejected outright on `sort`, `date` and `file` rather than
+ * Long options are rejected outright on `sort`, `date`, `uniq` and `file` rather than
  * named individually. GNU accepts any unambiguous abbreviation — `date --s`
  * reaches the clock-setting syscall and `sort --compress-prog=CMD` runs CMD —
  * so a denylist would have to enumerate every prefix of every dangerous
- * option. Each of the three has a short equivalent for the read-only work this
- * tool does (`-n`, `-u`, `-b`), so nothing useful is lost. Commands with no
- * dangerous option keep their long options.
+ * option. Use their short display/filter options instead. Commands with no
+ * argument policy keep their long options.
  *
  * The first version of this policy was a denylist plus a "some `-q` flag is
  * present" check for rpm. Both were the wrong shape: a denylist has to
@@ -81,17 +82,17 @@ const QUOTE_CHARS = /['"]/;
  *
  * `allow`:            every argument must match at least one pattern
  * `forbid`:           any argument matching a pattern rejects the command
- * `maxPositionals`:   cap on arguments that do not start with `-`
+ * `validateArgs`:     command-specific option arity and operand grammar
  * `shortValueFlags`:  short options that take an attached value; declaring
  *                     them turns on cluster expansion for `forbid`
  *
- * A policy that sets `maxPositionals` additionally rejects glob characters in
- * its positionals, since the shell expands them after this check runs.
+ * Every policy rejects unquoted globs: expansion can change both operands and
+ * options after validation. Quoted patterns remain literal shell arguments.
  */
 interface ArgPolicy {
   allow?: RegExp[];
   forbid?: RegExp[];
-  maxPositionals?: number;
+  validateArgs?: (args: string[]) => boolean;
   shortValueFlags?: string;
 }
 
@@ -102,13 +103,11 @@ interface ArgPolicy {
  * only the first option in a token. getopt lets the dangerous flag hide at the
  * end of a cluster, where it still consumes the next word as its value:
  * `sort -uo FILE` is `sort -u -o FILE` and overwrites FILE, and `date -us STR`
- * is `date -u -s STR` and sets the clock. Both were confirmed against real
- * binaries.
+ * is `date -u -s STR` and sets the clock.
  *
  * Expansion stops at the first flag in `valueFlags`, because that flag takes
  * the rest of the token as its value rather than as more flags. Without that
- * stop, `date -Iseconds` (ISO-8601 to the second) would read as an `-s` and
- * `sort -to` (field separator `o`) as an `-o`.
+ * stop, `sort -to` (field separator `o`) would read as an `-o`.
  *
  * Only `forbid` policies expand. An `allow` policy already rejects anything it
  * does not recognise, and splitting rpm's `-qi` into `-q -i` would misread a
@@ -133,14 +132,63 @@ function expandShortCluster(arg: string, valueFlags: string): string[] {
 /**
  * Characters that make an argument expandable by the shell.
  *
- * Quote removal is modelled exactly by tokenizeCommand, but expansion cannot
- * be: it depends on the remote filesystem. Where a policy depends on how many
- * arguments there are, one that can expand into several defeats it.
+ * Expansion depends on the remote filesystem. In addition to producing extra
+ * operands, `-[o]` can become a forbidden option such as sort's `-o`.
  */
 const GLOB_META = /[*?[]/;
 
 /** Positional that names a package, a file path, or a plain identifier. */
 const NAME_OR_PATH = /^[A-Za-z0-9/][A-Za-z0-9._+/-]*$/;
+
+/** GNU uniq: short options followed by at most one input, including stdin `-`. */
+function validateUniqArgs(args: string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--") return args.length - i - 1 <= 1;
+    if (arg === "-" || !arg.startsWith("-")) {
+      // Requiring the input last also remains safe with POSIXLY_CORRECT,
+      // where a subsequent -c would be interpreted as an output filename.
+      return i === args.length - 1;
+    }
+    for (let j = 1; j < arg.length; j++) {
+      const flag = arg[j];
+      if ("cdiDuz".includes(flag)) continue;
+      if (!"fsw".includes(flag)) return false;
+      const count = arg.slice(j + 1) || args[++i];
+      if (count === undefined || !/^\d+$/.test(count)) return false;
+      break;
+    }
+  }
+  return true;
+}
+
+/** GNU date display grammar; a numeric positional would set the clock. */
+function validateDateArgs(args: string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--") {
+      return i === args.length - 1 ||
+        (i === args.length - 2 && args[i + 1].startsWith("+"));
+    }
+    if (arg.startsWith("+")) return i === args.length - 1;
+    if (!arg.startsWith("-") || arg === "-") return false;
+    for (let j = 1; j < arg.length; j++) {
+      const flag = arg[j];
+      if ("uR".includes(flag)) continue;
+      if (flag === "I") {
+        // -I has an optional attached value; it never consumes the next word.
+        if (!/^(date|hours|minutes|seconds|ns)?$/.test(arg.slice(j + 1))) return false;
+        break;
+      }
+      if (!"dfr".includes(flag)) return false;
+      // These mandatory values are display inputs, even when they start with
+      // a dash or look like the numeric clock-setting operand.
+      if (j === arg.length - 1 && ++i === args.length) return false;
+      break;
+    }
+  }
+  return true;
+}
 
 const ARG_POLICY: Record<string, ArgPolicy> = {
   // GNU find actions that execute or write. Every other action prints.
@@ -154,14 +202,8 @@ const ARG_POLICY: Record<string, ArgPolicy> = {
   // `-i` is "info" under -q but "install" alone, which is why a denylist
   // could never be right here.
   rpm: { allow: [/^-q[a-zA-Z]*$/, NAME_OR_PATH] },
-  // POSIX: uniq [OPTION]... [INPUT [OUTPUT]]. A second positional is a write.
-  // Note this also rejects the separated `-f N FILE` form (N reads as a
-  // positional); use the attached `-fN` form instead.
-  uniq: { maxPositionals: 1 },
-  // -s writes the clock; --set and its abbreviations fall under the blanket
-  // long-option rule. Display and +FORMAT forms are fine. -d/-f/-r/-s/-I take
-  // an attached value, which bounds cluster expansion.
-  date: { forbid: [/^-s/, /^--/], shortValueFlags: "dfrsI" },
+  uniq: { validateArgs: validateUniqArgs },
+  date: { validateArgs: validateDateArgs },
   // Only the short display flags. Any positional sets the name; -F reads it
   // from a file.
   hostname: { allow: [/^-[fiIsdaAy]$/] },
@@ -185,14 +227,15 @@ const ARG_POLICY: Record<string, ArgPolicy> = {
  *
  * The grammar is small because hasShellControlChars and SHELL_META have
  * already rejected backslash, `$`, backtick and every metacharacter, so the
- * only constructs left that change tokenization are single and double quotes,
- * and neither can expand anything.
+ * single and double quotes join literal fragments. Track unquoted globs
+ * separately so argument policies can reject filesystem-dependent expansion.
  *
  * @param command - Raw command string, already screened for metacharacters.
- * @returns The shell's tokens, or null when a quote is never closed.
+ * @returns Literal tokens and whether the shell can glob, or null for an open quote.
  */
-function tokenizeCommand(command: string): string[] | null {
+function tokenizeCommand(command: string): { tokens: string[]; hasGlob: boolean } | null {
   const tokens: string[] = [];
+  let hasGlob = false;
   let current = "";
   let started = false;
   let quote: string | null = null;
@@ -208,7 +251,7 @@ function tokenizeCommand(command: string): string[] | null {
       started = true;
       continue;
     }
-    if (/\s/.test(ch)) {
+    if (ch === " " || ch === "\t") {
       if (started) {
         tokens.push(current);
         current = "";
@@ -217,11 +260,12 @@ function tokenizeCommand(command: string): string[] | null {
       continue;
     }
     current += ch;
+    if (GLOB_META.test(ch)) hasGlob = true;
     started = true;
   }
   if (quote !== null) return null;
   if (started) tokens.push(current);
-  return tokens;
+  return { tokens, hasGlob };
 }
 
 /** Validate sudo_user against allowlist and format. */
@@ -234,17 +278,19 @@ export function validateCommand(command: string): boolean {
   if (hasShellControlChars(command)) return false;
   if (SHELL_META.test(command)) return false;
 
-  const tokens = tokenizeCommand(command);
-  if (tokens === null) return false;
+  const parsed = tokenizeCommand(command);
+  if (parsed === null) return false;
+  const { tokens, hasGlob } = parsed;
   const binary = tokens[0];
   if (!binary || !ALLOWED_COMMANDS.has(binary)) return false;
 
   const args = tokens.slice(1);
   const policy = ARG_POLICY[binary];
   if (!policy) return true;
+  if (hasGlob) return false;
 
   // Bound to consts so the narrowing survives into the arrow callbacks.
-  const { forbid, allow, maxPositionals, shortValueFlags } = policy;
+  const { forbid, allow, validateArgs, shortValueFlags } = policy;
   if (forbid) {
     const expanded = shortValueFlags
       ? args.flatMap((a) => expandShortCluster(a, shortValueFlags))
@@ -253,17 +299,7 @@ export function validateCommand(command: string): boolean {
     if (candidates.some((a) => forbid.some((rx) => rx.test(a)))) return false;
   }
   if (allow && !args.every((a) => allow.some((rx) => rx.test(a)))) return false;
-  if (maxPositionals !== undefined) {
-    const positionals = args.filter((a) => !a.startsWith("-"));
-    if (positionals.length > maxPositionals) return false;
-    // The count above is the count before expansion. `uniq *` is one
-    // positional here and two after the shell expands it, and uniq's second
-    // positional is an output file: in a directory holding two files it
-    // overwrote the second. Commands whose policy does not count arguments
-    // keep their globs, because `ls *.log` and `grep ERROR *.log` are the
-    // ordinary way to use this tool.
-    if (positionals.some((a) => GLOB_META.test(a))) return false;
-  }
+  if (validateArgs && !validateArgs(args)) return false;
   return true;
 }
 
@@ -405,6 +441,11 @@ export function buildConnectOpts(
   passphrase: string | undefined,
   privateKeyBytes: Buffer | undefined,
 ): ConnectConfig {
+  // ssh2 exposes no public default list. Read its installed defaults instead
+  // of copying them and accidentally re-enabling a disabled algorithm later.
+  const { DEFAULT_SERVER_HOST_KEY } = createRequire(import.meta.url)("ssh2/lib/protocol/constants.js") as {
+    DEFAULT_SERVER_HOST_KEY: ServerHostKeyAlgorithm[];
+  };
   const opts: ConnectConfig = {
     host,
     port: 22,
@@ -414,6 +455,7 @@ export function buildConnectOpts(
     // RAVEN_SSH_INSECURE_HOST_KEYS=true to restore the previous
     // accept-anything behavior (the old `ssh -o StrictHostKeyChecking=no`).
     hostVerifier: createHostVerifier(host),
+    algorithms: { serverHostKey: preferKnownHostKeyAlgorithms(host, DEFAULT_SERVER_HOST_KEY) },
   };
   if (authMode.kind === "key") {
     if (!privateKeyBytes) {

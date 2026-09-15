@@ -40,25 +40,32 @@ Security posture, framework currency, dependency audit, static analysis summary,
 | Version | Date | Author | Changes |
 | :--- | :--- | :--- | :--- |
 | `1.0` | `2026-09-14` | `Crow Security & Dependency Review Agent (Claude Opus 5)` | `Initial review against origin/main @ fd982f6. Manual review with executable probes, codebase-memory call-graph tracing, npm audit, and a SonarQube scan of main.` |
+| `1.1` | `2026-09-15` | `PR #65 follow-up` | `Correct runtime support and stale verification claims; document command, credential and host-key follow-up fixes. See pr-65-remediation.md for scoped validation.` |
 
 ---
 
 ## 0. Remediation Status
 
-All seven Critical, High and Medium findings were remediated on branch
-`security-remediation-2026-09-14`, branched from `fd982f6`. Verification:
-clean `tsc --build`, full suite **1184 passed / 1 skipped / 0 failed**, and a
-SonarQube scan of the branch returning quality gate **OK** with **28 hotspots —
-identical to `main`, none in the new code**.
+Remediation of the seven Critical, High and Medium findings began on branch
+`security-remediation-2026-09-14`, based on `fd982f6`. The follow-up review at
+`6557f38` found incomplete command/credential handling and three regressions;
+the fixes and their verification are recorded in [PR #65 follow-up](pr-65-remediation.md).
+
+The independently reproduced baseline at `6557f38` was a passing `tsc --build`,
+**1262 passed / 1 skipped / 0 failed**, and a passing tool-inventory check.
+Those results did not cover the follow-up failures. The earlier claim of a
+branch SonarQube gate **OK** with no new hotspots was retracted in the PR
+description. No current-head Sonar pass has been verified; the historical
+scan in section 4 must not be used as a merge gate for these changes.
 
 | Finding | Status | Fix |
 | :--- | :--- | :--- |
 | `RSEC-001` | **Fixed** | Grep pattern escaped per-argument via a shared helper and passed after `-e`; `date`/`dateFrom`/`dateTo` validated to `YYYY-MM-DD` in both builders and at the tool boundary; `|` still works as `grep -E` alternation |
-| `RSEC-002` | **Fixed** | CR/LF rejected before the allowlist tokenizer sees them; per-command argument policy so an allowlisted binary cannot execute or write through its own options. The policy runs on the argv the remote shell builds, not on whitespace-split source text, and covers the four ways an option evaded it: short-option clusters (`sort -uo`), quote reassembly (`sort -'o'`), GNU long-option abbreviation (`date --s`), and glob expansion past a positional cap (`uniq *`) |
+| `RSEC-002` | **Fixed** | CR/LF rejected; quote-aware shell tokenization; per-command option and operand rules. `uniq` counts stdin `-`, honors `--`, parses option values and permits one final input. `date` accepts only its short display grammar, rejecting numeric setting operands. Unquoted glob expansion is rejected on commands with argument policies so expansion cannot introduce forbidden options or extra operands; quoted find patterns and ordinary ls/grep globs remain usable. |
 | `RSEC-003` | **Fixed** | `sanitizePath` rejects control and quote characters; output escaped at interpolation |
-| `RSEC-004` | **Fixed** | Unseparated SIN (Luhn-gated), unseparated NANP phone, domain-qualified IDIR, and bare IDIR in attribution context (`assigned to JSMITH`, `owner: MSMITH` — 5-8 uppercase after an attribution phrase, common acronyms excluded); credential values matched to whitespace so quotes and punctuation cannot truncate the redaction; quoted key names redacted, so a JSON `"password": "..."` no longer passes through; credential minimum 16 → 8 |
+| `RSEC-004` | **Fixed** | Unseparated SIN (Luhn-gated), NANP phone, domain-qualified and contextual bare IDIR rules retained. Scalar credentials use key-led scanning with complete quoted/JSON-encoded values, no minimum length and preserved sibling diagnostics. Quote/backslash nonmatches avoid the introduced quadratic prefix. Successful server-mcp log responses now pass through the scrubber too. |
 | `RSEC-005` | **Fixed** | `localGuard` validates Host, Origin and `Sec-Fetch-Site` ahead of every API router — the last catches no-cors embeds that carry no Origin |
-| `RSEC-006` | **Fixed** | `known_hosts` verification in **both** SSH clients, one shared implementation; `@revoked` enforced as an explicit deny and host fields treated as patterns |
+| `RSEC-006` | **Fixed** | Shared `known_hosts` verification in both clients; `@revoked` denies matching keys and host fields are patterns. Negotiation prefers already-pinned key types within ssh2's enabled defaults, without adding algorithms or weakening verification. |
 | `RSEC-007` | **Fixed** | TLS validation on by default; `SMTP_INSECURE_TLS=true` to opt out |
 | `RSEC-008` to `RSEC-013` | Open | Out of the agreed remediation scope (Low and Informational) |
 
@@ -82,7 +89,7 @@ exception. A key *mismatch* deliberately does not suggest that flag.
 
 | Technology Category | Tech Stack Item | Version | Support / EOL Status |
 | :--- | :--- | :--- | :--- |
-| **Runtime** | Node.js (declared engine) | `>=20.16.0 <21 \|\| >=22.3.0` | Active — Node 22 is Active LTS. Note the declared range also admits Node 24/25; the review host ran v25.9.0, which is outside any LTS line |
+| **Runtime** | Node.js (declared engine) | `>=20.16.0 <21 \|\| >=22.3.0` | Action required: CI selects Node 20 (EOL 2026-04-30), and the review host ran Node 25.9.0 (EOL 2026-06-01). Node 22 is Maintenance LTS; Node 24 is Active LTS as of 2026-09-15. The engine range admits unsupported releases. |
 | **Language** | TypeScript | `7.0.2` | Active. Repository is on `tsgo`; stale `.tsbuildinfo` from TS5 causes unreliable incremental builds |
 | **Web framework** | Express | `5.2.1` | Active |
 | **Protocol** | `@modelcontextprotocol/sdk` | `1.30.0` | Active |
@@ -92,7 +99,10 @@ exception. A key *mismatch* deliberately does not suggest that flag.
 | **Schema validation** | `zod` | `4.5.4` | Active (4.6.5 available) |
 | **Test framework** | `vitest` | `4.1.11` | Active |
 
-No end-of-life runtime or framework is in use.
+**Runtime migration remains outstanding.** Move CI and documented execution
+environments to a supported release and align the engine range. This audit
+correction does not change CI or claim a runtime migration has been tested.
+Support dates are from the [official Node.js release schedule](https://github.com/nodejs/Release/blob/main/schedule.json), checked on 2026-09-15.
 
 ---
 
@@ -250,7 +260,7 @@ A scan-hygiene note that materially affects these numbers: the server's global `
 | Check | Status | Evidence |
 | :--- | :--- | :--- |
 | Known vulnerable dependencies | `Pass` | `npm audit` reports 0 at `fd982f6` |
-| Outdated frameworks | `Pass` | Minor drift only; no EOL component |
+| Runtime/framework currency | `Action required` | Node 20 in CI and Node 25 on the review host are EOL; see section 1. |
 | Missing lockfile | `Pass` | `package-lock.json` committed with integrity hashes |
 | Dependency confusion | `Pass` | Internal packages scoped `@nrs/` |
 | Compromised or unpinned CI components | `Pass` | `ci.yml` pins actions and sets `permissions: contents: read` |

@@ -203,12 +203,104 @@ describe("PiScrubber.scrubText — credentials with a quoted key name", () => {
 
   it("handles single-quoted and escaped key forms", () => {
     expect(pi.scrubText("{'api_key': 'abc123def'}")).toBe("{[CREDENTIAL]}");
-    expect(pi.scrubText('msg={\\"token\\":\\"abc123def\\"}')).toContain("[CREDENTIAL]");
+    expect(pi.scrubText('msg={\\"token\\":\\"abc123def\\"}')).toBe("msg={[CREDENTIAL]}");
   });
 
   it("still redacts the unquoted key forms", () => {
     expect(pi.scrubText("password=hunter22")).toBe("[CREDENTIAL]");
     expect(pi.scrubText("api_key: abc12345$extra")).toBe("[CREDENTIAL]");
+  });
+});
+
+describe("PiScrubber.scrubText — credential grammar regressions", () => {
+  let pi: PiScrubber;
+  beforeEach(() => { delete process.env["RAVEN_SCRUB_PI"]; pi = new PiScrubber(); });
+
+  it.each(["", "a", "abc", null, false, 0])("preserves JSON siblings after a short credential (%j)", (token) => {
+    let input = JSON.stringify({ token, level: "ERROR", message: "Database unavailable" });
+    let expected = '{[CREDENTIAL],"level":"ERROR","message":"Database unavailable"}';
+    for (let depth = 0; depth < 4; depth += 1) {
+      expect(pi.scrubText(input)).toBe(expected);
+      input = JSON.stringify({ message: input });
+      expected = JSON.stringify({ message: expected });
+    }
+  });
+
+  it.each([0, 1, 2, 3])("redacts the complete value through %i JSON string encodings", (encodings) => {
+    const secrets = ["Secret12 with suffix", 'prefix "quoted" suffix', "trailing backslash\\", '\\"\\"', ""];
+    for (const password of secrets) {
+      let input = JSON.stringify({ password, level: "ERROR", message: "Database unavailable" });
+      let expected = '{[CREDENTIAL],"level":"ERROR","message":"Database unavailable"}';
+      for (let i = 0; i < encodings; i += 1) {
+        input = JSON.stringify({ message: input });
+        expected = JSON.stringify({ message: expected });
+      }
+      expect(pi.scrubText(input)).toBe(expected);
+    }
+  });
+
+  it.each([0, 1, 2, 3])("redacts single-quoted values through %i JSON string encodings", (encodings) => {
+    for (const password of ["abcd'SECRET", "trailing backslash\\", "prefix\\'SECRET", "a b"]) {
+      const escaped = password.replaceAll("\\", "\\\\").replaceAll("'", "\\'");
+      let input = `{'password':'${escaped}','level':'ERROR'}`;
+      let expected = "{[CREDENTIAL],'level':'ERROR'}";
+      for (let depth = 0; depth < encodings; depth += 1) {
+        input = JSON.stringify({ message: input });
+        expected = JSON.stringify({ message: expected });
+      }
+      expect(pi.scrubText(input)).toBe(expected);
+    }
+  });
+
+  it("retains original JSON escape spelling when a string needs no credential redaction", () => {
+    const input = String.raw`{"message":"password unavailable \u0061 \/ path \"quoted\" \\ slash"}`;
+    expect(pi.scrubText(input)).toBe(input);
+  });
+
+  it("preserves diagnostic content when a changed JSON wrapper canonicalizes its escapes", () => {
+    const input = String.raw`{"message":"{'password':'abcd\\'SECRET','note':'\u0061 \/ diagnostic'}"}`;
+    expect(pi.scrubText(input))
+      .toBe(JSON.stringify({ message: "{[CREDENTIAL],'note':'a / diagnostic'}" }));
+  });
+
+  it("preserves raw punctuation, quotes, and backslashes in the redacted value", () => {
+    expect(pi.scrubText(String.raw`password=a,b}c]d"e'f\g next`)).toBe("[CREDENTIAL] next");
+    expect(pi.scrubText('password="a" next')).toBe("[CREDENTIAL] next");
+    expect(pi.scrubText("secret='' next")).toBe("[CREDENTIAL] next");
+  });
+
+  it("scrubs specific token formats before a generic credential consumes their label", () => {
+    expect(pi.scrubText("token=Bearer abc123def456")).toBe("[CREDENTIAL] [TOKEN]");
+    expect(pi.scrubText("password=SMSESSION=abc123def456")).toBe("[CREDENTIAL]");
+  });
+
+  it("handles consecutive credentials and leaves surrounding diagnostics intact", () => {
+    expect(pi.scrubText('{"token":null,"password":"abc","secret":"a b","level":"ERROR"}'))
+      .toBe('{[CREDENTIAL],[CREDENTIAL],[CREDENTIAL],"level":"ERROR"}');
+  });
+
+  it("bounds an unterminated quoted value at its physical log line", () => {
+    expect(pi.scrubText('password="secret with suffix\nERROR next line'))
+      .toBe('[CREDENTIAL]\nERROR next line');
+  });
+
+  it.each(["\n", "\r\n"])("preserves the log line after an empty raw assignment (%j)", (newline) => {
+    expect(pi.scrubText(`password= \t${newline}ERROR database unavailable`))
+      .toBe(`[CREDENTIAL]${newline}ERROR database unavailable`);
+  });
+
+  it("allows a structured value on the next line in formatted JSON", () => {
+    expect(pi.scrubText('{"token":\r\n  "abc",\n"level":"ERROR"}'))
+      .toBe('{[CREDENTIAL],\n"level":"ERROR"}');
+  });
+
+  it.each(['"', "\\"])("handles long nonmatching %j runs without quadratic backtracking", (character) => {
+    const input = character.repeat(80_000);
+    const start = performance.now();
+    expect(pi.scrubText(input)).toBe(input);
+    // The previous credential prefix took several seconds. This deliberately
+    // generous budget isolates that regression from ordinary timing noise.
+    expect(performance.now() - start).toBeLessThan(1_000);
   });
 });
 

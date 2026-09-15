@@ -97,33 +97,116 @@ type Replacer = (match: string, ...groups: string[]) => string;
  */
 const lit = (s: string): Replacer => () => s;
 
+/**
+ * Decode complete JSON string wrappers before interpreting credentials inside
+ * them. In particular, JSON doubles an escaped apostrophe's backslashes without
+ * changing its single-quote delimiters. Unchanged strings retain their original
+ * bytes; changed strings use JSON's canonical escaping and retain their content.
+ */
+function scrubJsonStringContents(text: string): string {
+  const parts: string[] = [];
+  let previousEnd = 0;
+  let cursor = 0;
+  while (cursor < text.length) {
+    if (text[cursor] === "\\") {
+      cursor += 2;
+      continue;
+    }
+    if (text[cursor++] !== '"') continue;
+    const start = cursor - 1;
+    while (cursor < text.length && text[cursor] !== '"' && !/[\r\n]/.test(text[cursor])) {
+      cursor += text[cursor] === "\\" ? 2 : 1;
+    }
+    if (text[cursor] !== '"') continue;
+    cursor += 1;
+    const encoded = text.slice(start, cursor);
+    if (!/(?:api[_-]?key|token|secret|password)/i.test(encoded)) continue;
+    let decoded: string;
+    try {
+      decoded = JSON.parse(encoded);
+    } catch {
+      // Ordinary log quotes need not form valid JSON string literals.
+      continue;
+    }
+    const scrubbed = scrubCredentials(decoded);
+    if (scrubbed !== decoded) {
+      parts.push(text.slice(previousEnd, start), JSON.stringify(scrubbed));
+      previousEnd = cursor;
+    }
+  }
+  parts.push(text.slice(previousEnd));
+  return parts.join("");
+}
+
+/**
+ * Find scalar credentials from their key, then consume their complete value.
+ * Starting at a literal key avoids retrying an unbounded quote/backslash prefix
+ * at every input position. Each consumed value is skipped by the next search.
+ */
+function scrubCredentials(text: string): string {
+  text = scrubJsonStringContents(text);
+  const keys = /(?:api[_-]?key|token|secret|password)(\\*["'])?\s*[:=]/gi;
+  const parts: string[] = [];
+  let previousEnd = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = keys.exec(text)) !== null) {
+    const keyQuote = match[1];
+    let start = match.index;
+    if (keyQuote && text.slice(start - keyQuote.length, start) === keyQuote) {
+      start -= keyQuote.length;
+    }
+
+    let valueStart = keys.lastIndex;
+    // Raw log assignments stay on their line; formatted JSON may put the
+    // value on the line after a quoted key.
+    const whitespace = keyQuote ? /\s/ : /[ \t]/;
+    while (valueStart < text.length && whitespace.test(text[valueStart])) valueStart += 1;
+    let end = valueStart;
+    while (text[end] === "\\") end += 1;
+    const quote = text[end];
+    if (quote === '"' || quote === "'") {
+      const escaping = end - valueStart;
+      end += 1;
+      let backslashes = 0;
+      while (end < text.length) {
+        const char = text[end];
+        // Physical newlines bound malformed log strings; JSON newlines are
+        // escaped and stay inside the value.
+        if (char === "\r" || char === "\n") break;
+        end += 1;
+        if (char === "\\") {
+          backslashes += 1;
+          continue;
+        }
+        // JSON encoding doubles existing backslashes and adds one before a
+        // quote. Delimiters therefore have 0, 1, 3, 7, ... backslashes, while
+        // escaped quotes inside a value have a different remainder. Also
+        // allow pairs of encoded backslashes at the end of the value.
+        if (char === quote && backslashes % (2 * (escaping + 1)) === escaping) break;
+        backslashes = 0;
+      }
+    } else {
+      end = valueStart;
+      while (end < text.length && !/\s/.test(text[end])) {
+        // Quoted keys identify structured scalar values such as null, false,
+        // and numbers. Raw key=value passwords may themselves contain these
+        // punctuation characters, so only whitespace terminates that form.
+        if (keyQuote && /[,}\]]/.test(text[end])) break;
+        end += 1;
+      }
+    }
+
+    parts.push(text.slice(previousEnd, start), "[CREDENTIAL]");
+    previousEnd = end;
+    keys.lastIndex = end;
+  }
+
+  parts.push(text.slice(previousEnd));
+  return parts.join("");
+}
+
 const PI_PATTERNS: Array<{ pattern: RegExp; replacement: Replacer }> = [
-  // SMSESSION tokens (long hex/base64 strings after SMSESSION=)
-  { pattern: /SMSESSION=[A-Za-z0-9+/=%\-_.]{10,}/g, replacement: lit("SMSESSION=[TOKEN]") },
-  // Bearer tokens
-  { pattern: /Bearer\s+[A-Za-z0-9\-_.~+/]+=*/g, replacement: lit("Bearer [TOKEN]") },
-  // Generic API keys / tokens. The minimum length is 8 rather than 16: an
-  // eight-character password is weak, not absent, and leaking it is the same
-  // disclosure as leaking a long one.
-  // The value is matched to its delimiter, not to the end of an allowlisted
-  // character run. Two earlier versions each stopped at a character outside
-  // a class — first `!`, then `'`/`"` — and leaked the tail (or, when the
-  // stray character came before the minimum length, failed to match at all
-  // and leaked the whole value). The quoted branches find their own closing
-  // quote -- counting an escape pair as one character, so a value containing
-  // \" runs on to the real closing quote instead of ending at the escape and
-  // leaving the rest of the secret in the clear; the unquoted branch stops at
-  // whitespace and nothing else.
-  //
-  // The key side takes quotes too. JSON writes `"password": "..."`, so the
-  // name is followed by its own closing quote — or by an escaped one when the
-  // JSON is embedded in a log message as a string — before the separator ever
-  // appears. Requiring the separator to follow the name directly meant no JSON
-  // credential was ever redacted, which is the commonest shape in these logs.
-  // The name's opening quote goes too, so the whole `"key": "value"` expression
-  // is replaced the way `key=value` already was, rather than leaving a stray
-  // quote behind.
-  { pattern: /["'\\]*(?:api[_-]?key|token|secret|password)["'\\]*\s*[:=]\s*(?:"(?:[^"\\\r\n]|\\.){4,}"|'(?:[^'\\\r\n]|\\.){4,}'|[^\s]{6,})/gi, replacement: lit("[CREDENTIAL]") },
   // SIN, separated: 123-456-789 or 123 456 789. No checksum gate here — a
   // three-three-three grouping is already a strong signal on its own.
   { pattern: /\b\d{3}[\s-]\d{3}[\s-]\d{3}\b/g, replacement: lit("[SIN]") },
@@ -192,7 +275,7 @@ export class PiScrubber {
    * Scrub all personal information within a block of text.
    *
    * Applies two layers of scrubbing:
-   *   1. Regex patterns — emails, phones, IDIRs, SINs, tokens
+   *   1. Credential parsing and PI patterns — emails, phones, IDIRs, SINs, tokens
    *   2. Known names — names previously seen via scrub()
    *
    * @param text - The text to scrub
@@ -201,7 +284,11 @@ export class PiScrubber {
   scrubText(text: string): string {
     if (!this.isEnabled()) return text;
 
-    let result = text;
+    // Scrub these token formats before a generic key consumes their label.
+    let result = text
+      .replace(/SMSESSION=[A-Za-z0-9+/=%\-_.]{10,}/g, "SMSESSION=[TOKEN]")
+      .replace(/Bearer\s+[A-Za-z0-9\-_.~+/]+=*/g, "Bearer [TOKEN]");
+    result = scrubCredentials(result);
 
     // Layer 1: Regex-based pattern scrubbing
     for (const { pattern, replacement } of PI_PATTERNS) {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createHmac, randomBytes } from "node:crypto";
-import { parseKnownHosts, verifyHostKey } from "../known-hosts.js";
+import { parseKnownHosts, preferKnownHostKeyAlgorithms, verifyHostKey } from "../known-hosts.js";
 
 /**
  * RSEC-006 regression suite.
@@ -28,6 +28,7 @@ describe("parseKnownHosts", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]!.hosts).toEqual(["prod01", "prod01.example.gov.bc.ca"]);
     expect(entries[0]!.key).toBe(KEY_B64);
+    expect(entries[0]!.keyType).toBe("ssh-rsa");
   });
 
   it("skips comments and blank lines, and tags marker lines", () => {
@@ -53,6 +54,64 @@ describe("parseKnownHosts", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]!.hosts).toEqual([]);
     expect(entries[0]!.hashSalt).not.toBeNull();
+  });
+});
+
+describe("preferKnownHostKeyAlgorithms", () => {
+  // Deliberately omit ssh-rsa and ssh-dss: a pin must never enable an
+  // algorithm that the caller's SSH library has disabled.
+  const defaults = ["ssh-ed25519", "ecdsa-sha2-nistp256", "rsa-sha2-512", "rsa-sha2-256"];
+  const rsaFirst = ["rsa-sha2-512", "rsa-sha2-256", "ssh-ed25519", "ecdsa-sha2-nistp256"];
+
+  beforeEach(() => vi.stubEnv("RAVEN_SSH_INSECURE_HOST_KEYS", ""));
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("prefers the enabled RSA signature algorithms for an ssh-rsa pin", () => {
+    const result = preferKnownHostKeyAlgorithms("prod01", defaults, `prod01 ssh-rsa ${KEY_B64}`);
+    expect(result).toEqual(rsaFirst);
+    expect(result).not.toContain("ssh-rsa");
+    expect(defaults[0]).toBe("ssh-ed25519"); // the library's defaults are not mutated
+  });
+
+  it("retains the default priority within the known and unknown groups", () => {
+    const contents = `prod01 ssh-rsa ${KEY_B64}\nprod01 ssh-ed25519 ${OTHER_KEY.toString("base64")}`;
+    expect(preferKnownHostKeyAlgorithms("prod01", defaults, contents))
+      .toEqual(["ssh-ed25519", "rsa-sha2-512", "rsa-sha2-256", "ecdsa-sha2-nistp256"]);
+  });
+
+  it.each([
+    ["plain alias", "prod01,prod01.example.gov.bc.ca", "prod01.example.gov.bc.ca"],
+    ["hashed host", hashedHostField("prod01"), "prod01"],
+    ["wildcard", "prod*.example.gov.bc.ca", "prod01.example.gov.bc.ca"],
+    ["bracketed default port", "[prod01]:22", "prod01"],
+  ])("uses the same %s matching as key verification", (_label, hostField, host) => {
+    expect(preferKnownHostKeyAlgorithms(host!, defaults, `${hostField} ssh-rsa ${KEY_B64}`))
+      .toEqual(rsaFirst);
+  });
+
+  it.each([
+    ["missing file", null],
+    ["unmatched host", `other01 ssh-rsa ${KEY_B64}`],
+    ["negated host", `prod*,!prod01 ssh-rsa ${KEY_B64}`],
+    ["certificate authority", `@cert-authority prod01 ssh-rsa ${KEY_B64}`],
+    ["disabled algorithm", `prod01 ssh-dss ${KEY_B64}`],
+    ["malformed entries", "prod01\n|1|broken ssh-rsa key\n@unknown prod01 ssh-rsa key"],
+    ["revoked positive entry", `prod01 ssh-rsa ${KEY_B64}\n@revoked * ssh-rsa ${KEY_B64}`],
+  ])("leaves enabled defaults unchanged for a %s", (_label, contents) => {
+    expect(preferKnownHostKeyAlgorithms("prod01", defaults, contents)).toEqual(defaults);
+  });
+
+  it("can prefer a non-revoked key of the same type as a revoked key", () => {
+    const contents = [
+      `@revoked * ssh-rsa ${KEY_B64}`,
+      `prod01 ssh-rsa ${OTHER_KEY.toString("base64")}`,
+    ].join("\n");
+    expect(preferKnownHostKeyAlgorithms("prod01", defaults, contents)).toEqual(rsaFirst);
+  });
+
+  it("leaves negotiation unchanged for the explicit insecure opt-in", () => {
+    vi.stubEnv("RAVEN_SSH_INSECURE_HOST_KEYS", "true");
+    expect(preferKnownHostKeyAlgorithms("prod01", defaults, `prod01 ssh-rsa ${KEY_B64}`)).toEqual(defaults);
   });
 });
 
