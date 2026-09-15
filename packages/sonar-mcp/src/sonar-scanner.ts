@@ -405,15 +405,18 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
       );
     }
 
-    if (opts.extraArgs?.length) {
-      for (const arg of opts.extraArgs) {
-        if (arg.startsWith("-D")) {
-          beginArgs.push("/d:" + arg.slice(2));
-        } else if (arg.startsWith("/d:")) {
-          beginArgs.push(arg);
-        } else {
-          beginArgs.push(arg);
-        }
+    const projectNamePrefix = "-Dsonar.projectName=";
+    const projectVersionPrefix = "-Dsonar.projectVersion=";
+
+    for (const arg of opts.extraArgs ?? []) {
+      if (arg.startsWith(projectNamePrefix)) {
+        beginArgs.push("/n:" + arg.slice(projectNamePrefix.length));
+      } else if (arg.startsWith(projectVersionPrefix)) {
+        beginArgs.push("/v:" + arg.slice(projectVersionPrefix.length));
+      } else if (arg.startsWith("-D")) {
+        beginArgs.push("/d:" + arg.slice(2));
+      } else {
+        beginArgs.push(arg);
       }
     }
 
