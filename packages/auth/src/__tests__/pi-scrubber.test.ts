@@ -178,3 +178,36 @@ describe("PiScrubber.scrubText — bare IDIR in attribution context (review Issu
     expect(pi.scrubText("ERROR JSMITH FATAL")).toBe("ERROR JSMITH FATAL");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Self-review follow-up: both this rule and the one it replaced on main require
+// the key name to be followed immediately by the separator, so a JSON-quoted
+// key ("password": "…") never matched and the value passed through in full.
+// Structured JSON is the common shape in these logs, which makes it the most
+// likely credential form to reach a model or an audit record unredacted.
+// ---------------------------------------------------------------------------
+
+describe("PiScrubber.scrubText — credentials with a quoted key name", () => {
+  let pi: PiScrubber;
+  beforeEach(() => { delete process.env["RAVEN_SCRUB_PI"]; pi = new PiScrubber(); });
+
+  it("redacts a JSON credential, spaced or compact", () => {
+    expect(pi.scrubText('{"password": "s3cr3tval"}')).toBe('{[CREDENTIAL]}');
+    expect(pi.scrubText('{"password" : "s3cr3tval"}')).toBe('{[CREDENTIAL]}');
+  });
+
+  it("redacts only the credential and leaves sibling fields readable", () => {
+    expect(pi.scrubText('{"password":"s3cr3tval","user":"bob"}'))
+      .toBe('{[CREDENTIAL],"user":"bob"}');
+  });
+
+  it("handles single-quoted and escaped key forms", () => {
+    expect(pi.scrubText("{'api_key': 'abc123def'}")).toBe("{[CREDENTIAL]}");
+    expect(pi.scrubText('msg={\\"token\\":\\"abc123def\\"}')).toContain("[CREDENTIAL]");
+  });
+
+  it("still redacts the unquoted key forms", () => {
+    expect(pi.scrubText("password=hunter22")).toBe("[CREDENTIAL]");
+    expect(pi.scrubText("api_key: abc12345$extra")).toBe("[CREDENTIAL]");
+  });
+});

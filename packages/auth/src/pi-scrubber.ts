@@ -111,7 +111,16 @@ const PI_PATTERNS: Array<{ pattern: RegExp; replacement: Replacer }> = [
   // stray character came before the minimum length, failed to match at all
   // and leaked the whole value). The quoted branches find their own closing
   // quote; the unquoted branch stops at whitespace and nothing else.
-  { pattern: /(?:api[_-]?key|token|secret|password)\s*[:=]\s*(?:"[^"\r\n]{4,}"|'[^'\r\n]{4,}'|[^\s]{6,})/gi, replacement: lit("[CREDENTIAL]") },
+  //
+  // The key side takes quotes too. JSON writes `"password": "..."`, so the
+  // name is followed by its own closing quote — or by an escaped one when the
+  // JSON is embedded in a log message as a string — before the separator ever
+  // appears. Requiring the separator to follow the name directly meant no JSON
+  // credential was ever redacted, which is the commonest shape in these logs.
+  // The name's opening quote goes too, so the whole `"key": "value"` expression
+  // is replaced the way `key=value` already was, rather than leaving a stray
+  // quote behind.
+  { pattern: /["'\\]*(?:api[_-]?key|token|secret|password)["'\\]*\s*[:=]\s*(?:"[^"\r\n]{4,}"|'[^'\r\n]{4,}'|[^\s]{6,})/gi, replacement: lit("[CREDENTIAL]") },
   // SIN, separated: 123-456-789 or 123 456 789. No checksum gate here — a
   // three-three-three grouping is already a strong signal on its own.
   { pattern: /\b\d{3}[\s-]\d{3}[\s-]\d{3}\b/g, replacement: lit("[SIN]") },
