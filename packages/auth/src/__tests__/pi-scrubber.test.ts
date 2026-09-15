@@ -211,3 +211,28 @@ describe("PiScrubber.scrubText — credentials with a quoted key name", () => {
     expect(pi.scrubText("api_key: abc12345$extra")).toBe("[CREDENTIAL]");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Copilot review round 4: the quoted branches treated the first quote as the
+// terminator even when it was escaped, so a value containing \" was redacted
+// only as far as the escape and the remainder of the secret survived.
+// ---------------------------------------------------------------------------
+
+describe("PiScrubber.scrubText — quoted values containing an escaped quote", () => {
+  let pi: PiScrubber;
+  beforeEach(() => { delete process.env["RAVEN_SCRUB_PI"]; pi = new PiScrubber(); });
+
+  it("redacts through an escaped quote rather than stopping at it", () => {
+    expect(pi.scrubText('{"password":"abcd\\"SECRET"}')).toBe("{[CREDENTIAL]}");
+    expect(pi.scrubText("{'password':'abcd\\'SECRET'}")).toBe("{[CREDENTIAL]}");
+  });
+
+  it("still stops at the real closing quote and leaves siblings readable", () => {
+    expect(pi.scrubText('{"password":"abcdef","user":"bob"}'))
+      .toBe('{[CREDENTIAL],"user":"bob"}');
+  });
+
+  it("redacts a value that is only escaped quotes", () => {
+    expect(pi.scrubText('{"password":"\\"\\"\\"\\""}')).toBe("{[CREDENTIAL]}");
+  });
+});

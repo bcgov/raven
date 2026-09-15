@@ -110,7 +110,10 @@ const PI_PATTERNS: Array<{ pattern: RegExp; replacement: Replacer }> = [
   // a class — first `!`, then `'`/`"` — and leaked the tail (or, when the
   // stray character came before the minimum length, failed to match at all
   // and leaked the whole value). The quoted branches find their own closing
-  // quote; the unquoted branch stops at whitespace and nothing else.
+  // quote -- counting an escape pair as one character, so a value containing
+  // \" runs on to the real closing quote instead of ending at the escape and
+  // leaving the rest of the secret in the clear; the unquoted branch stops at
+  // whitespace and nothing else.
   //
   // The key side takes quotes too. JSON writes `"password": "..."`, so the
   // name is followed by its own closing quote — or by an escaped one when the
@@ -120,7 +123,7 @@ const PI_PATTERNS: Array<{ pattern: RegExp; replacement: Replacer }> = [
   // The name's opening quote goes too, so the whole `"key": "value"` expression
   // is replaced the way `key=value` already was, rather than leaving a stray
   // quote behind.
-  { pattern: /["'\\]*(?:api[_-]?key|token|secret|password)["'\\]*\s*[:=]\s*(?:"[^"\r\n]{4,}"|'[^'\r\n]{4,}'|[^\s]{6,})/gi, replacement: lit("[CREDENTIAL]") },
+  { pattern: /["'\\]*(?:api[_-]?key|token|secret|password)["'\\]*\s*[:=]\s*(?:"(?:[^"\\\r\n]|\\.){4,}"|'(?:[^'\\\r\n]|\\.){4,}'|[^\s]{6,})/gi, replacement: lit("[CREDENTIAL]") },
   // SIN, separated: 123-456-789 or 123 456 789. No checksum gate here — a
   // three-three-three grouping is already a strong signal on its own.
   { pattern: /\b\d{3}[\s-]\d{3}[\s-]\d{3}\b/g, replacement: lit("[SIN]") },
