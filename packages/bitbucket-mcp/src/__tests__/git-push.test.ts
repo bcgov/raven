@@ -37,7 +37,7 @@ function fakeGit(state: {
   emptyRemote?: boolean;
 }) {
   const calls: { args: string[]; env?: NodeJS.ProcessEnv; cwd: string }[] = [];
-  const exec: GitExec = (args, opts) => {
+  const exec: GitExec = async (args, opts) => {
     calls.push({ args, env: opts.env, cwd: opts.cwd });
     const cmd = args.join(" ");
     if (cmd === "rev-parse --show-toplevel") return state.toplevel + "\n";
@@ -117,7 +117,7 @@ describe("isValidBranchName", () => {
 });
 
 describe("gitPlumbingEnv", () => {
-  it("strips inherited GIT_CONFIG_* and repo redirection so checks and push see one configuration", () => {
+  it("strips inherited GIT_CONFIG_* and repo redirection so checks and push see one configuration", async () => {
     vi.stubEnv("GIT_CONFIG_COUNT", "1");
     vi.stubEnv("GIT_CONFIG_KEY_0", `url.https://${HOST}/.insteadOf`);
     vi.stubEnv("GIT_CONFIG_VALUE_0", "https://attacker.example.com/");
@@ -125,7 +125,7 @@ describe("gitPlumbingEnv", () => {
     try {
       const dir = repoDir();
       const git = fakeGit({ toplevel: dir, currentBranch: "main", remoteUrl: `https://${HOST}/scm/nrs/repo.git`, hasUpstream: true });
-      pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
+      await pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
       for (const call of git.calls) {
         const names = Object.keys(call.env ?? {}).map((k) => k.toUpperCase());
         expect(names).not.toContain("GIT_DIR");
@@ -204,7 +204,7 @@ describe("gitCredentialEnv", () => {
 });
 
 describe("pushRepo", () => {
-  it("pushes the current branch with an explicit non-forcing refspec", () => {
+  it("pushes the current branch with an explicit non-forcing refspec", async () => {
     const dir = repoDir();
     const git = fakeGit({
       toplevel: dir,
@@ -213,7 +213,7 @@ describe("pushRepo", () => {
       hasUpstream: true,
       pushOutput: "Everything up-to-date",
     });
-    const result = pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
+    const result = await pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
     expect(result).toMatchObject({
       branch: "feature/x",
       remote: "origin",
@@ -231,7 +231,7 @@ describe("pushRepo", () => {
     ]);
   });
 
-  it("refuses a remote with more than one push URL and never runs push", () => {
+  it("refuses a remote with more than one push URL and never runs push", async () => {
     const dir = repoDir();
     const git = fakeGit({
       toplevel: dir,
@@ -239,13 +239,13 @@ describe("pushRepo", () => {
       remoteUrl: `https://${HOST}/scm/nrs/repo.git`,
       extraPushUrls: ["https://attacker.example.com/scm/x/mirror.git"],
     });
-    expect(() => pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).toThrow(
+    await expect(pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).rejects.toThrow(
       /2 push URLs/
     );
     expect(git.calls.some((c) => c.args[0] === "push")).toBe(false);
   });
 
-  it("runs only the push with the credential env, never argv, and the plumbing without it", () => {
+  it("runs only the push with the credential env, never argv, and the plumbing without it", async () => {
     const dir = repoDir();
     const git = fakeGit({
       toplevel: dir,
@@ -253,7 +253,7 @@ describe("pushRepo", () => {
       remoteUrl: `https://${HOST}/scm/nrs/repo.git`,
       hasUpstream: true,
     });
-    pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
+    await pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
     const push = git.calls.at(-1)!;
     // clone_repo uses the same helper, so the two invocations cannot drift.
     expect(push.env).toEqual(gitCredentialEnv(AUTH, `https://${HOST}/scm/nrs/repo.git`));
@@ -267,7 +267,7 @@ describe("pushRepo", () => {
     }
   });
 
-  it("adds --set-upstream only when the branch has no upstream", () => {
+  it("adds --set-upstream only when the branch has no upstream", async () => {
     const dir = repoDir();
     const git = fakeGit({
       toplevel: dir,
@@ -275,7 +275,7 @@ describe("pushRepo", () => {
       remoteUrl: `https://${HOST}/scm/nrs/repo.git`,
       hasUpstream: false,
     });
-    const result = pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
+    const result = await pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
     expect(result.setUpstream).toBe(true);
     expect(git.calls.at(-1)!.args).toEqual([
       "push",
@@ -288,20 +288,20 @@ describe("pushRepo", () => {
     ]);
   });
 
-  it("refuses a remote on a foreign host and never runs push", () => {
+  it("refuses a remote on a foreign host and never runs push", async () => {
     const dir = repoDir();
     const git = fakeGit({
       toplevel: dir,
       currentBranch: "main",
       remoteUrl: "https://attacker.example.com/scm/nrs/repo.git",
     });
-    expect(() => pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).toThrow(
+    await expect(pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).rejects.toThrow(
       /not the configured Bitbucket host/
     );
     expect(git.calls.some((c) => c.args[0] === "push")).toBe(false);
   });
 
-  it("refuses a backslash in the authority, which curl reads as userinfo", () => {
+  it("refuses a backslash in the authority, which curl reads as userinfo", async () => {
     // WHATWG turns the backslash into a path separator, so `new URL().host`
     // is the pinned host for every one of these — but git/curl connect to
     // attacker.example.com and send the credential there. The raw-string
@@ -314,66 +314,66 @@ describe("pushRepo", () => {
     ]) {
       expect(new URL(remoteUrl).host).toBe(HOST); // the parser differential
       const git = fakeGit({ toplevel: dir, currentBranch: "main", remoteUrl });
-      expect(() => pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).toThrow(
+      await expect(pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).rejects.toThrow(
         /not a plain https:\/\/host\/path URL/
       );
       expect(git.calls.some((c) => c.args[0] === "push")).toBe(false);
     }
   });
 
-  it("refuses embedded userinfo rather than stripping it", () => {
+  it("refuses embedded userinfo rather than stripping it", async () => {
     const dir = repoDir();
     for (const remoteUrl of [
       `https://user:secret@${HOST}/scm/nrs/repo.git`,
       `https://${HOST}@attacker.example.com/scm/nrs/repo.git`,
     ]) {
       const git = fakeGit({ toplevel: dir, currentBranch: "main", remoteUrl });
-      expect(() => pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).toThrow(
+      await expect(pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).rejects.toThrow(
         /not a plain https:\/\/host\/path URL|not the configured Bitbucket host/
       );
       expect(git.calls.some((c) => c.args[0] === "push")).toBe(false);
     }
   });
 
-  it("accepts the configured host in any case and with an explicit :443", () => {
+  it("accepts the configured host in any case and with an explicit :443", async () => {
     const dir = repoDir();
     for (const remoteUrl of [
       `https://${HOST.toUpperCase()}/scm/nrs/repo.git`,
       `https://${HOST}:443/scm/nrs/repo.git`,
     ]) {
       const git = fakeGit({ toplevel: dir, currentBranch: "main", remoteUrl, hasUpstream: true });
-      const result = pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
+      const result = await pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
       expect(result.remoteUrl).toBe(`https://${HOST}/scm/nrs/repo.git`);
       expect(git.calls.at(-1)!.args[0]).toBe("push");
     }
   });
 
-  it("refuses non-HTTPS remotes (ssh and http)", () => {
+  it("refuses non-HTTPS remotes (ssh and http)", async () => {
     const dir = repoDir();
     for (const remoteUrl of [
       `http://${HOST}/scm/nrs/repo.git`,
       `ssh://git@${HOST}:7999/nrs/repo.git`,
     ]) {
       const git = fakeGit({ toplevel: dir, currentBranch: "main", remoteUrl });
-      expect(() => pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).toThrow(
+      await expect(pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).rejects.toThrow(
         /refusing to send credentials there/
       );
     }
   });
 
-  it("refuses scp-style remotes that are not URLs at all", () => {
+  it("refuses scp-style remotes that are not URLs at all", async () => {
     const dir = repoDir();
     const git = fakeGit({
       toplevel: dir,
       currentBranch: "main",
       remoteUrl: `git@${HOST}:nrs/repo.git`,
     });
-    expect(() => pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).toThrow(
+    await expect(pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).rejects.toThrow(
       /is not a URL/
     );
   });
 
-  it("refuses repository-local proxy, TLS and credential-program config and never runs push", () => {
+  it("refuses repository-local proxy, TLS and credential-program config and never runs push", async () => {
     const dir = repoDir();
     for (const key of [
       "http.proxy",
@@ -387,6 +387,7 @@ describe("pushRepo", () => {
       "core.gitproxy",
       "remote.origin.proxy",
       "remote.origin.proxyauthmethod",
+      "remote.origin.vcs",
     ]) {
       const git = fakeGit({
         toplevel: dir,
@@ -394,14 +395,14 @@ describe("pushRepo", () => {
         remoteUrl: `https://${HOST}/scm/nrs/repo.git`,
         localConfigKeys: [key],
       });
-      expect(() => pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).toThrow(
+      await expect(pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).rejects.toThrow(
         new RegExp(`repository-local git config.*${key.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}`)
       );
       expect(git.calls.some((c) => c.args[0] === "push")).toBe(false);
     }
   });
 
-  it("ignores harmless local keys, another remote's proxy, and every global/system key", () => {
+  it("ignores harmless local keys, another remote's proxy, and every global/system key", async () => {
     const dir = repoDir();
     const git = fakeGit({
       toplevel: dir,
@@ -410,54 +411,46 @@ describe("pushRepo", () => {
       localConfigKeys: ["user.email", "core.filemode", "remote.upstream.proxy", "url.https://x/.insteadof"],
       hasUpstream: true,
     });
-    pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
+    await pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
     expect(git.calls.at(-1)!.args[0]).toBe("push");
   });
 
-  it("refuses option- or refspec-shaped branch and remote names", () => {
+  it("refuses option- or refspec-shaped branch and remote names", async () => {
     const dir = repoDir();
     for (const branch of ["-danger", "+main", "a:b", "a b", "refs/heads/main", "a..b", "feature/"]) {
       const git = fakeGit({
         toplevel: dir,
         remoteUrl: `https://${HOST}/scm/nrs/repo.git`,
       });
-      expect(() =>
-        pushRepo({ dir, branch, expectedHost: HOST, authHeader: AUTH, exec: git.exec })
-      ).toThrow(/Refusing branch name/);
+      await expect(pushRepo({ dir, branch, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).rejects.toThrow(/Refusing branch name/);
       expect(git.calls.some((c) => c.args[0] === "push")).toBe(false);
     }
     const git = fakeGit({ toplevel: dir, remoteUrl: `https://${HOST}/x.git` });
-    expect(() =>
-      pushRepo({ dir, branch: "main", remote: "--mirror", expectedHost: HOST, authHeader: AUTH, exec: git.exec })
-    ).toThrow(/Refusing remote name/);
+    await expect(pushRepo({ dir, branch: "main", remote: "--mirror", expectedHost: HOST, authHeader: AUTH, exec: git.exec })).rejects.toThrow(/Refusing remote name/);
   });
 
-  it("refuses a relative dir and a subdirectory of a repository", () => {
-    expect(() =>
-      pushRepo({ dir: "relative/path", expectedHost: HOST, authHeader: AUTH, exec: fakeGit({ toplevel: "/x" }).exec })
-    ).toThrow(/absolute path/);
+  it("refuses a relative dir and a subdirectory of a repository", async () => {
+    await expect(pushRepo({ dir: "relative/path", expectedHost: HOST, authHeader: AUTH, exec: fakeGit({ toplevel: "/x" }).exec })).rejects.toThrow(/absolute path/);
 
     const top = repoDir();
     const sub = join(top, "packages");
     mkdirSync(sub);
     const git = fakeGit({ toplevel: top, currentBranch: "main", remoteUrl: `https://${HOST}/x.git` });
-    expect(() =>
-      pushRepo({ dir: sub, expectedHost: HOST, authHeader: AUTH, exec: git.exec })
-    ).toThrow(/top level/);
+    await expect(pushRepo({ dir: sub, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).rejects.toThrow(/top level/);
   });
 
-  it("fails with git's message on a detached HEAD", () => {
+  it("fails with git's message on a detached HEAD", async () => {
     const dir = repoDir();
     const git = fakeGit({ toplevel: dir, remoteUrl: `https://${HOST}/x.git` });
-    expect(() => pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).toThrow(
+    await expect(pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).rejects.toThrow(
       /symbolic ref/
     );
   });
 
-  it("push failures propagate (exec throws)", () => {
+  it("push failures propagate (exec throws)", async () => {
     const dir = repoDir();
     const calls: string[][] = [];
-    const exec: GitExec = (args) => {
+    const exec: GitExec = async (args) => {
       calls.push(args);
       const cmd = args.join(" ");
       if (cmd === "rev-parse --show-toplevel") return dir + "\n";
@@ -467,7 +460,7 @@ describe("pushRepo", () => {
       if (args[0] === "rev-parse") return "origin/main\n";
       throw new Error("remote: rejected (pre-receive hook declined)");
     };
-    expect(() => pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec })).toThrow(
+    await expect(pushRepo({ dir, expectedHost: HOST, authHeader: AUTH, exec })).rejects.toThrow(
       /pre-receive hook declined/
     );
   });
@@ -476,10 +469,10 @@ describe("pushRepo", () => {
 describe("cloneRepo", () => {
   const URL_OK = `https://${HOST}/int/stash/scm/nrs/repo.git`;
 
-  it("clones from a neutral cwd with the credential env and pinned argv", () => {
+  it("clones from a neutral cwd with the credential env and pinned argv", async () => {
     const dest = join(repoDir(), "clone");
     const git = fakeGit({ toplevel: "/unused", cloneOutput: "Cloning into 'clone'...\n" });
-    const out = cloneRepo({ url: URL_OK, dest, shallow: true, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
+    const out = await cloneRepo({ url: URL_OK, dest, shallow: true, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
     expect(out).toContain("Cloning");
     expect(out).toContain("up to date");
     expect(git.calls.map((c) => c.args[0])).toEqual(["rev-parse", "config", "clone", "rev-parse", "checkout"]);
@@ -497,75 +490,65 @@ describe("cloneRepo", () => {
     expect(git.calls.at(-1)!.args).toEqual(["checkout", "--no-recurse-submodules"]);
   });
 
-  it("refuses when a url.*.insteadOf rule would rewrite the clone URL, and never runs clone", () => {
+  it("refuses when a url.*.insteadOf rule would rewrite the clone URL, and never runs clone", async () => {
     const git = fakeGit({
       toplevel: "/unused",
       globalInsteadOf: { "https://attacker.example.com/": `https://${HOST}/int/stash/` },
     });
-    expect(() =>
-      cloneRepo({ url: URL_OK, dest: join(tmpdir(), "x"), shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec })
-    ).toThrow(/insteadOf.*refusing to clone/);
+    await expect(cloneRepo({ url: URL_OK, dest: join(tmpdir(), "x"), shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).rejects.toThrow(/insteadOf.*refusing to clone/);
     expect(git.calls.some((c) => c.args[0] === "clone")).toBe(false);
   });
 
-  it("refuses an insteadOf rule with an EMPTY prefix, which git applies to every URL", () => {
+  it("refuses an insteadOf rule with an EMPTY prefix, which git applies to every URL", async () => {
     const git = fakeGit({
       toplevel: "/unused",
       globalInsteadOf: { "https://attacker.example.com/": "" },
     });
-    expect(() =>
-      cloneRepo({ url: URL_OK, dest: join(tmpdir(), "x"), shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec })
-    ).toThrow(/rewrites every URL to https:\/\/attacker\.example\.com\//);
+    await expect(cloneRepo({ url: URL_OK, dest: join(tmpdir(), "x"), shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).rejects.toThrow(/rewrites every URL to https:\/\/attacker\.example\.com\//);
     expect(git.calls.some((c) => c.args[0] === "clone")).toBe(false);
   });
 
-  it("refuses to run when the temp directory sits inside a repository, bare ones included", () => {
+  it("refuses to run when the temp directory sits inside a repository, bare ones included", async () => {
     const git = fakeGit({ toplevel: "/home/u/dotfiles", cwdInsideRepo: true });
-    expect(() =>
-      cloneRepo({ url: URL_OK, dest: join(tmpdir(), "x"), shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec })
-    ).toThrow(/inside the git repository \/home\/u\/dotfiles/);
+    await expect(cloneRepo({ url: URL_OK, dest: join(tmpdir(), "x"), shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).rejects.toThrow(/inside the git repository \/home\/u\/dotfiles/);
     expect(git.calls.map((c) => c.args[0])).toEqual(["rev-parse"]);
   });
 
-  it("ignores insteadOf rules whose prefix does not match the clone URL", () => {
+  it("ignores insteadOf rules whose prefix does not match the clone URL", async () => {
     const git = fakeGit({
       toplevel: "/unused",
       globalInsteadOf: { "ssh://git@github.com/": "https://github.com/" },
     });
-    cloneRepo({ url: URL_OK, dest: join(tmpdir(), "x"), shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
+    await cloneRepo({ url: URL_OK, dest: join(tmpdir(), "x"), shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
     expect(git.calls.find((c) => c.args[0] === "clone")!.args).toEqual(["clone", "--no-checkout", URL_OK, join(tmpdir(), "x")]);
   });
 
-  it("skips the checkout step for an empty repository (HEAD unborn)", () => {
+  it("skips the checkout step for an empty repository (HEAD unborn)", async () => {
     const git = fakeGit({ toplevel: "/unused", emptyRemote: true, cloneOutput: "warning: You appear to have cloned an empty repository.\n" });
-    const out = cloneRepo({ url: URL_OK, dest: join(tmpdir(), "x"), shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
+    const out = await cloneRepo({ url: URL_OK, dest: join(tmpdir(), "x"), shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec });
     expect(out).toContain("empty repository");
     expect(git.calls.map((c) => c.args[0])).toEqual(["rev-parse", "config", "clone", "rev-parse"]);
   });
 
-  it("refuses a clone URL off the configured host, or with a relative dest, before any git runs", () => {
+  it("refuses a clone URL off the configured host, or with a relative dest, before any git runs", async () => {
     const git = fakeGit({ toplevel: "/unused" });
-    expect(() =>
-      cloneRepo({ url: "https://attacker.example.com/x.git", dest: join(tmpdir(), "x"), shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec })
-    ).toThrow(/not the configured Bitbucket host/);
-    expect(() =>
-      cloneRepo({ url: URL_OK, dest: "relative", shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec })
-    ).toThrow(/absolute path/);
+    await expect(cloneRepo({ url: "https://attacker.example.com/x.git", dest: join(tmpdir(), "x"), shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).rejects.toThrow(/not the configured Bitbucket host/);
+    await expect(cloneRepo({ url: URL_OK, dest: "relative", shallow: false, expectedHost: HOST, authHeader: AUTH, exec: git.exec })).rejects.toThrow(/absolute path/);
     expect(git.calls).toHaveLength(0);
   });
 });
 
 describe("cloneRepo neutral-directory probe (real git)", () => {
-  it("rev-parse --git-dir answers inside a bare repository, where --show-toplevel cannot", () => {
+  it("rev-parse --git-dir answers inside a bare repository, where --show-toplevel cannot", async () => {
     const bare = join(repoDir(), "bare.git");
-    defaultGitExec(["init", "-q", "--bare", bare], { cwd: tmpdir(), timeoutMs: 30_000 });
-    expect(() => defaultGitExec(["rev-parse", "--show-toplevel"], { cwd: bare, timeoutMs: 30_000 })).toThrow();
-    expect(defaultGitExec(["rev-parse", "--git-dir"], { cwd: bare, timeoutMs: 30_000 }).trim()).toBe(".");
+    await defaultGitExec(["init", "-q", "--bare", bare], { cwd: tmpdir(), timeoutMs: 30_000 });
+    await expect(defaultGitExec(["rev-parse", "--show-toplevel"], { cwd: bare, timeoutMs: 30_000 })).rejects.toThrow();
+    expect((await defaultGitExec(["rev-parse", "--git-dir"], { cwd: bare, timeoutMs: 30_000 })).trim()).toBe(".");
   });
 });
 
 describe("cloneRepo checkout split (real git)", () => {
-  it("keeps a template post-checkout hook from observing the header, unlike a plain clone", () => {
+  it("disables template reference-transaction and post-checkout hooks", async () => {
     if (process.platform === "win32") return; // the hook is a shell script
     const root = repoDir();
     const src = join(root, "src");
@@ -573,32 +556,35 @@ describe("cloneRepo checkout split (real git)", () => {
     const tmpl = join(root, "tmpl");
     const marker = join(root, "marker.txt");
     const g = (args: string[], cwd: string, env?: NodeJS.ProcessEnv) => defaultGitExec(args, { cwd, env, timeoutMs: 30_000 });
-    g(["init", "-q", "-b", "main", src], root);
+    await g(["init", "-q", "-b", "main", src], root);
     writeFileSync(join(src, "a.txt"), "hi\n");
-    g(["add", "a.txt"], src);
-    g(["-c", "user.email=a@b.c", "-c", "user.name=a", "commit", "-q", "-m", "one"], src);
-    g(["clone", "-q", "--bare", src, bare], root);
+    await g(["add", "a.txt"], src);
+    await g(["-c", "user.email=a@b.c", "-c", "user.name=a", "commit", "-q", "-m", "one"], src);
+    await g(["clone", "-q", "--bare", src, bare], root);
     mkdirSync(join(tmpl, "hooks"), { recursive: true });
-    writeFileSync(
-      join(tmpl, "hooks", "post-checkout"),
-      `#!/bin/sh\necho "saw: \${GIT_CONFIG_VALUE_0:-<unset>}" >> "${marker}"\n`,
-      { mode: 0o755 }
-    );
+    for (const hook of ["post-checkout", "reference-transaction"]) {
+      writeFileSync(join(tmpl, "hooks", hook),
+        `#!/bin/sh\necho "${hook}" >> "${marker}"\n`, { mode: 0o755 });
+    }
     const url = `file://${bare}`;
-    const base = { ...process.env, GIT_TEMPLATE_DIR: tmpl };
+    const base = { ...gitPlumbingEnv(), GIT_TEMPLATE_DIR: tmpl };
+    // This fixture uses a local bare repository; production permits HTTPS only.
+    const fixtureEnv = { ...gitCredentialEnv(AUTH, url, base), GIT_ALLOW_PROTOCOL: "file" };
 
     // Control: a plain clone runs the template hook inside the credentialed process.
-    g(["clone", "-q", url, join(root, "plain")], root, gitCredentialEnv(AUTH, url, base));
-    expect(readFileSync(marker, "utf-8")).toContain(AUTH);
+    const control = spawnSync("git", ["clone", "-q", url, join(root, "plain")], { cwd: root, env: fixtureEnv });
+    expect(control.status).toBe(0);
+    expect(readFileSync(marker, "utf-8")).toContain("reference-transaction");
+    expect(readFileSync(marker, "utf-8")).toContain("post-checkout");
     rmSync(marker);
 
     // The split cloneRepo performs: credentialed --no-checkout, then a credential-free checkout.
     const dest = join(root, "split");
-    g(["clone", "-q", "--no-checkout", url, dest], root, gitCredentialEnv(AUTH, url, base));
+    await g(["clone", "-q", "--no-checkout", url, dest], root, fixtureEnv);
     expect(existsSync(marker)).toBe(false); // no checkout happened with the credential
-    g(["checkout"], dest, base);
+    await g(["checkout"], dest, base);
     expect(existsSync(join(dest, "a.txt"))).toBe(true);
-    expect(readFileSync(marker, "utf-8")).toBe("saw: <unset>\n"); // hook ran, saw nothing
+    expect(existsSync(marker)).toBe(false);
   });
 });
 
@@ -643,7 +629,8 @@ describe("gitCredentialEnv redirects (real git)", () => {
       seen.length = 0;
 
       // Guarded: refused at the 302; the redirect target is never contacted.
-      const guarded = await gitAsync(["ls-remote", url], gitCredentialEnv(AUTH, url));
+      // Permit this fixture's loopback HTTP server to isolate redirect handling.
+      const guarded = await gitAsync(["ls-remote", url], { ...gitCredentialEnv(AUTH, url), GIT_ALLOW_PROTOCOL: "http" });
       expect(guarded.status).not.toBe(0);
       expect(guarded.stderr).toMatch(/302/);
       expect(seen).toHaveLength(0);
@@ -657,34 +644,34 @@ describe("gitCredentialEnv redirects (real git)", () => {
 describe("defaultGitExec (real git)", () => {
   const opts = { cwd: repoDir(), timeoutMs: 30_000 };
 
-  it("returns stdout for plumbing commands", () => {
-    expect(defaultGitExec(["--version"], opts)).toContain("git version");
+  it("returns stdout for plumbing commands", async () => {
+    expect(await defaultGitExec(["--version"], opts)).toContain("git version");
   });
 
-  it("captures stderr on success — the stream git push reports on", () => {
+  it("captures stderr on success — the stream git push reports on", async () => {
     // `git checkout -b` announces the switch on stderr with exit 0, the
     // same shape as a push summary; execFileSync would return "" here.
     const dir = repoDir();
-    defaultGitExec(["init", "-q"], { cwd: dir, timeoutMs: 30_000 });
-    const out = defaultGitExec(["checkout", "-b", "feature/x"], { cwd: dir, timeoutMs: 30_000 });
+    await defaultGitExec(["init", "-q"], { cwd: dir, timeoutMs: 30_000 });
+    const out = await defaultGitExec(["checkout", "-b", "feature/x"], { cwd: dir, timeoutMs: 30_000 });
     expect(out).toContain("feature/x");
   });
 
-  it("throws with git's stderr on a non-zero exit", () => {
+  it("throws with git's stderr on a non-zero exit", async () => {
     const dir = repoDir();
-    defaultGitExec(["init", "-q"], { cwd: dir, timeoutMs: 30_000 });
-    expect(() => defaultGitExec(["rev-parse", "--verify", "does-not-exist"], { cwd: dir, timeoutMs: 30_000 })).toThrow(
+    await defaultGitExec(["init", "-q"], { cwd: dir, timeoutMs: 30_000 });
+    await expect(defaultGitExec(["rev-parse", "--verify", "does-not-exist"], { cwd: dir, timeoutMs: 30_000 })).rejects.toThrow(
       /exited with 128/
     );
   });
 
-  it("lists config keys with their scope, so local keys can be told from global ones", () => {
+  it("lists config keys with their scope, so local keys can be told from global ones", async () => {
     const dir = repoDir();
-    defaultGitExec(["init", "-q"], { cwd: dir, timeoutMs: 30_000 });
-    defaultGitExec(["config", "--local", "http.proxy", "http://127.0.0.1:1"], { cwd: dir, timeoutMs: 30_000 });
-    const out = defaultGitExec(["config", "--list", "--show-scope", "--name-only"], { cwd: dir, timeoutMs: 30_000 });
+    await defaultGitExec(["init", "-q"], { cwd: dir, timeoutMs: 30_000 });
+    await defaultGitExec(["config", "--local", "http.proxy", "http://127.0.0.1:1"], { cwd: dir, timeoutMs: 30_000 });
+    const out = await defaultGitExec(["config", "--list", "--show-scope", "--name-only"], { cwd: dir, timeoutMs: 30_000 });
     expect(out).toContain("local\thttp.proxy");
-    const full = defaultGitExec(["config", "--list", "--show-scope"], { cwd: dir, timeoutMs: 30_000 });
+    const full = await defaultGitExec(["config", "--list", "--show-scope"], { cwd: dir, timeoutMs: 30_000 });
     expect(full).toContain("local\thttp.proxy=http://127.0.0.1:1");
   });
 });

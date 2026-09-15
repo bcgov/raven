@@ -597,7 +597,7 @@ IMPORTANT: Bitbucket project keys often differ from Jira keys. If a key returns 
         .describe("Use shallow clone (--depth=1) for faster download"),
     },
     { readOnlyHint: true },
-    async ({ projectKey, repoSlug, targetDir, shallow }) => {
+    async ({ projectKey, repoSlug, targetDir, shallow }, extra) => {
       try {
         const bb = await getClient();
 
@@ -644,12 +644,13 @@ IMPORTANT: Bitbucket project keys often differ from Jira keys. If a key returns 
         // (GIT_CONFIG_* variables, never argv), and populates the working
         // tree in a second, credential-free process so no checkout hook can
         // observe the header.
-        cloneRepo({
+        await cloneRepo({
           url: cloneUrl,
           dest,
           shallow: shallow,
           expectedHost: new URL(bb.getBaseUrl()).host,
           authHeader,
+          signal: extra.signal,
         });
 
         return {
@@ -1363,12 +1364,12 @@ IMPORTANT: Always include the file path and repository when referencing results 
       remote: z.string().default("origin").describe("Remote name (default origin)"),
     },
     { readOnlyHint: false },
-    async ({ dir, branch, remote }) => {
+    async ({ dir, branch, remote }, extra) => {
       try {
         const bb = await getClient();
         const expectedHost = new URL(bb.getBaseUrl()).host;
         const authHeader = await buildGitAuthHeader();
-        const result = pushRepo({ dir, branch, remote, expectedHost, authHeader });
+        const result = await pushRepo({ dir, branch, remote, expectedHost, authHeader, signal: extra.signal });
         // git's summary includes whatever the server-side hooks printed:
         // arbitrary upstream text, scrubbed like every other upstream text
         // and capped to its tail (git's own status lines come last) so a

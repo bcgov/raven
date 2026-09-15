@@ -1,20 +1,21 @@
-import { spawnSync } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 /**
  * Injectable git runner for tests. Returns the command's stdout followed by
  * its stderr — `git push` reports its summary on stderr while the plumbing
  * commands answer on stdout, and callers get both. Throws on a non-zero
  * exit with git's stderr in the message. `env`, when given, is the COMPLETE
- * environment for that invocation (see gitCredentialEnv); otherwise the
- * process environment is used as is.
+ * environment for that invocation (see gitCredentialEnv); otherwise a
+ * credential-free plumbing environment is used.
  */
 export type GitExec = (
   args: string[],
-  opts: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs: number }
-) => string;
+  opts: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs: number; signal?: AbortSignal }
+) => Promise<string>;
 
 const GIT_TIMEOUT_MS = 300_000; // 5 minutes for clone and push alike
 
@@ -54,40 +55,17 @@ export function isValidBranchName(name: string): boolean {
  */
 const HTTPS_REMOTE_RE = /^https:\/\/([a-z0-9.-]+)(?::(\d{1,5}))?\/[^\s\\]*$/i;
 
-/**
- * Environment variables never inherited by a credential-bearing git
- * invocation: programs git would run on a credential prompt, a switch that
- * disables TLS verification, repository redirection, and git's own
- * inherited `-c` channel. Proxy variables are deliberately NOT removed:
- * they are the user's own environment, like global config, and the REST
- * client reaches the same host without them.
- */
-const DROPPED_ENV = [
-  "GIT_ASKPASS",
-  "SSH_ASKPASS",
-  "GIT_SSL_NO_VERIFY",
-  "GIT_DIR",
-  "GIT_WORK_TREE",
-  "GIT_CONFIG_PARAMETERS",
-];
-
-/**
- * Is an inherited variable one this module controls? Compared without
- * regard to case: Windows resolves environment names case-insensitively,
- * so an inherited `Git_AskPass` would reach git as GIT_ASKPASS even though
- * a plain-object copy keeps the original spelling. Inherited
- * GIT_CONFIG_COUNT / GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n are dropped for
- * the same reason, so they cannot shadow or extend the injected set.
- */
-function isControlledEnvKey(name: string): boolean {
-  const upper = name.toUpperCase();
-  return (
-    DROPPED_ENV.includes(upper) ||
-    upper === "GIT_TERMINAL_PROMPT" ||
-    upper === "GIT_TRACE_REDACT" ||
-    /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(upper)
-  );
-}
+// Only settings needed by Git and the OS reach child processes. Raven's
+// provider credentials must not leak into plumbing or checkout processes.
+const GIT_ENV_KEYS = new Set([
+  "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "HOME",
+  "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
+  "TEMP", "TMP", "TMPDIR", "LANG", "LANGUAGE", "TZ",
+  "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+  "SSL_CERT_FILE", "SSL_CERT_DIR", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM",
+  "GIT_CONFIG_NOSYSTEM", "GIT_SSL_CAINFO", "GIT_SSL_CAPATH", "GIT_TRACE",
+  "GIT_TRACE_PACKET", "GIT_TRACE_CURL", "GIT_CURL_VERBOSE", "GIT_TEMPLATE_DIR",
+]);
 
 /**
  * Repository-LOCAL config keys that must not be present when git runs with
@@ -106,6 +84,7 @@ function isForbiddenLocalKey(key: string, remote: string): boolean {
     k.startsWith("credential.") ||
     k === "core.askpass" ||
     k === "core.gitproxy" ||
+    k === `remote.${r}.vcs` ||
     k === `remote.${r}.proxy` ||
     k === `remote.${r}.proxyauthmethod`
   );
@@ -113,10 +92,11 @@ function isForbiddenLocalKey(key: string, remote: string): boolean {
 
 /**
  * The environment for every git invocation this module makes that does NOT
- * carry the credential: `base` (the process environment by default) with
- * every controlled variable removed. The validation commands (top level,
- * remote URLs, config listing) run with exactly this environment and the
- * network step runs with gitCredentialEnv, which adds the credential to
+ * carry the credential: only OS/Git/CA/proxy settings from `base` (the process
+ * environment by default), matched case-insensitively for Windows. The
+ * validation commands (top level, remote URLs, config listing) run with
+ * exactly this environment. The network step runs with gitCredentialEnv,
+ * which adds the credential to
  * it — so both phases see the same git configuration, and an inherited
  * GIT_CONFIG_* rewrite cannot make the checks resolve one URL while the
  * push uses another.
@@ -124,7 +104,9 @@ function isForbiddenLocalKey(key: string, remote: string): boolean {
 export function gitPlumbingEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(base)) {
-    if (!isControlledEnvKey(name)) env[name] = value;
+    const upper = name.toUpperCase();
+    const allowed = GIT_ENV_KEYS.has(upper) || /^LC_[A-Z_]+$/.test(upper);
+    if (allowed) env[name] = value;
   }
   return env;
 }
@@ -135,9 +117,9 @@ export function gitPlumbingEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.Pr
  * (the process environment by default). The header travels via
  * GIT_CONFIG_* variables, never argv, so it is not visible in the process
  * list. The same variables reset credential.helper and core.askpass, and
- * the DROPPED_ENV variables are removed: the injected header is the only
- * credential the invocation may use, so a 401 fails outright instead of
- * consulting — and exposing this environment to — a credential program
+ * inherited authentication and Git override variables are removed: the
+ * injected header is the only credential the invocation may use, so a 401
+ * fails outright instead of consulting — and exposing this environment to — a credential program
  * from any config scope or environment. TLS verification is forced on
  * twice: the plain http.sslVerify, and http.<targetUrl>.sslVerify — git
  * lets a URL-scoped key beat a plain one whatever the scope, so a
@@ -161,6 +143,9 @@ export function gitCredentialEnv(
     ...gitPlumbingEnv(base),
     GIT_TERMINAL_PROMPT: "0",
     GIT_TRACE_REDACT: "1",
+    // Overrides protocol.<name>.allow in every config scope, including a
+    // remote helper selected by remote.<name>.vcs.
+    GIT_ALLOW_PROTOCOL: "https",
     GIT_CONFIG_COUNT: "7",
     GIT_CONFIG_KEY_0: "http.extraHeader",
     GIT_CONFIG_VALUE_0: authHeader,
@@ -180,29 +165,91 @@ export function gitCredentialEnv(
 }
 
 /**
- * Real git runner. spawnSync rather than execFileSync: execFileSync returns
- * only stdout, and `git push` writes its status summary to stderr, so the
- * push result would always look empty.
+ * Asynchronous runner: requests and cancellation remain responsive while Git
+ * runs. A private empty hooks directory disables every hook, including
+ * reference-transaction, during network operations and the later checkout.
  *
  * @internal — exported for tests only.
  */
-export const defaultGitExec: GitExec = (args, opts) => {
-  const result = spawnSync("git", args, {
-    cwd: opts.cwd,
-    encoding: "utf-8",
-    timeout: opts.timeoutMs,
-    maxBuffer: MAX_OUTPUT_BYTES,
-    stdio: ["ignore", "pipe", "pipe"],
-    env: opts.env ?? process.env,
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    const detail = (result.stderr || result.stdout || "").trim();
-    throw new Error(
-      `git ${args[0]} exited with ${result.status ?? `signal ${result.signal}`}${detail ? `: ${detail}` : ""}`
-    );
+export const defaultGitExec: GitExec = async (args, opts) => {
+  opts.signal?.throwIfAborted();
+  const hooksDir = await mkdtemp(join(tmpdir(), "raven-git-hooks-"));
+  try {
+    opts.signal?.throwIfAborted();
+    return await new Promise<string>((resolve, reject) => {
+      const child = spawn("git", ["-c", `core.hooksPath=${hooksDir}`, ...args], {
+        cwd: opts.cwd,
+        stdio: ["ignore", "pipe", "pipe"],
+        // Git starts network helpers. Give them their own process group so
+        // cancellation and timeouts stop the helpers as well as their parent.
+        detached: process.platform !== "win32",
+        windowsHide: true,
+        env: opts.env ?? gitPlumbingEnv(),
+      });
+      const stdout: Buffer[] = [], stderr: Buffer[] = [];
+      let failure: Error | undefined;
+      let termination: Promise<void> | undefined;
+      const stop = (reason: Error) => {
+        if (failure) return;
+        failure = reason;
+        if (!child.pid) return;
+        if (process.platform === "win32") {
+          termination = new Promise<void>(done => {
+            execFile("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+              windowsHide: true, timeout: 5_000, env: gitPlumbingEnv(),
+            }, error => {
+              if (error && child.exitCode === null && child.signalCode === null) {
+                failure = new Error(`Could not stop Git's process tree: ${error.message}`);
+                child.kill("SIGKILL");
+              }
+              done();
+            });
+          });
+        } else {
+          try {
+            process.kill(-child.pid, "SIGKILL");
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+              failure = new Error(`Could not stop Git's process group: ${(error as Error).message}`);
+              child.kill("SIGKILL");
+            }
+          }
+        }
+      };
+      const capture = (stream: NodeJS.ReadableStream, chunks: Buffer[]) => {
+        let bytes = 0;
+        stream.on("data", (chunk: Buffer) => {
+          if (failure) return;
+          bytes += chunk.length;
+          if (bytes > MAX_OUTPUT_BYTES) {
+            stop(new Error(`git ${args[0]} exceeded the ${MAX_OUTPUT_BYTES}-byte output limit`));
+          } else {
+            chunks.push(chunk);
+          }
+        });
+      };
+      capture(child.stdout, stdout);
+      capture(child.stderr, stderr);
+      const abort = () => stop(new DOMException("Git command cancelled", "AbortError"));
+      const timer = setTimeout(() => stop(new Error(`git ${args[0]} timed out after ${opts.timeoutMs} ms`)), opts.timeoutMs);
+      opts.signal?.addEventListener("abort", abort, { once: true });
+      child.once("error", error => { failure ??= error; });
+      child.once("close", async (code, signal) => {
+        clearTimeout(timer);
+        opts.signal?.removeEventListener("abort", abort);
+        await termination;
+        if (failure) return reject(failure);
+        const out = Buffer.concat(stdout).toString("utf-8");
+        const err = Buffer.concat(stderr).toString("utf-8");
+        if (code !== 0) {
+          return reject(new Error(`git ${args[0]} exited with ${code ?? `signal ${signal}`}: ${(err || out).trim()}`));
+        }
+        resolve(out + err);
+      });
+    });
+  } finally {
+    await rm(hooksDir, { recursive: true, force: true });
   }
-  return (result.stdout ?? "") + (result.stderr ?? "");
 };
 
 /**
@@ -256,6 +303,7 @@ function parseScopedConfig(output: string): { scope: string; key: string; value:
 }
 
 export interface PushRepoOptions {
+  signal?: AbortSignal;
   /** Absolute path to the local repository's top-level directory. */
   dir: string;
   /** Branch to push; defaults to the currently checked-out branch. */
@@ -299,17 +347,19 @@ export interface PushRepoResult {
  * or whitespace, which WHATWG and curl parse differently; the repository's
  * LOCAL git config must not carry proxy, TLS, or credential-program keys,
  * which would let the checkout redirect or intercept the credentialed
- * request (the hooks it could run are already skipped with --no-verify).
+ * request (all hooks are disabled by the runner).
  * The refspec is always the explicit non-forcing `refs/heads/X:refs/heads/X`
  * — there is no force option at all; tags and submodules are never pushed.
  * Every check runs with gitPlumbingEnv and the push with gitCredentialEnv,
  * the same environment plus the credential.
  */
-export function pushRepo(opts: PushRepoOptions): PushRepoResult {
+export async function pushRepo(opts: PushRepoOptions): Promise<PushRepoResult> {
   const exec = opts.exec ?? defaultGitExec;
   const plumbing = gitPlumbingEnv();
-  const run = (args: string[], env: NodeJS.ProcessEnv = plumbing): string =>
-    exec(args, { cwd: opts.dir, env, timeoutMs: GIT_TIMEOUT_MS });
+  const run = (args: string[], env: NodeJS.ProcessEnv = plumbing): Promise<string> => {
+    opts.signal?.throwIfAborted();
+    return exec(args, { cwd: opts.dir, env, timeoutMs: GIT_TIMEOUT_MS, signal: opts.signal });
+  };
 
   if (!isAbsolute(opts.dir)) {
     throw new Error(`dir must be an absolute path (got "${opts.dir}").`);
@@ -325,8 +375,9 @@ export function pushRepo(opts: PushRepoOptions): PushRepoResult {
   }
   let toplevel: string;
   try {
-    toplevel = run(["rev-parse", "--show-toplevel"]).trim();
+    toplevel = (await run(["rev-parse", "--show-toplevel"])).trim();
   } catch (err) {
+    opts.signal?.throwIfAborted();
     throw new Error(`${opts.dir} is not a git repository: ${(err as Error).message}`);
   }
   if (realpathSync.native(toplevel) !== realDir) {
@@ -335,7 +386,7 @@ export function pushRepo(opts: PushRepoOptions): PushRepoResult {
     );
   }
 
-  const branch = (opts.branch ?? run(["symbolic-ref", "--short", "HEAD"]).trim()).trim();
+  const branch = (opts.branch ?? (await run(["symbolic-ref", "--short", "HEAD"])).trim()).trim();
   if (!isValidBranchName(branch)) {
     throw new Error(`Refusing branch name "${branch}".`);
   }
@@ -349,7 +400,7 @@ export function pushRepo(opts: PushRepoOptions): PushRepoResult {
   // hidden second pushurl would receive both the code and the credentials.
   // So: enumerate all push URLs, allow exactly one, validate it. get-url
   // expands url.*.pushInsteadOf, so the URL checked is the one git will use.
-  const pushUrls = run(["remote", "get-url", "--push", "--all", remote])
+  const pushUrls = (await run(["remote", "get-url", "--push", "--all", remote]))
     .split("\n")
     .map((u) => u.trim())
     .filter((u) => u !== "");
@@ -362,22 +413,23 @@ export function pushRepo(opts: PushRepoOptions): PushRepoResult {
   const parsed = pinnedHttpsUrl(remoteUrl, opts.expectedHost, `Remote "${remote}"`);
 
   // Repository-local config is arbitrary local state, exactly like the
-  // hooks --no-verify skips. Refuse rather than override, so the user sees
+  // hooks the runner disables. Refuse rather than override, so the user sees
   // which key is in the way; global/system scope is left alone.
-  const forbidden = parseScopedConfig(run(["config", "--list", "--show-scope", "--name-only"]))
+  const forbidden = parseScopedConfig(await run(["config", "--list", "--show-scope", "--name-only"]))
     .filter((e) => e.scope === "local" || e.scope === "worktree")
     .map((e) => e.key)
     .filter((key) => isForbiddenLocalKey(key, remote));
   if (forbidden.length > 0) {
     throw new Error(
-      `${opts.dir} has repository-local git config that could redirect or intercept the credentialed push (${[...new Set(forbidden)].join(", ")}); remove it with \`git config --local --unset <key>\`, or set it with --global if you rely on it.`
+      `${opts.dir} has repository-local git config that could redirect or intercept the credentialed push (${[...new Set(forbidden)].join(", ")}); remove these local overrides before retrying.`
     );
   }
 
   let setUpstream = false;
   try {
-    run(["rev-parse", "--abbrev-ref", `${branch}@{upstream}`]);
+    await run(["rev-parse", "--abbrev-ref", `${branch}@{upstream}`]);
   } catch {
+    opts.signal?.throwIfAborted();
     setUpstream = true;
   }
 
@@ -391,12 +443,13 @@ export function pushRepo(opts: PushRepoOptions): PushRepoResult {
   const args = ["push", "--no-verify", "--no-follow-tags", "--recurse-submodules=no"];
   if (setUpstream) args.push("--set-upstream");
   args.push(remote, `refs/heads/${branch}:refs/heads/${branch}`);
-  const output = run(args, gitCredentialEnv(opts.authHeader, remoteUrl));
+  const output = await run(args, gitCredentialEnv(opts.authHeader, remoteUrl));
 
   return { branch, remote, remoteUrl: parsed.toString(), output, setUpstream };
 }
 
 export interface CloneRepoOptions {
+  signal?: AbortSignal;
   /** Clone URL, built by the caller from the configured Bitbucket base URL. */
   url: string;
   /** Absolute path the repository is cloned into (must not exist yet). */
@@ -432,12 +485,14 @@ export interface CloneRepoOptions {
  * populated by a separate, credential-free `git checkout` (skipped for an
  * empty repository, whose HEAD is unborn). Returns git's output.
  */
-export function cloneRepo(opts: CloneRepoOptions): string {
+export async function cloneRepo(opts: CloneRepoOptions): Promise<string> {
   const exec = opts.exec ?? defaultGitExec;
   const cwd = tmpdir();
   const plumbing = gitPlumbingEnv();
-  const run = (args: string[], env: NodeJS.ProcessEnv = plumbing): string =>
-    exec(args, { cwd, env, timeoutMs: GIT_TIMEOUT_MS });
+  const run = (args: string[], env: NodeJS.ProcessEnv = plumbing): Promise<string> => {
+    opts.signal?.throwIfAborted();
+    return exec(args, { cwd, env, timeoutMs: GIT_TIMEOUT_MS, signal: opts.signal });
+  };
 
   if (!isAbsolute(opts.dest)) {
     throw new Error(`dest must be an absolute path (got "${opts.dest}").`);
@@ -448,8 +503,9 @@ export function cloneRepo(opts: CloneRepoOptions): string {
   // repository, which has no top level but does have local config.
   let enclosing: string | null = null;
   try {
-    enclosing = run(["rev-parse", "--git-dir"]).trim();
+    enclosing = (await run(["rev-parse", "--git-dir"])).trim();
   } catch {
+    opts.signal?.throwIfAborted();
     // not inside a repository: the neutral directory is neutral
   }
   if (enclosing !== null) {
@@ -458,7 +514,7 @@ export function cloneRepo(opts: CloneRepoOptions): string {
     );
   }
 
-  const rewrites = parseScopedConfig(run(["config", "--list", "--show-scope"])).filter(
+  const rewrites = parseScopedConfig(await run(["config", "--list", "--show-scope"])).filter(
     (e) => e.key.toLowerCase().startsWith("url.") && e.key.toLowerCase().endsWith(".insteadof")
   );
   for (const rule of rewrites) {
@@ -473,20 +529,20 @@ export function cloneRepo(opts: CloneRepoOptions): string {
   const args = ["clone", "--no-checkout"];
   if (opts.shallow) args.push("--depth=1");
   args.push(opts.url, opts.dest);
-  const output = run(args, gitCredentialEnv(opts.authHeader, opts.url));
+  const output = await run(args, gitCredentialEnv(opts.authHeader, opts.url));
 
-  // Populate the working tree in a separate process that never sees the
-  // credential. Any post-checkout hook the templates installed runs here,
-  // with nothing to read.
-  const inDest = (a: string[]): string =>
-    exec(a, { cwd: opts.dest, env: plumbing, timeoutMs: GIT_TIMEOUT_MS });
+  // Populate the working tree without credentials. The runner also disables
+  // hooks here, so templates cannot run post-checkout code.
+  const inDest = (a: string[]): Promise<string> =>
+    exec(a, { cwd: opts.dest, env: plumbing, timeoutMs: GIT_TIMEOUT_MS, signal: opts.signal });
   let hasHead = true;
   try {
-    inDest(["rev-parse", "--verify", "--quiet", "HEAD"]);
+    await inDest(["rev-parse", "--verify", "--quiet", "HEAD"]);
   } catch {
+    opts.signal?.throwIfAborted();
     hasHead = false; // empty repository: nothing to check out
   }
   // --no-recurse-submodules: submodule.recurse in the user's config would
   // otherwise fetch submodules here; clone_repo delivers the superproject.
-  return hasHead ? output + inDest(["checkout", "--no-recurse-submodules"]) : output;
+  return hasHead ? output + await inDest(["checkout", "--no-recurse-submodules"]) : output;
 }
