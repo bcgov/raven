@@ -56,6 +56,15 @@ logsRouter.get("/", async (req, res) => {
     res.status(400).json({ error: "Invalid dateTo format (use YYYY-MM-DD)" });
     return;
   }
+  // `date` is forwarded to buildLogSearchCommand, which now rejects anything
+  // that is not YYYY-MM-DD or "today". Check it here so a malformed value
+  // returns the same 400 as its siblings rather than a 500 raised from the
+  // builder. "current" is this route's sentinel for the active log file and
+  // is mapped to undefined below.
+  if (date && date !== "current" && date !== "today" && !dateRe.test(date)) {
+    res.status(400).json({ error: "Invalid date format (use YYYY-MM-DD, 'today', or 'current')" });
+    return;
+  }
 
   const entry = getServerConfig().find((s) => s.name === server);
   if (!entry) {
@@ -63,7 +72,12 @@ logsRouter.get("/", async (req, res) => {
     return;
   }
 
-  const effectiveDate = !dateFrom && !dateTo && (!date || date === "current") ? undefined : date;
+  // A complete date range supersedes a single date, and "current" names the
+  // active log file; both mean "no dated filename", so both map to undefined.
+  // The range test matches the builder's own `dateFrom && dateTo` condition —
+  // an incomplete range is not a range, and the explicit date still wins.
+  const hasRange = Boolean(dateFrom && dateTo);
+  const effectiveDate = hasRange || !date || date === "current" ? undefined : date;
 
   const result = await searchLogs(entry, {
     app,
