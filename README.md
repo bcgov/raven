@@ -84,7 +84,7 @@ See [Configure Authentication](#2-configure-authentication) for the SharePoint l
 
 ## Prerequisites
 
-- **Node.js** >= 20 (check: `node -v`)
+- **Node.js** 24 LTS recommended; supported versions are 22.12+ within 22.x, 24.x, or 26+ (check: `node -v`). Vitest 5 does not support Node 20, 23, or 25.
 - **Playwright** browsers (installed automatically on first build)
 - **An MCP-capable chat client** — see [Choosing a Client](#choosing-a-client)
 - **BC Gov IDIR credentials** for SiteMinder authentication
