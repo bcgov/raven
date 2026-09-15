@@ -54,6 +54,24 @@ describe("PiScrubber.scrubText — FOIPPA coverage (RSEC-004)", () => {
       expect(pi.scrubText("call 2505551234")).toBe("call [PHONE]");
     });
 
+    it.each(["2505551234", "12505551234", "+12505551234"])("redacts an unseparated phone with an optional country code: %s", (phone) => {
+      for (const suffix of ["", ".", ", next", "; next", ")", " / next", " - next"]) {
+        expect(pi.scrubText(`call ${phone}${suffix}`)).toBe(`call [PHONE]${suffix}`);
+      }
+    });
+
+    it.each([
+      "112505551234", "912505551234", "125055512340", "25055512345",
+      "02505551234", "+112505551234", "+125055512345",
+      "record12505551234", "12505551234suffix", "id_12505551234",
+    ])("does not redact a phone substring inside a longer identifier: %s", (id) => {
+      expect(pi.scrubText(`id ${id}`)).toBe(`id ${id}`);
+    });
+
+    it.each(["11205551234", "+11205551234", "12501551234", "+12501551234"])("retains NANP area and exchange constraints with a country code: %s", (number) => {
+      expect(pi.scrubText(`value ${number}`)).toBe(`value ${number}`);
+    });
+
     it("leaves a ten-digit epoch timestamp alone", () => {
       // NANP area and exchange codes both start 2-9, so epoch seconds
       // (which start with 1 for any plausible date) never match.
@@ -82,6 +100,16 @@ describe("PiScrubber.scrubText — FOIPPA coverage (RSEC-004)", () => {
 
     it("redacts a domain-qualified IDIR", () => {
       expect(pi.scrubText("user IDIR\\JSMITH logged in")).toBe("user [IDIR] logged in");
+    });
+
+    it.each([String.raw`IDIR\JSMITH`, String.raw`idir\j.smith_2`])("redacts a domain-qualified IDIR through JSON wrappers: %s", (username) => {
+      let input = username;
+      let expected = "[IDIR]";
+      for (let depth = 0; depth < 5; depth += 1) {
+        expect(pi.scrubText(input)).toBe(expected);
+        input = JSON.stringify({ user: input, level: "ERROR", message: "Database unavailable" });
+        expected = JSON.stringify({ user: expected, level: "ERROR", message: "Database unavailable" });
+      }
     });
 
     it("redacts bearer tokens", () => {
@@ -163,6 +191,33 @@ describe("PiScrubber.scrubText — bare IDIR in attribution context (review Issu
     expect(pi.scrubText("reported by JGAGAN")).toBe("reported by [IDIR]");
     expect(pi.scrubText("owner: MSMITH")).toBe("owner: [IDIR]");
     expect(pi.scrubText("reviewer TWILSON approved")).toBe("reviewer [IDIR] approved");
+  });
+
+  it.each([
+    "Assigned to", "ASSIGNED TO", "aSsIgNeD tO", "Reported By", "Created By",
+    "Updated By", "Modified By", "Resolved By", "Closed By", "Requested By",
+    "Submitted By", "OWNER:", "Reporter", "Assignee", "Reviewer", "Approver", "Author",
+  ])("matches an attribution phrase regardless of case: %s", (prefix) => {
+    expect(pi.scrubText(`${prefix} JSMITH, next`)).toBe(`${prefix} [IDIR], next`);
+  });
+
+  it.each(["jsmith", "JSmith", "JSMIth", "JOHN", "JSMITHSON", "JSMITH2", "JSMITH_suffix"])("preserves tokens outside the uppercase IDIR heuristic: %s", (token) => {
+    expect(pi.scrubText(`Assigned to ${token}`)).toBe(`Assigned to ${token}`);
+    expect(pi.scrubText(`OWNER: ${token}`)).toBe(`OWNER: ${token}`);
+  });
+
+  it.each(["ERROR", "HTTPS", "SYSTEM", "ADMIN", "SCHEDULER", "ANONYMOUS"])("preserves stoplisted tokens after mixed-case attribution: %s", (token) => {
+    expect(pi.scrubText(`Assigned to ${token}`)).toBe(`Assigned to ${token}`);
+    expect(pi.scrubText(`OWNER: ${token}`)).toBe(`OWNER: ${token}`);
+  });
+
+  it.each([
+    ["assigned to owner: MSMITH", "assigned to owner: [IDIR]"],
+    ["Assigned to owner: MSMITH", "Assigned to owner: [IDIR]"],
+    ["owner assigned to JSMITH", "owner assigned to [IDIR]"],
+    ["Owner Assigned to JSMITH", "Owner Assigned to [IDIR]"],
+  ])("keeps looking after a rejected token that starts another attribution: %s", (input, expected) => {
+    expect(pi.scrubText(input)).toBe(expected);
   });
 
   it("does not redact common acronyms in the same position", () => {

@@ -85,8 +85,11 @@ EOL runtime is recorded as a limitation, not as supported-runtime validation.
 - SMTP certificate verification is enabled by default, but STARTTLS remains
   optional outside port 465. Requiring it would reject plaintext-only relays;
   that compatibility decision is outstanding.
-- Runtime migration and a fresh Sonar scan remain outstanding. The former
-  Sonar gate-OK claim has been removed from the durable report.
+- Runtime migration remains outstanding. A Crow Sonar scan of `58c8486` on
+  2026-09-15 completed with a failed quality gate (analysis
+  `a67d01d1-21c9-4765-ba74-83c288afecfc`): 16 new-period code-quality issues,
+  unreviewed hotspots, reliability rating C and absent measured coverage.
+  It predates the follow-up below and is not a passing scan of that change.
 - `docs/architecture.md`, `docs/report-data.json` and the executive HTML are
   labelled as historical assessments. Their old finding counts are not a
   current-head security score.
@@ -94,3 +97,42 @@ EOL runtime is recorded as a limitation, not as supported-runtime validation.
   preserve `coverage_metric`, `coverage_measured` and `coverage_note` from
   `report-data.json`; do not turn missing test instrumentation into “0% entry
   points assessed.” The corrected HTML and data metadata are included here.
+
+
+## Copilot follow-up at `58c8486`
+
+The 2026-09-15 review published two inline comments and three suppressed
+comments. The suppressed domain/app/component comments repeat the inline
+newline finding; the suppressed country-code phone comment is independently
+actionable.
+
+| Comment or self-review finding | Disposition | Evidence |
+| --- | --- | --- |
+| Capitalized attribution phrases leave uppercase IDIRs visible | Fixed | Phrase matching ignores case; a separate uppercase-only candidate check preserves the existing length/stoplist contract. Tests include `Assigned to JSMITH`, `OWNER: MSMITH`, mixed/lowercase tokens, and overlapping attribution phrases. |
+| `12505551234` / `+12505551234` are not scrubbed | Fixed | Optional country code is consumed with the number. Regression cases preserve longer identifiers, punctuation and NANP area/exchange constraints. |
+| Self-review: serialized domain-qualified IDIR values leak | Fixed | The separator accepts JSON-escaped backslash runs. Tests compare exact output for raw values and four JSON wrapper layers, preserving diagnostic siblings. |
+| Trailing line terminators bypass date/domain/app/component validators | False positive; regression coverage added | All relevant regexes omit `m`. Actual builders, MCP calls and HTTP query decoding reject LF, CR, CRLF, U+2028, U+2029 and NUL before remote work. Valid date/sentinel and identifier controls still pass. |
+| Self-review: `jstat -J...` bypasses the read-only command policy | Fixed | An accepted local `jstat -J-Xlog:gc:file=<scratch>/proof.log -help` created a scratch file on Temurin 21. The policy now rejects JVM forwarding, including quoted fragments and unquoted wildcard expansion, while retaining normal jstat queries. No Java agent or remote host was used for this proof. |
+
+The newline disposition follows [ECMAScript CompileAssertion, `$`](https://tc39.es/ecma262/2024/multipage/text-processing.html#sec-compileassertion):
+line-terminator matching requires the multiline flag. Without it, the assertion
+requires the end of the input. The production validators were not changed to
+accommodate an incorrect finding. Shell comments were corrected separately:
+a newline inside a single-quoted argument remains literal; an unquoted LF can
+separate shell statements.
+
+Regression locations:
+
+- `packages/auth/src/__tests__/pi-scrubber.test.ts`
+- `packages/imis-mcp/src/__tests__/ssh-executor.test.ts`
+- `packages/server-mcp/src/__tests__/commands/log-search.test.ts`
+- `packages/server-mcp/src/__tests__/server.test.ts`
+- `packages/server-ui/__tests__/log-input-boundaries.test.ts`
+
+Validation for this follow-up on 2026-09-15:
+
+- Workspace TypeScript build: passed.
+- Full suite: **1,495 passed, 1 skipped, 0 failed** across 76 passing test files.
+- Tool inventory and `git diff --check`: passed.
+- No application server, real credential or system clock was modified.
+- Local Node runtime: 25.9.0; CI remains the separate Node 20 check.

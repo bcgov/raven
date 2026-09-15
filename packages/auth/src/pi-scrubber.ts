@@ -206,6 +206,28 @@ function scrubCredentials(text: string): string {
   return parts.join("");
 }
 
+/** Match attribution phrases in any case, but only uppercase IDIR candidates. */
+function scrubAttributedIdirs(text: string): string {
+  const prefixes = /\b(?:assigned to|reported by|created by|updated by|modified by|resolved by|closed by|requested by|submitted by|owner|reporter|assignee|reviewer|approver|author)[:\s]+/gi;
+  const token = /[A-Z]{5,8}\b/y; // Check exactly the next token, without case folding.
+  const parts: string[] = [];
+  let previousEnd = 0;
+
+  while (prefixes.exec(text) !== null) {
+    token.lastIndex = prefixes.lastIndex;
+    const match = token.exec(text);
+    // A rejected token can start another attribution ("owner assigned to
+    // JSMITH"), so only advance past the token when it is actually redacted.
+    if (!match || IDIR_STOPLIST.has(match[0])) continue;
+    parts.push(text.slice(previousEnd, prefixes.lastIndex), "[IDIR]");
+    previousEnd = token.lastIndex;
+    prefixes.lastIndex = previousEnd;
+  }
+
+  parts.push(text.slice(previousEnd));
+  return parts.join("");
+}
+
 const PI_PATTERNS: Array<{ pattern: RegExp; replacement: Replacer }> = [
   // SIN, separated: 123-456-789 or 123 456 789. No checksum gate here — a
   // three-three-three grouping is already a strong signal on its own.
@@ -218,25 +240,16 @@ const PI_PATTERNS: Array<{ pattern: RegExp; replacement: Replacer }> = [
   { pattern: /(?:username|author|idir)[:=]\s*[A-Z]{3,8}\b/gi, replacement: lit("[IDIR]") },
   // IDIR format: USER@idir or USER@IDIR (also handles surrounding whitespace context)
   { pattern: /[A-Za-z0-9]+@[Ii][Dd][Ii][Rr]\b/g, replacement: lit("[IDIR]") },
-  // IDIR domain-qualified form: IDIR\JSMITH
-  { pattern: /\bIDIR\\[A-Za-z0-9._-]+/gi, replacement: lit("[IDIR]") },
-  // Bare IDIR in attribution context: "assigned to JSMITH", "reported by
-  // JGAGAN", "owner: MSMITH". A blanket uppercase rule would redact
-  // ERROR/WARN/HTTP and destroy log utility, so this requires all three of:
-  // an attribution phrase, 5-8 uppercase letters (BC Gov IDIRs are initial +
-  // surname), and a token not in the common-acronym stoplist.
-  {
-    pattern: /\b((?:assigned to|reported by|created by|updated by|modified by|resolved by|closed by|requested by|submitted by|owner|reporter|assignee|reviewer|approver|author)[:\s]+)([A-Z]{5,8})\b/g,
-    replacement: (m: string, prefix: string, token: string) =>
-      IDIR_STOPLIST.has(token) ? m : `${prefix}[IDIR]`,
-  },
+  // IDIR domain-qualified form: IDIR\JSMITH. JSON wrappers double backslashes.
+  { pattern: /\bIDIR\\+[A-Za-z0-9._-]+/gi, replacement: lit("[IDIR]") },
   // Phone numbers: North American formats
   // (250) 555-1234, 250-555-1234, 250.555.1234, +1-250-555-1234, 1-800-555-1234
   { pattern: /(?:\+?1[\s.-]?)?\(?[2-9]\d{2}\)?[\s.-]\d{3}[\s.-]\d{4}\b/g, replacement: lit("[PHONE]") },
-  // Phone numbers, unseparated ten-digit NANP. Both the area code and the
-  // exchange must start 2-9, which excludes epoch-second timestamps (they
-  // start with 1 for any plausible date) and most numeric identifiers.
-  { pattern: /\b[2-9]\d{2}[2-9]\d{6}\b/g, replacement: lit("[PHONE]") },
+  // Phone numbers, unseparated NANP with optional 1 or +1 country code. Word
+  // boundaries exclude substrings of longer numeric or alphanumeric IDs.
+  // Both the area code and the exchange must start 2-9, excluding ten-digit
+  // epoch timestamps and most numeric identifiers.
+  { pattern: /(?<!\w)(?:\+?1)?[2-9]\d{2}[2-9]\d{6}\b/g, replacement: lit("[PHONE]") },
 ];
 export class PiScrubber {
   /** Map from original displayName to anonymized label. */
@@ -296,6 +309,7 @@ export class PiScrubber {
       pattern.lastIndex = 0;
       result = result.replace(pattern, replacement);
     }
+    result = scrubAttributedIdirs(result);
 
     // Layer 2: Known name replacement
     if (this.nameMap.size > 0) {

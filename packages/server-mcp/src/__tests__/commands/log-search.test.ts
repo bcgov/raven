@@ -90,7 +90,7 @@ describe("buildLogSearchCommand", () => {
   it("accepts legitimate dotted/dashed app and component names", () => {
     expect(() => buildLogSearchCommand({
       logsBase: "/apps_ux/logs",
-      app: "RAR2", component: "dms-document-api",
+      app: "RAR2.beta", component: "dms-document_api.v2",
       pattern: "ERROR", logType: "app",
       maxLines: 100, contextLines: 0,
     })).not.toThrow();
@@ -122,6 +122,43 @@ describe("buildLogSearchCommand", () => {
     });
     expect(cmd).toContain("ls -t /apps_ux/logs/FTA/fta/catalina*.log");
     expect(cmd).not.toContain("grep -vE");
+  });
+});
+
+describe("log command builders reject trailing input terminators", () => {
+  // ECMAScript's $ requires the end of input without the m flag. Exercise
+  // the actual builders so a future regex flag/validation change cannot let
+  // a valid-looking prefix introduce an unexpected shell-bound suffix.
+  it.each([
+    { label: "LF", suffix: "\n" },
+    { label: "CR", suffix: "\r" },
+    { label: "CRLF", suffix: "\r\n" },
+    { label: "LINE SEPARATOR", suffix: "\u2028" },
+    { label: "PARAGRAPH SEPARATOR", suffix: "\u2029" },
+    { label: "NUL", suffix: "\0" },
+  ])("rejects $label in every date and path identifier", ({ suffix }) => {
+    const appBase = {
+      logsBase: "/logs", app: "APP", component: "api",
+      pattern: "ERROR", logType: "app" as const,
+      maxLines: 100, contextLines: 0,
+    };
+    const httpdBase = {
+      logsBase: "/logs", domain: "portal.example.invalid",
+      pattern: "ERROR", logType: "access" as const,
+      maxLines: 100, contextLines: 0,
+    };
+    for (const field of ["date", "dateFrom", "dateTo"] as const) {
+      const invalid = { [field]: `2026-09-15${suffix}` };
+      expect(() => buildLogSearchCommand({ ...appBase, ...invalid })).toThrow(/YYYY-MM-DD/);
+      expect(() => buildHttpdLogSearchCommand({ ...httpdBase, ...invalid })).toThrow(/YYYY-MM-DD/);
+    }
+    expect(() => buildLogSearchCommand({ ...appBase, date: `today${suffix}` })).toThrow(/YYYY-MM-DD/);
+    expect(() => buildHttpdLogSearchCommand({ ...httpdBase, date: `today${suffix}` })).toThrow(/YYYY-MM-DD/);
+    for (const field of ["app", "component"] as const) {
+      expect(() => buildLogSearchCommand({ ...appBase, [field]: `APP${suffix}` })).toThrow(/invalid characters/);
+    }
+    expect(() => buildHttpdLogSearchCommand({ ...httpdBase, domain: `portal.example.invalid${suffix}` }))
+      .toThrow(/invalid characters/);
   });
 });
 

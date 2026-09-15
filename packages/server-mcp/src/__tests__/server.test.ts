@@ -48,3 +48,48 @@ describe("log-search MCP privacy boundary", () => {
     }
   });
 });
+
+describe.each([
+  { name: "search_server_logs", args: { app: "APP", component: "api" }, search: searchLogs },
+  { name: "search_httpd_logs", args: { domain: "example.invalid" }, search: searchHttpdLogs },
+])("$name MCP date validation", ({ name, args, search }) => {
+  it.each([
+    { label: "LF", suffix: "\n" },
+    { label: "CR", suffix: "\r" },
+    { label: "CRLF", suffix: "\r\n" },
+    { label: "LINE SEPARATOR", suffix: "\u2028" },
+    { label: "PARAGRAPH SEPARATOR", suffix: "\u2029" },
+    { label: "NUL", suffix: "\0" },
+  ])("rejects a trailing $label before invoking the search", async ({ suffix }) => {
+    const server = createServerMonitoringServer();
+    const client = new Client({ name: "date-validation-test", version: "0.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      for (const prefix of ["2026-09-15", "today"]) {
+        const result = await client.callTool({
+          name, arguments: { server: "testserver", pattern: "ERROR", ...args, date: `${prefix}${suffix}` },
+        });
+        expect(result.isError).toBe(true);
+      }
+      expect(search).not.toHaveBeenCalled();
+    } finally {
+      await Promise.all([client.close(), server.close()]);
+    }
+  });
+
+  it.each(["2026-09-15", "today"])("accepts the complete date value %s", async (date) => {
+    vi.mocked(search).mockResolvedValue({ output: "No matches", exitCode: 0 });
+    const server = createServerMonitoringServer();
+    const client = new Client({ name: "date-validation-test", version: "0.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      const result = await client.callTool({ name, arguments: { server: "testserver", pattern: "ERROR", ...args, date } });
+      expect(result.isError).not.toBe(true);
+      expect(search).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ date }));
+    } finally {
+      await Promise.all([client.close(), server.close()]);
+    }
+  });
+});

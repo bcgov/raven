@@ -54,8 +54,9 @@ export interface HttpdLogSearchParams {
  * legitimately use (`ERROR|FATAL`). Blocking it would break real searches;
  * escaping makes it safe without doing so.
  *
- * Control characters are handled separately by assertNoShellControlChars,
- * because a newline survives quoting as a statement separator.
+ * Control characters are rejected separately at the input boundary by
+ * assertNoShellControlChars. Single quoting also keeps a newline literal;
+ * it does not become a shell statement separator inside the quoted argument.
  */
 const PATTERN_META = /[;&`$(){}\\<>]/;
 

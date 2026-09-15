@@ -36,13 +36,13 @@ export function shellEscape(value: string): string {
  * even when that value will be quoted.
  *
  * Quoting neutralizes metacharacters, so this deliberately does **not** repeat
- * the full metacharacter set. It covers control characters that break the
- * one-value-one-word assumption itself:
+ * the full metacharacter set. These inputs are rejected before command
+ * construction or tokenization:
  *
- * - `\n` and `\r` act as statement separators in the receiving shell, and are
- *   matched by `\s` — so any `split(/\s+/)` tokenizer treats them as ordinary
- *   whitespace and validates only the text before them. That combination is
- *   exactly the RSEC-002 bypass.
+ * - An unquoted `\n` can separate shell statements. CR/LF are also matched by
+ *   `\s`, so whitespace-based tokenization can hide a line boundary from a
+ *   validator. Inside single quotes they remain literal argument content;
+ *   this API rejects them rather than accepting multiline inputs.
  * - `\0` truncates the argument at the C-string boundary.
  *
  * No legitimate log-search pattern, file path, or command argument in this

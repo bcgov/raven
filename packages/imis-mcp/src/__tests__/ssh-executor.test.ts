@@ -535,6 +535,39 @@ describe("validateCommand — file -C writes a compiled magic database", () => {
   });
 });
 
+describe("validateCommand — jstat must not forward arbitrary JVM options", () => {
+  // Confirmed locally on OpenJDK 21: this creates a GC log even with -help.
+  // The same launcher forwarding accepts -javaagent/-agentpath. These cases
+  // exercise validation only; no JVM or agent is started by the test suite.
+  it.each([
+    "jstat -J-Xlog:gc:file=/tmp/proof.log -help",
+    "jstat -J-javaagent:/tmp/agent.jar -help",
+    "jstat -J-agentpath:/tmp/agent.so -help",
+    "jstat -J -Xlog:gc:file=/tmp/proof.log -help",
+    "jstat -gc 12345 -J-Xlog:gc:file=/tmp/proof.log",
+    "jstat -'J'-Xlog:gc:file=/tmp/proof.log -help",
+    'jstat -"J"-javaagent:/tmp/agent.jar -help',
+    "jstat '-J-Xlog:gc:file=/tmp/proof.log' -help",
+    "jstat -[J]-Xlog:gc:file=proof.log -help",
+    "jstat -?Xlog:gc:file=proof.log -help",
+    "jstat -* -help",
+  ])("rejects VM forwarding and expandable arguments: %s", (command) => {
+    expect(validateCommand(command)).toBe(false);
+  });
+
+  it.each([
+    "jstat -gc 12345 1000 1",
+    "jstat -gcutil -t -h 20 12345 1s 5",
+    "jstat -class 12345@localhost:1099 1000 1",
+    "jstat -options",
+    "jstat -help",
+    "jstat --help",
+    "jstat '-?'",
+  ])("preserves statistics and help options: %s", (command) => {
+    expect(validateCommand(command)).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Self-review follow-up: every `forbid` pattern anchors at the start of the
 // argument, so it only sees a short option that comes first in its token.

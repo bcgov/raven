@@ -59,6 +59,7 @@ const QUOTE_CHARS = /['"]/;
  *   sets the hostname
  * - `mount …` with any argument changes mount state
  * - `file -C` / `--compile` writes a compiled magic database
+ * - `jstat -J...` forwards JVM options that can write files or load agents
  *
  * Long options are rejected outright on `sort`, `date`, `uniq` and `file` rather than
  * named individually. GNU accepts any unambiguous abbreviation — `date --s`
@@ -191,6 +192,11 @@ function validateDateArgs(args: string[]): boolean {
 }
 
 const ARG_POLICY: Record<string, ArgPolicy> = {
+  // The Java launcher handles -J before jstat parses its statistics options.
+  // For example, -J-Xlog:gc:file=PATH writes a log even with -help, and
+  // -J-javaagent:PATH loads executable agent code. Quoting cannot make these
+  // safe; reject every forwarding option after shell quote removal.
+  jstat: { forbid: [/^-J/] },
   // GNU find actions that execute or write. Every other action prints.
   find: { forbid: [/^-(exec|execdir|ok|okdir|delete|fprintf?|fprint0|fls)$/] },
   // -o/-oFILE write; --output and --compress-program are covered by the
