@@ -156,9 +156,9 @@ describe("gitCredentialEnv", () => {
       HTTPS_PROXY: "http://proxy.example:3128", // the user's own proxy is kept
       GIT_TERMINAL_PROMPT: "0",
       GIT_TRACE_REDACT: "1",
-      GIT_CONFIG_COUNT: "7",
-      GIT_CONFIG_KEY_0: "http.extraHeader",
-      GIT_CONFIG_VALUE_0: AUTH,
+      GIT_CONFIG_COUNT: "8",
+      GIT_CONFIG_KEY_0: `http.https://${HOST}/scm/nrs/repo.git.extraHeader`,
+      GIT_CONFIG_VALUE_0: "",
       GIT_CONFIG_KEY_1: "credential.helper",
       GIT_CONFIG_VALUE_1: "",
       GIT_CONFIG_KEY_2: "core.askpass",
@@ -174,6 +174,8 @@ describe("gitCredentialEnv", () => {
       GIT_CONFIG_VALUE_5: "false",
       GIT_CONFIG_KEY_6: `http.https://${HOST}/scm/nrs/repo.git.followRedirects`,
       GIT_CONFIG_VALUE_6: "false",
+      GIT_CONFIG_KEY_7: `http.https://${HOST}/scm/nrs/repo.git.extraHeader`,
+      GIT_CONFIG_VALUE_7: AUTH,
     });
     for (const key of DROPPED) expect(env).not.toHaveProperty(key);
     expect(Object.values(env).join(" ")).not.toContain("/x");
@@ -198,7 +200,7 @@ describe("gitCredentialEnv", () => {
     for (const once of ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_TERMINAL_PROMPT"]) {
       expect(names.filter((n) => n === once)).toHaveLength(1);
     }
-    expect(env).toMatchObject({ Path: "C:\\bin", GIT_CONFIG_GLOBAL: "C:\\work\\.gitconfig", GIT_CONFIG_COUNT: "7", GIT_TERMINAL_PROMPT: "0" });
+    expect(env).toMatchObject({ Path: "C:\\bin", GIT_CONFIG_GLOBAL: "C:\\work\\.gitconfig", GIT_CONFIG_COUNT: "8", GIT_TERMINAL_PROMPT: "0" });
     expect(Object.values(env).join(" ")).not.toContain("evil");
   });
 });
@@ -258,7 +260,7 @@ describe("pushRepo", () => {
     const push = git.calls.at(-1)!;
     // clone_repo uses the same helper, so the two invocations cannot drift.
     expect(push.env).toEqual(gitCredentialEnv(AUTH, `https://${HOST}/scm/nrs/repo.git`));
-    expect(push.env?.["GIT_CONFIG_VALUE_0"]).toBe(AUTH);
+    expect(push.env?.["GIT_CONFIG_VALUE_7"]).toBe(AUTH);
     for (const call of git.calls) {
       expect(call.args.join(" ")).not.toContain("Basic");
       if (call.args[0] === "push") continue;

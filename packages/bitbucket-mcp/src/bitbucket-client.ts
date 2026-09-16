@@ -554,7 +554,8 @@ export class BitbucketClient {
   ): Promise<BitbucketCommit> {
     const form = new FormData();
     form.set("branch", opts.branch);
-    form.set("content", opts.content);
+    // String form fields normalize newlines; a file part preserves UTF-8 bytes.
+    form.set("content", new Blob([opts.content], { type: "text/plain; charset=utf-8" }), "content");
     form.set("message", opts.message);
     if (opts.sourceCommitId) form.set("sourceCommitId", opts.sourceCommitId);
     const encodedPath = encodeRepoPath(filePath);

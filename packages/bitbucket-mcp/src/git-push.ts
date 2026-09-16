@@ -146,9 +146,11 @@ export function gitCredentialEnv(
     // Overrides protocol.<name>.allow in every config scope, including a
     // remote helper selected by remote.<name>.vcs.
     GIT_ALLOW_PROTOCOL: "https",
-    GIT_CONFIG_COUNT: "7",
-    GIT_CONFIG_KEY_0: "http.extraHeader",
-    GIT_CONFIG_VALUE_0: authHeader,
+    GIT_CONFIG_COUNT: "8",
+    // extraHeader is multi-valued. Reset the most-specific matching list
+    // before adding the active header, including inherited URL-scoped values.
+    GIT_CONFIG_KEY_0: `http.${targetUrl}.extraHeader`,
+    GIT_CONFIG_VALUE_0: "",
     GIT_CONFIG_KEY_1: "credential.helper",
     GIT_CONFIG_VALUE_1: "",
     GIT_CONFIG_KEY_2: "core.askpass",
@@ -161,6 +163,8 @@ export function gitCredentialEnv(
     GIT_CONFIG_VALUE_5: "false",
     GIT_CONFIG_KEY_6: `http.${targetUrl}.followRedirects`,
     GIT_CONFIG_VALUE_6: "false",
+    GIT_CONFIG_KEY_7: `http.${targetUrl}.extraHeader`,
+    GIT_CONFIG_VALUE_7: authHeader,
   };
 }
 

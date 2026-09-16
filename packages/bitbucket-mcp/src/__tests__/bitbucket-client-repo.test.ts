@@ -201,6 +201,21 @@ describe("BitbucketClient.commitFile", () => {
     parents: [],
   };
 
+  it.each(["first\nsecond\n", "first\r\nsecond\r\n", "first\rsecond\n", "Łingít\nᐃᓄᒃᑎᑐᑦ\n", ""])(
+    "preserves UTF-8 file bytes through multipart encoding: %j", async content => {
+      const mockFetch = createMockFetch({ ok: true, status: 200, body: commit });
+      const client = new BitbucketClient(mockFetch as any, BASE);
+      await client.commitFile("NRS", "repo", "file.txt", { branch: "main", content, message: "Update" });
+      const [url, options] = mockFetch.mock.calls[0];
+      const request = new Request(url, options);
+      const wire = await request.arrayBuffer();
+      const decoded = await new Response(wire, { headers: request.headers }).formData();
+      const field = decoded.get("content")!;
+      const actual = typeof field === "string" ? Buffer.from(field) : Buffer.from(await field.arrayBuffer());
+      expect(actual).toEqual(Buffer.from(content));
+    },
+  );
+
   it("PUTs multipart form fields to the browse endpoint", async () => {
     const mockFetch = createMockFetch({ ok: true, status: 200, body: commit });
     const client = new BitbucketClient(mockFetch as any, BASE);
@@ -219,7 +234,8 @@ describe("BitbucketClient.commitFile", () => {
     expect(opts.body).toBeInstanceOf(FormData);
     const form = opts.body as FormData;
     expect(form.get("branch")).toBe("feature/x");
-    expect(form.get("content")).toBe("a: 1\n");
+    expect(form.get("content")).toBeInstanceOf(Blob);
+    expect(await (form.get("content") as Blob).text()).toBe("a: 1\n");
     expect(form.get("message")).toBe("Add config");
     expect(form.get("sourceCommitId")).toBe("b".repeat(40));
     // fetch must set the multipart boundary itself

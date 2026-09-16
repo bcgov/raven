@@ -24,11 +24,44 @@ const env = {
   no_proxy: "*",
 };
 const auth = "Authorization: Basic c3ludGhldGljOnRlc3Q=";
-const g = (args: string[], cwd = root, childEnv = env) =>
+const g = (args: string[], cwd = root, childEnv: NodeJS.ProcessEnv = env) =>
   defaultGitExec(args, { cwd, env: childEnv, timeoutMs: 5_000 });
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 describe("Git credential isolation", () => {
+  it("replaces inherited plain and URL-scoped HTTP headers on the wire", async () => {
+    const received: { headers: string[] }[] = [];
+    const server = createServer((req, res) => {
+      received.push({ headers: req.rawHeaders });
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/repo.git`;
+    const config = join(root, "headers.config");
+    try {
+      for (const key of ["http.extraHeader", `http.${url}.extraHeader`]) {
+        await g(["config", "--file", config, "--add", key, "Authorization: Basic stale"]);
+        await g(["config", "--file", config, "--add", key, "Cookie: stale=1"]);
+      }
+      // HTTP is enabled only for the synthetic loopback fixture.
+      await expect(g(["ls-remote", url], root, {
+        ...gitCredentialEnv(auth, url, { ...env, GIT_CONFIG_GLOBAL: config }), GIT_ALLOW_PROTOCOL: "http",
+      })).rejects.toThrow(/not found/);
+      expect(received.length).toBeGreaterThan(0);
+      for (const { headers } of received) {
+        const sensitive = [];
+        for (let i = 0; i < headers.length; i += 2) {
+          if (["authorization", "cookie"].includes(headers[i].toLowerCase())) sensitive.push(`${headers[i]}: ${headers[i + 1]}`);
+        }
+        expect(sensitive).toEqual([auth]);
+      }
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
   it.skipIf(process.platform === "win32")("disables repository-configured push signing", async () => {
     const src = join(root, "signed-source"), bare = join(root, "signed-remote.git");
     const marker = join(root, "signing-program-ran");
