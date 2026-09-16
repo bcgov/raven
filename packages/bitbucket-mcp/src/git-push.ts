@@ -233,6 +233,7 @@ export const defaultGitExec: GitExec = async (args, opts) => {
       const abort = () => stop(new DOMException("Git command cancelled", "AbortError"));
       const timer = setTimeout(() => stop(new Error(`git ${args[0]} timed out after ${opts.timeoutMs} ms`)), opts.timeoutMs);
       opts.signal?.addEventListener("abort", abort, { once: true });
+      if (opts.signal?.aborted) abort();
       child.once("error", error => { failure ??= error; });
       child.once("close", async (code, signal) => {
         clearTimeout(timer);
@@ -440,7 +441,9 @@ export async function pushRepo(opts: PushRepoOptions): Promise<PushRepoResult> {
   // add reachable annotated tags to what is meant to be a one-branch push.
   // --recurse-submodules=no: push.recurseSubmodules=on-demand would push
   // submodules to their own, never validated remotes with the credential.
-  const args = ["push", "--no-verify", "--no-follow-tags", "--recurse-submodules=no"];
+  // --no-signed: push.gpgSign could run a configured signing program with
+  // the credential-bearing environment, even with hooks disabled.
+  const args = ["push", "--no-verify", "--no-follow-tags", "--recurse-submodules=no", "--no-signed"];
   if (setUpstream) args.push("--set-upstream");
   args.push(remote, `refs/heads/${branch}:refs/heads/${branch}`);
   const output = await run(args, gitCredentialEnv(opts.authHeader, remoteUrl));

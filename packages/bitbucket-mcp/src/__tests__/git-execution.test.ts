@@ -1,11 +1,16 @@
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultGitExec, gitCredentialEnv, gitPlumbingEnv, pushRepo } from "../git-push.js";
+
+vi.mock("node:child_process", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
+});
 
 const root = mkdtempSync(join(tmpdir(), "raven-git-execution-"));
 const globalConfig = join(root, "global.config");
@@ -24,6 +29,40 @@ const g = (args: string[], cwd = root, childEnv = env) =>
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 describe("Git credential isolation", () => {
+  it.skipIf(process.platform === "win32")("disables repository-configured push signing", async () => {
+    const src = join(root, "signed-source"), bare = join(root, "signed-remote.git");
+    const marker = join(root, "signing-program-ran");
+    const signer = join(root, "signer");
+    await g(["init", "-q", "-b", "main", src]);
+    await g(["config", "user.name", "Test"], src);
+    await g(["config", "user.email", "test@example.invalid"], src);
+    writeFileSync(join(src, "file.txt"), "one\n");
+    await g(["add", "file.txt"], src);
+    await g(["commit", "-qm", "one"], src);
+    await g(["init", "-q", "--bare", bare]);
+    await g(["config", "receive.certNonceSeed", "synthetic-test"], bare);
+    await g(["remote", "add", "origin", "https://bitbucket.example/repo.git"], src);
+    writeFileSync(signer, `#!/bin/sh\necho ran >> "${marker}"\nexit 1\n`, { mode: 0o700 });
+    await g(["config", "gpg.program", signer], src);
+    await g(["config", "push.gpgSign", "true"], src);
+    const url = `file://${bare}`;
+    const control = spawnSync("git", ["push", url, "refs/heads/main:refs/heads/main"], {
+      cwd: src, env: { ...gitCredentialEnv(auth, url, env), GIT_ALLOW_PROTOCOL: "file" },
+    });
+    expect(control.status).not.toBe(0);
+    expect(readFileSync(marker, "utf-8")).toContain("ran");
+    rmSync(marker);
+    await pushRepo({
+      dir: src, branch: "main", expectedHost: "bitbucket.example", authHeader: auth,
+      // Exercise the production push arguments against an offline bare repo.
+      exec: (args, opts) => defaultGitExec(args[0] === "push" ? args.map(arg => arg === "origin" ? url : arg) : args, {
+        ...opts, env: { ...opts.env, ...env, GIT_ALLOW_PROTOCOL: "file" },
+      }),
+    });
+    expect(existsSync(marker)).toBe(false);
+    expect(await g(["rev-parse", "main"], bare)).toBe(await g(["rev-parse", "main"], src));
+  });
+
   it("keeps OS/CA/proxy settings but removes provider credentials in every case", () => {
     const base = {
       PATH: "/usr/bin", HOME: "/home/test", SystemRoot: "C:\\Windows",
@@ -89,6 +128,19 @@ describe("Git credential isolation", () => {
 });
 
 describe("asynchronous Git execution", () => {
+  it.skipIf(process.platform === "win32")("observes cancellation that happens while starting the process", async () => {
+    const controller = new AbortController();
+    const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    vi.mocked(spawn).mockImplementationOnce(((...args: Parameters<typeof spawn>) => {
+      const child = actual.spawn(...args);
+      controller.abort();
+      return child;
+    }) as typeof spawn);
+    await expect(defaultGitExec(["-c", "alias.wait=!sleep 10", "wait"], {
+      cwd: root, env, timeoutMs: 250, signal: controller.signal,
+    })).rejects.toMatchObject({ name: "AbortError" });
+  });
+
   it("shares the output ceiling across stdout and stderr", async () => {
     const dir = join(root, "combined-output-limit");
     await g(["init", "-q", dir]);

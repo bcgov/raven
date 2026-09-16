@@ -226,6 +226,7 @@ describe("pushRepo", () => {
       "--no-verify",
       "--no-follow-tags",
       "--recurse-submodules=no",
+      "--no-signed",
       "origin",
       "refs/heads/feature/x:refs/heads/feature/x",
     ]);
@@ -282,6 +283,7 @@ describe("pushRepo", () => {
       "--no-verify",
       "--no-follow-tags",
       "--recurse-submodules=no",
+      "--no-signed",
       "--set-upstream",
       "origin",
       "refs/heads/new-branch:refs/heads/new-branch",
