@@ -305,6 +305,7 @@ export class PiScrubber {
     // Scrub these token formats before a generic key consumes their label.
     let result = text
       .replace(/SMSESSION=[A-Za-z0-9+/=%\-_.]{10,}/g, "SMSESSION=[TOKEN]")
+      .replace(/Authorization:\s*Basic\s+[A-Za-z0-9+/]+={0,2}/gi, "Authorization: Basic [TOKEN]")
       .replace(/Bearer\s+[A-Za-z0-9\-_.~+/]+=*/g, "Bearer [TOKEN]");
     result = scrubCredentials(result);
 
