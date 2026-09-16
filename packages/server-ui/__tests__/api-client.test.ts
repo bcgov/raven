@@ -1,9 +1,20 @@
-import { createServer, type Server } from "node:http";
+import { createServer, request as httpRequest, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import express from "express";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { localGuard } from "../src/lib/local-guard.js";
 import { apiFetch } from "../public/js/components/api.js";
+import { healthRouter } from "../src/routes/health.js";
+import { startCollector, stopCollector } from "../src/lib/collector.js";
+
+vi.mock("../src/lib/store.js", () => ({
+  getServerStatuses: () => ({}),
+  loadStore: () => ({ errorSnapshots: [], versionSnapshots: [] }),
+}));
+vi.mock("../src/lib/collector.js", () => ({
+  getCollectorStatus: () => ({ running: false, lastRun: null, nextRun: null }),
+  startCollector: vi.fn(), stopCollector: vi.fn(),
+}));
 
 let server: Server;
 let baseUrl: string;
@@ -13,6 +24,7 @@ beforeAll(async () => {
   const app = express();
   app.use(express.json());
   app.use("/api", (req, res, next) => localGuard((server.address() as AddressInfo).port)(req, res, next));
+  app.use("/api/health", healthRouter);
   app.all("/api/probe", (req, res) => {
     handler();
     res.json({ method: req.method, body: req.body, client: req.headers["x-raven-ui"] });
@@ -29,6 +41,41 @@ afterAll(async () => {
 beforeEach(() => handler.mockClear());
 
 describe("dashboard API caller verification", () => {
+  it.each(["GET", "HEAD"])("preserves metadata-free %s health probes", async method => {
+    for (const path of ["/api/health", "/api/health/"]) {
+      const response = await fetch(`${baseUrl}${path}`, { method });
+      expect(response.status).toBe(200);
+      if (method === "GET") expect(await response.json()).toMatchObject({ status: "starting" });
+      else await response.text();
+    }
+  });
+
+  it("keeps health collector actions protected", async () => {
+    for (const action of ["start", "stop"]) {
+      const response = await fetch(`${baseUrl}/api/health/collector/${action}`, { method: "POST" });
+      expect(response.status).toBe(403);
+      await response.text();
+    }
+    expect(startCollector).not.toHaveBeenCalled();
+    expect(stopCollector).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { Host: "untrusted.example" }, { Origin: "https://untrusted.example" }, { "Sec-Fetch-Site": "cross-site" },
+  ])("still validates health probe headers: %j", async headers => {
+    // Node fetch owns the Host header; use HTTP directly to exercise a
+    // genuinely untrusted Host on the wire.
+    const status = await new Promise<number | undefined>((resolve, reject) => {
+      const request = httpRequest(`${baseUrl}/api/health`, { headers }, response => {
+        response.resume();
+        response.once("end", () => resolve(response.statusCode));
+      });
+      request.once("error", reject);
+      request.end();
+    });
+    expect(status).toBe(403);
+  });
+
   it.each(["GET", "HEAD"])("blocks metadata-free %s before the handler", async method => {
     const response = await fetch(`${baseUrl}/api/probe`, { method });
     expect(response.status).toBe(403);

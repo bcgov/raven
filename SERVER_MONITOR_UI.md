@@ -46,7 +46,7 @@ The dashboard opens at **http://localhost:3777**.
 
 ### API access
 
-Every `/api` request needs an allowed local Origin, `X-Raven-UI: 1`, or (for reads) the browser's `Sec-Fetch-Site: same-origin` header. The dashboard adds the custom header to its fetch calls. Native live streams and download links require a browser that sends same-origin fetch metadata. Requests without caller verification receive HTTP 403, even for GET and HEAD.
+Except for the read-only health probe, every `/api` request needs an allowed local Origin, `X-Raven-UI: 1`, or (for reads) the browser's `Sec-Fetch-Site: same-origin` header. The dashboard adds the custom header to its fetch calls. Native live streams and download links require a browser that sends same-origin fetch metadata. Requests without caller verification receive HTTP 403, even for GET and HEAD.
 
 For scripted access, include the client header:
 
@@ -189,7 +189,7 @@ Threshold-based alerting system:
 
 ### Health Endpoint
 
-`GET /api/health` — Reports status (`healthy`, `degraded`, `starting`), server reachability, collector status, uptime, and version. OpenShift-ready.
+`GET /api/health` (also HEAD) reports cached status (`healthy`, `degraded`, `starting`), server reachability, collector status, uptime, and version. It performs no SSH work and accepts ordinary probes without caller headers. Probes must use the loopback listener's Host (for example, `localhost:3777`); supplied Origin and fetch metadata are still validated. Collector start/stop routes require the normal API caller headers.
 
 ## Background Data Collector
 

@@ -193,6 +193,21 @@ describe("PiScrubber.scrubText — bare IDIR in attribution context (review Issu
     expect(pi.scrubText("reviewer TWILSON approved")).toBe("reviewer [IDIR] approved");
   });
 
+  it.each(["assignee", "owner", "Author", "reviewer"])("redacts quoted attribution field %s without breaking JSON", key => {
+    let input = `{\"${key}\": \"JSMITH\"}`;
+    let expected = `{\"${key}\": \"[IDIR]\"}`;
+    for (let depth = 0; depth < 3; depth++) {
+      expect(pi.scrubText(input)).toBe(expected);
+      input = JSON.stringify(input);
+      expected = JSON.stringify(expected);
+    }
+  });
+
+  it.each(["jsmith", "JSmith", "ERROR", "SYSTEM", "JSMITHSON"])("preserves non-IDIR structured attribution %s", value => {
+    const input = JSON.stringify({ owner: value });
+    expect(pi.scrubText(input)).toBe(input);
+  });
+
   it.each([
     "Assigned to", "ASSIGNED TO", "aSsIgNeD tO", "Reported By", "Created By",
     "Updated By", "Modified By", "Resolved By", "Closed By", "Requested By",

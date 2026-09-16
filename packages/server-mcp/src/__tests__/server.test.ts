@@ -33,7 +33,7 @@ describe("log-search MCP privacy boundary", () => {
   ])("scrubs successful $name responses before returning them to the client", async ({ name, args, search }) => {
     vi.stubEnv("RAVEN_SCRUB_PI", "true");
     vi.mocked(search).mockResolvedValue({
-      output: "ERROR contact person@example.invalid password=SyntheticSecret22", exitCode: 0,
+      output: 'ERROR {"owner":"JSMITH"} contact person@example.invalid password=SyntheticSecret22', exitCode: 0,
     });
     const server = createServerMonitoringServer();
     const client = new Client({ name: "privacy-test", version: "0.0.0" });
@@ -42,7 +42,7 @@ describe("log-search MCP privacy boundary", () => {
       await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
       const result = await client.callTool({ name, arguments: { server: "testserver", pattern: "ERROR", ...args } });
       expect(result.isError).not.toBe(true);
-      expect(result.content).toEqual([{ type: "text", text: "ERROR contact [EMAIL] [CREDENTIAL]" }]);
+      expect(result.content).toEqual([{ type: "text", text: 'ERROR {"owner":"[IDIR]"} contact [EMAIL] [CREDENTIAL]' }]);
       expect(search).toHaveBeenCalledOnce();
     } finally {
       await Promise.all([client.close(), server.close()]);

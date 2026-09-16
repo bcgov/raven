@@ -29,6 +29,8 @@
  *
  * Dashboard fetch calls send `X-Raven-UI: 1`. Native EventSource connections
  * and download links use the browser's `Sec-Fetch-Site: same-origin` metadata.
+ * The read-only health probe is the sole exception to required caller proof;
+ * Host, Origin and cross-site metadata validation still apply to that route.
  */
 import type { Request, Response, NextFunction } from "express";
 
@@ -85,6 +87,7 @@ export function allowedOrigins(port: number): Set<string> {
  * @param hasClientHeader - Whether the custom client header was supplied.
  * @param port - Port the dashboard listens on.
  * @param secFetchSite - Value of the Sec-Fetch-Site header, if any.
+ * @param apiPath - Path relative to the /api mount, for the read-only health probe.
  * @returns Null when the request is allowed, otherwise the rejection reason.
  */
 export function checkLocalRequest(
@@ -94,6 +97,7 @@ export function checkLocalRequest(
   hasClientHeader: boolean,
   port: number,
   secFetchSite?: string,
+  apiPath?: string,
 ): string | null {
   // Host is mandatory and must name this loopback listener. This is the
   // rebinding defense: an attacker-controlled hostname fails here even when
@@ -125,7 +129,8 @@ export function checkLocalRequest(
     return `State-changing request requires an Origin header or ${CLIENT_HEADER}: 1`;
   }
 
-  if (origin === undefined && !hasClientHeader && secFetchSite?.toLowerCase() !== "same-origin") {
+  const healthProbe = (method === "GET" || method === "HEAD") && (apiPath === "/health" || apiPath === "/health/");
+  if (!healthProbe && origin === undefined && !hasClientHeader && secFetchSite?.toLowerCase() !== "same-origin") {
     return `API request requires an Origin header, same-origin fetch metadata, or ${CLIENT_HEADER}: 1`;
   }
 
@@ -147,6 +152,7 @@ export function localGuard(port: number) {
       req.headers[CLIENT_HEADER] !== undefined,
       port,
       req.headers["sec-fetch-site"] as string | undefined,
+      req.path,
     );
     if (reason) {
       res.status(403).json({ error: `Forbidden: ${reason}` });

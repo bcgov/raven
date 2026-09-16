@@ -60,6 +60,14 @@ export interface HttpdLogSearchParams {
  */
 const PATTERN_META = /[;&`$(){}\\<>]/;
 
+/** Apply the same pattern policy at command and HTTP input boundaries. */
+export function assertLogSearchPattern(pattern: string): void {
+  assertNoShellControlChars(pattern, "Pattern");
+  if (PATTERN_META.test(pattern)) {
+    throw new Error("Pattern contains shell metacharacters");
+  }
+}
+
 /**
  * Strict calendar-date shape. Every date parameter is interpolated into the
  * remote shell command — `date` unquoted inside a path, `dateFrom`/`dateTo`
@@ -110,10 +118,7 @@ function logFilePrefix(component: string, logType: LogType): string {
 export function buildLogSearchCommand(params: LogSearchParams): string {
   const { logsBase, app, component, pattern, logType, date, dateFrom, dateTo, maxLines, contextLines } = params;
 
-  assertNoShellControlChars(pattern, "Pattern");
-  if (PATTERN_META.test(pattern)) {
-    throw new Error("Pattern contains shell metacharacters");
-  }
+  assertLogSearchPattern(pattern);
   assertDate(date, "date", true);
   assertDate(dateFrom, "dateFrom", false);
   assertDate(dateTo, "dateTo", false);
@@ -221,10 +226,7 @@ export function buildHttpdLogSearchCommand(params: HttpdLogSearchParams): string
     date, dateFrom, dateTo, maxLines, contextLines,
   } = params;
 
-  assertNoShellControlChars(pattern, "Pattern");
-  if (PATTERN_META.test(pattern)) {
-    throw new Error("Pattern contains shell metacharacters");
-  }
+  assertLogSearchPattern(pattern);
   assertDate(date, "date", true);
   assertDate(dateFrom, "dateFrom", false);
   assertDate(dateTo, "dateTo", false);

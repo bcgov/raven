@@ -208,7 +208,7 @@ function scrubCredentials(text: string): string {
 
 /** Match attribution phrases in any case, but only uppercase IDIR candidates. */
 function scrubAttributedIdirs(text: string): string {
-  const prefixes = /\b(?:assigned to|reported by|created by|updated by|modified by|resolved by|closed by|requested by|submitted by|owner|reporter|assignee|reviewer|approver|author)[:\s]+/gi;
+  const prefixes = /\b(?:assigned to|reported by|created by|updated by|modified by|resolved by|closed by|requested by|submitted by|owner|reporter|assignee|reviewer|approver|author)(?:\\*["'])?[:\s]+(?:\\*["'])?/gi;
   const token = /[A-Z]{5,8}\b/y; // Check exactly the next token, without case folding.
   const parts: string[] = [];
   let previousEnd = 0;

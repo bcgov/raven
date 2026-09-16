@@ -81,6 +81,23 @@ describe.each([
 });
 
 describe("valid HTTP log dates", () => {
+  it.each(["ERROR\nFATAL", "ERROR\rFATAL", "ERROR\0FATAL", "(ERROR)", "ERROR{2}", "ERROR\\b", "<ERROR>"])(
+    "rejects invalid pattern %j with HTTP 400 before SSH", async pattern => {
+      const response = await request("logs", { pattern });
+      expect(response.status).toBe(400);
+      await response.text();
+      expect(searchLogs).not.toHaveBeenCalled();
+      expect(sshExec).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["ERROR|FATAL", "can't connect", "-ERROR"])("accepts supported pattern %s", async pattern => {
+    const response = await request("logs", { pattern });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(searchLogs).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ pattern }));
+  });
+
   it.each(["2026-02-30", "2025-02-29", "1900-02-29", "2026-04-31", "2026-00-01", "2026-01-00"])("rejects impossible date %s before SSH", async (date) => {
     for (const field of ["date", "dateFrom", "dateTo"]) {
       const response = await request("logs", { [field]: date });
