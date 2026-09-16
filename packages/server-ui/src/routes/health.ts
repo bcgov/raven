@@ -2,7 +2,9 @@
  * GET /api/health
  *
  * Health check endpoint for OpenShift probes and external monitoring.
- * Always returns HTTP 200. The status field indicates actual health:
+ * Valid local probes return HTTP 200 without browser caller headers; Host,
+ * Origin and cross-site header checks still apply. Reads use cached status
+ * only and never start the collector. The status field indicates actual health:
  *   - "healthy"  — all configured servers are reachable
  *   - "degraded" — one or more servers unreachable
  *   - "starting" — collector hasn't completed its first run yet

@@ -1,3 +1,5 @@
+import { apiFetch } from '../components/api.js';
+
 /**
  * Error trends view — Chart.js bar chart of error counts over time.
  */
@@ -106,7 +108,7 @@ window.views.trends = {
     if (server) params.set('server', server);
 
     try {
-      const res = await fetch(`/api/trends/errors?${params}`);
+      const res = await apiFetch(`/api/trends/errors?${params}`);
       const data = await res.json();
       if (data.error) throw new Error(data.error);
 

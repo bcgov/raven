@@ -1,0 +1,11 @@
+# codebase-memory index exclusions.
+# .claude/worktrees/ holds several full git worktrees of this repository
+# (~2,400 .ts files against ~244 in the real source tree). Indexing them
+# creates duplicate copies of every symbol, which makes trace_path results
+# ambiguous and call-graph analysis unreliable.
+.claude/
+.gstack/
+node_modules/
+dist/
+coverage/
+.scannerwork/

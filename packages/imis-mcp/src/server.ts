@@ -3,6 +3,7 @@ import { z } from "zod";
 import { PiScrubber } from "@nrs/auth";
 import { ImisClient } from "./imis-client.js";
 import { validateCommand, validateSudoUser, sanitizePath, sshExec, ALLOWED_SUDO_USER_LIST } from "./ssh-executor.js";
+import { shellEscape } from "@nrs/auth";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { ImisServer } from "./types.js";
@@ -303,7 +304,7 @@ If SSH tools return auth errors, the user needs SERVER_A_PASSWORD set in ~/.rave
         const results: string[] = [];
         for (const dir of dirs) {
           const safePath = sanitizePath(dir);
-          const cmd = `ls -la ${safePath}`;
+          const cmd = `ls -la ${shellEscape(safePath)}`;
           if (!validateCommand(cmd)) {
             results.push(`## ${dir}\n(rejected: invalid path or command)`);
             continue;
@@ -326,6 +327,7 @@ If SSH tools return auth errors, the user needs SERVER_A_PASSWORD set in ~/.rave
     "explore_server",
     `Run a read-only command on a remote IMIS server. The server must exist in the IMIS inventory.
 Allowed commands: ls, cat, head, tail, grep, zgrep, zcat, find, df, du, ps, stat, file, echo, date, hostname, uptime, free, wc, readlink, basename, vmstat, rpm, mount, sort, uniq, tr, cut, diff, which, jstat, strings, lsof.
+Options that execute or write are rejected even on allowed commands: find -exec/-delete/-fprintf, sort -o, file -C, rpm anything but -q* query flags (no --pipe), uniq with an OUTPUT file, date -s or numeric setting operands, hostname NAME, mount with arguments, and jstat -J JVM forwarding. Use short options on sort, date, uniq and file. For uniq, put options before the single input (or stdin -); -f/-s/-w take numeric values and -- ends options. Date accepts short display options (-u/-R/-I/-d/-f/-r) and a final +FORMAT. Unquoted wildcards are rejected on commands with these argument restrictions because shell expansion can introduce options or extra operands; quote find patterns, for example find /tmp -name '*.log'. Ordinary ls and grep wildcards remain supported.
 Requires VPN connection and SERVER_A_PASSWORD in ~/.raven/.env.`,
     {
       server: z.string().describe("Server name from IMIS inventory (case-insensitive)"),
@@ -388,7 +390,7 @@ Requires VPN connection and SERVER_A_PASSWORD in ~/.raven/.env.`,
 
         const safePath = sanitizePath(path);
         const maxLines = lines ?? 200;
-        const command = `head -n ${maxLines} ${safePath}`;
+        const command = `head -n ${maxLines} ${shellEscape(safePath)}`;
 
         if (!validateCommand(command)) {
           return {

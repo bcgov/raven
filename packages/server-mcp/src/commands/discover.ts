@@ -1,4 +1,4 @@
-import type { ServerEntry } from "@nrs/auth";
+import { assertSafeServerBasePath, shellEscape, type ServerEntry } from "@nrs/auth";
 import { sshExec } from "../ssh-client.js";
 
 export interface AppInfo {
@@ -18,8 +18,9 @@ const SKIP_DIRS = new Set([
  * Outputs lines: APP|COMP|VERSION|PORT
  */
 export function buildDiscoverCommand(appsBase: string, appFilter?: string): string {
+  assertSafeServerBasePath(appsBase, "appsBase");
   const filterClause = appFilter
-    ? `    [ "$app" != "${appFilter}" ] && continue\n`
+    ? `    [ "$app" != ${shellEscape(appFilter)} ] && continue\n`
     : "";
   const skipList = [...SKIP_DIRS].join("|");
 

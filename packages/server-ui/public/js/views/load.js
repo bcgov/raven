@@ -1,3 +1,5 @@
+import { apiFetch } from '../components/api.js';
+
 /**
  * Server Load view — uptime, load averages, memory, disk.
  * Supports SSE auto-refresh similar to JVM Heap.
@@ -79,7 +81,7 @@ window.views.load = {
     try {
       const results = await Promise.all(
         servers.map(async (s) => {
-          const res = await fetch(`/api/load/${s}`);
+          const res = await apiFetch(`/api/load/${s}`);
           return res.json();
         })
       );

@@ -1,3 +1,5 @@
+import { apiFetch } from '../components/api.js';
+
 /**
  * Discover view — list all apps on a server with color badges.
  */
@@ -58,7 +60,7 @@ window.views.discover = {
 
     // Load cache once for staleness display — no SSH, just the on-disk cache.
     try {
-      const cacheRes = await fetch('/api/discover/cache');
+      const cacheRes = await apiFetch('/api/discover/cache');
       const cacheData = await cacheRes.json();
       for (const s of cacheData.servers || []) {
         if (s.discoveredAt) cacheTimestamps.set(s.server, s.discoveredAt);
@@ -83,7 +85,7 @@ window.views.discover = {
       result.innerHTML = '<div class="flex items-center gap-2"><span class="spinner"></span> Discovering apps...</div>';
 
       try {
-        const res = await fetch(`/api/discover/${server}`);
+        const res = await apiFetch(`/api/discover/${server}`);
         const data = await res.json();
         if (data.error) throw new Error(data.error);
 

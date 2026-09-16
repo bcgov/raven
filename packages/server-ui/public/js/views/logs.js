@@ -1,3 +1,5 @@
+import { apiFetch } from '../components/api.js';
+
 /**
  * Log Search view — search remote application logs with structured rendering.
  */
@@ -161,7 +163,7 @@ window.views.logs = {
           params.set('dateTo', dateTo);
         }
 
-        const res = await fetch(`/api/logs?${params}`);
+        const res = await apiFetch(`/api/logs?${params}`);
         const data = await res.json();
         if (data.error) throw new Error(data.error);
 

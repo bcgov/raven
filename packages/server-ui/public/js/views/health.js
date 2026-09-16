@@ -1,3 +1,5 @@
+import { apiFetch } from '../components/api.js';
+
 /**
  * Health status view — shows RAVEN monitoring system health, server reachability, and collector status.
  */
@@ -23,7 +25,7 @@ window.views.health = {
 
   async init() {
     try {
-      const res = await fetch('/api/health');
+      const res = await apiFetch('/api/health');
       const data = await res.json();
       this.renderHealth(data);
     } catch (err) {

@@ -1,3 +1,5 @@
+import { apiFetch } from '../components/api.js';
+
 /**
  * JVM Heap view — visual heap bars with optional SSE auto-refresh.
  */
@@ -94,7 +96,7 @@ window.views.heap = {
 
     try {
       const params = new URLSearchParams({ server, app, component });
-      const res = await fetch(`/api/heap?${params}`);
+      const res = await apiFetch(`/api/heap?${params}`);
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       this.renderHeapData(data, false);

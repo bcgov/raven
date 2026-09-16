@@ -3,7 +3,7 @@ import { z } from "zod";
 import { getServerNames, getServerDescription, getServerConfig, PiScrubber } from "@nrs/auth";
 import { discoverApps, parseDiscoverOutput } from "./commands/discover.js";
 import { fetchVersions, detectMismatches } from "./commands/versions.js";
-import { searchLogs, searchHttpdLogs } from "./commands/log-search.js";
+import { searchLogs, searchHttpdLogs, isValidLogDate } from "./commands/log-search.js";
 import { diffConfig } from "./commands/config-diff.js";
 import { getJvmHeap, formatHeapReport } from "./commands/jvm-heap.js";
 import { runDashboard } from "./commands/dashboard.js";
@@ -122,6 +122,8 @@ export function createServerMonitoringServer(): McpServer {
         ),
       date: z
         .string()
+        .regex(/^(\d{4}-\d{2}-\d{2}|today)$/, "must be YYYY-MM-DD or 'today'")
+        .refine(value => value === "today" || isValidLogDate(value), "Date must be a valid calendar date or today")
         .optional()
         .describe(
           "Date for log file (YYYY-MM-DD or 'today'). Omit for current active log."
@@ -153,7 +155,7 @@ export function createServerMonitoringServer(): McpServer {
           content: [{
             type: "text",
             text: exitCode === 0
-              ? output || "No matches found."
+              ? pi.scrubText(output || "No matches found.")
               : pi.scrubText(`Error: ${output}`),
           }],
           ...(exitCode !== 0 && { isError: true }),
@@ -199,6 +201,8 @@ export function createServerMonitoringServer(): McpServer {
         ),
       date: z
         .string()
+        .regex(/^(\d{4}-\d{2}-\d{2}|today)$/, "must be YYYY-MM-DD or 'today'")
+        .refine(value => value === "today" || isValidLogDate(value), "Date must be a valid calendar date or today")
         .optional()
         .describe(
           "Date for log file (YYYY-MM-DD or 'today'). Omit to search the newest available log file."
@@ -228,7 +232,7 @@ export function createServerMonitoringServer(): McpServer {
           content: [{
             type: "text",
             text: exitCode === 0
-              ? output || "No matches found."
+              ? pi.scrubText(output || "No matches found.")
               : pi.scrubText(`Error: ${output}`),
           }],
           ...(exitCode !== 0 && { isError: true }),

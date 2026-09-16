@@ -2,7 +2,7 @@ export { sshExec, sshExecStream, buildRemoteCommand } from "./ssh-client.js";
 export type { SshResult } from "./ssh-client.js";
 export { discoverApps, parseDiscoverOutput, buildDiscoverCommand } from "./commands/discover.js";
 export type { AppInfo } from "./commands/discover.js";
-export { searchLogs, searchHttpdLogs, buildLogSearchCommand, buildHttpdLogSearchCommand } from "./commands/log-search.js";
+export { searchLogs, searchHttpdLogs, buildLogSearchCommand, buildHttpdLogSearchCommand, isValidLogDate, assertLogSearchPattern } from "./commands/log-search.js";
 export type { LogSearchParams, HttpdLogSearchParams, LogType } from "./commands/log-search.js";
 export { runDashboard, parseDashboardOutput, buildDashboardCommand } from "./commands/dashboard.js";
 export type { DashboardData } from "./commands/dashboard.js";

@@ -1,3 +1,5 @@
+import { apiFetch } from '../components/api.js';
+
 /**
  * Settings view — configure server list.
  *
@@ -131,7 +133,7 @@ window.views.settings = {
     status.innerHTML = '<span class="text-gray-400 text-sm">Saving...</span>';
 
     try {
-      const res = await fetch('/api/servers', {
+      const res = await apiFetch('/api/servers', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(servers),

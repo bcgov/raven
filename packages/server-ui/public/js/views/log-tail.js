@@ -1,3 +1,5 @@
+import { apiFetch } from '../components/api.js';
+
 /**
  * Log Tail view — real-time log polling.
  * Like `tail -f` in the browser, using fetch-based polling
@@ -169,7 +171,7 @@ window.views.logtail = {
         lines: '200'
       });
       const url = `/api/logs/tail?${qs}`;
-      const res = await fetch(url);
+      const res = await apiFetch(url);
       const data = await res.json();
 
       if (data.error) {

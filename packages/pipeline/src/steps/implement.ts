@@ -371,9 +371,7 @@ function runTests(repoDir: string): boolean {
  * function is still useful if a future caller needs a single-shell-arg
  * helper.
  */
-export function shellEscape(s: string): string {
-  return "'" + s.replace(/'/g, "'\\''") + "'";
-}
+export { shellEscape } from "@nrs/auth";
 
 /**
  * Paths a patch creates (source side /dev/null). No disk check — the

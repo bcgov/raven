@@ -1,4 +1,4 @@
-import type { ServerEntry } from "@nrs/auth";
+import { assertSafeServerBasePath, assertSafeServerIdentifier, type ServerEntry } from "@nrs/auth";
 import { sshExec } from "../ssh-client.js";
 
 export type ConfigFile = "context.xml" | "web.xml" | "server.xml";
@@ -65,6 +65,9 @@ export async function diffConfig(
   if (entries.length < 2) {
     return "Error: Need at least 2 servers to compare.";
   }
+  assertSafeServerIdentifier(app, "App");
+  assertSafeServerIdentifier(component, "Component");
+  for (const entry of entries) assertSafeServerBasePath(entry.appsBase, "appsBase");
 
   const fetched: { name: string; content: string }[] = [];
   for (const entry of entries) {

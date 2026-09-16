@@ -296,20 +296,34 @@ function getSmtpTransport(): Transporter | null {
   const user = loadEnvVar("SMTP_USER");
   const pass = loadEnvVar("SMTP_PASSWORD");
 
+  // RSEC-007: certificate validation is on by default. It used to be disabled
+  // unconditionally for "internal gov relay" convenience, which meant every
+  // alert — including SMTP credentials when SMTP_USER/SMTP_PASSWORD are set,
+  // and alert bodies carrying internal hostnames and stack traces — was
+  // acceptable to any host presenting a forged certificate. Operators who
+  // genuinely need the bypass must now opt in explicitly and visibly.
+  const insecureTls = loadEnvVar("SMTP_INSECURE_TLS") === "true";
+  if (insecureTls) {
+    logger.warn(
+      "SMTP_INSECURE_TLS=true — TLS certificate validation is DISABLED for alert email. " +
+      "Credentials and alert contents can be intercepted by an on-path attacker.",
+      { host, port },
+    );
+  }
+
   smtpTransport = createTransport({
     host,
     port,
     secure: port === 465,
     // Only use auth if credentials are provided
     ...(user && pass ? { auth: { user, pass } } : {}),
-    // Internal gov relay — skip TLS certificate validation
-    tls: { rejectUnauthorized: false },
+    ...(insecureTls ? { tls: { rejectUnauthorized: false } } : {}),
     connectionTimeout: 10_000,
     greetingTimeout: 10_000,
     socketTimeout: 15_000,
   });
 
-  logger.info("SMTP transport initialized", { host, port, auth: !!user });
+  logger.info("SMTP transport initialized", { host, port, auth: !!user, insecureTls });
   return smtpTransport;
 }
 

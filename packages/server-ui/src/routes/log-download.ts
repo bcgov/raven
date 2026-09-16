@@ -6,7 +6,7 @@
  * directly through gzip into the response.
  */
 import { Router } from "express";
-import { sshExec, sshExecStream } from "@nrs/server-mcp/client";
+import { sshExec, sshExecStream, isValidLogDate } from "@nrs/server-mcp/client";
 import { validateServer, validateAppName } from "../lib/validate.js";
 import { getServerConfig } from "../lib/server-config.js";
 import { createGzip } from "node:zlib";
@@ -15,7 +15,6 @@ import { logger } from "../lib/logger.js";
 export const logDownloadRouter = Router();
 
 const FILENAME_RE = /^[A-Za-z0-9._-]+$/;
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Hard ceiling on download size — sanity guard against runaway transfers. */
 const MAX_DOWNLOAD_BYTES = 500 * 1024 * 1024; // 500 MB
@@ -43,7 +42,7 @@ logDownloadRouter.get("/", async (req, res) => {
     res.status(400).json({ error: "Invalid logType" });
     return;
   }
-  if (date && date !== "current" && !DATE_RE.test(date)) {
+  if (date !== undefined && date !== "current" && !isValidLogDate(date)) {
     res.status(400).json({ error: "Invalid date (YYYY-MM-DD or 'current')" });
     return;
   }
