@@ -1,3 +1,5 @@
+import { apiFetch } from '../components/api.js';
+
 /**
  * Versions view — cross-environment version comparison.
  */
@@ -31,7 +33,7 @@ window.views.versions = {
 
       try {
         const params = app ? `?app=${encodeURIComponent(app)}` : '';
-        const res = await fetch(`/api/versions${params}`);
+        const res = await apiFetch(`/api/versions${params}`);
         const data = await res.json();
         if (data.error) throw new Error(data.error);
 

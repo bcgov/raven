@@ -68,6 +68,13 @@ const PATTERN_META = /[;&`$(){}\\<>]/;
  */
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/** Check both the wire format and the actual calendar date without local-time rollover. */
+export function isValidLogDate(value: unknown): value is string {
+  if (typeof value !== "string" || value.length !== 10 || !DATE_RE.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
 /**
  * Reject a date parameter that is not YYYY-MM-DD (or, where permitted, "today").
  *
@@ -79,7 +86,7 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 function assertDate(value: string | undefined, label: string, allowToday: boolean): void {
   if (value === undefined) return;
   if (allowToday && value === "today") return;
-  if (!DATE_RE.test(value)) {
+  if (!isValidLogDate(value)) {
     throw new Error(`${label} must be YYYY-MM-DD${allowToday ? ' or "today"' : ""}`);
   }
 }
@@ -146,7 +153,8 @@ export function buildLogSearchCommand(params: LogSearchParams): string {
       `   f="${logDir}/${prefix}.$\{d}.log"; fgz="$\{f}.gz";`,
       `   if [ -f "$f" ]; then grep ${grepOpts} ${safePattern} "$f" 2>/dev/null;`,
       `   elif [ -f "$fgz" ]; then zgrep ${grepOpts} ${safePattern} "$fgz" 2>/dev/null; fi;`,
-      `   d=$(date -d "$d + 1 day" +%Y-%m-%d); done`,
+      `   [ "$d" = "$end" ] && break;`,
+      `   d=$(date -u -d "$d + 1 day" +%Y-%m-%d) || break; done`,
       `) | tail -${maxLines}`,
     ].join("\n");
   }
@@ -248,7 +256,8 @@ export function buildHttpdLogSearchCommand(params: HttpdLogSearchParams): string
       `   fd=$(echo "$d" | tr '-' '.'); f="${logDir}/${prefix}.$\{fd}.log"; fgz="$\{f}.gz";`,
       `   if [ -f "$f" ]; then grep ${grepOpts} ${safePattern} "$f" 2>/dev/null;`,
       `   elif [ -f "$fgz" ]; then zgrep ${grepOpts} ${safePattern} "$fgz" 2>/dev/null; fi;`,
-      `   d=$(date -d "$d + 1 day" +%Y-%m-%d); done`,
+      `   [ "$d" = "$end" ] && break;`,
+      `   d=$(date -u -d "$d + 1 day" +%Y-%m-%d) || break; done`,
       `) | tail -${maxLines}`,
     ].join("\n");
   }

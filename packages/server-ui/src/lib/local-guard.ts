@@ -24,13 +24,11 @@
  *   Two GET routes here do SSH work on request, so a blind cross-site GET is a
  *   real trigger. Modern browsers send `Sec-Fetch-Site` on every request; when
  *   it says `cross-site` or `same-site` the request is rejected. When the
- *   header is absent (curl, old browsers) the check fails open, because
- *   `Origin` still governs every write.
+ *   header is absent, reads require an acceptable Origin or the custom client
+ *   header instead. Missing metadata never grants access by itself.
  *
- * No frontend change is required. Per the Fetch specification the browser sets
- * `Origin` on every request whose method is neither GET nor HEAD, including
- * same-origin ones, so the dashboard's own POST/PUT/DELETE calls already carry
- * an acceptable value, and its same-origin GETs carry `Sec-Fetch-Site: same-origin`.
+ * Dashboard fetch calls send `X-Raven-UI: 1`. Native EventSource connections
+ * and download links use the browser's `Sec-Fetch-Site: same-origin` metadata.
  */
 import type { Request, Response, NextFunction } from "express";
 
@@ -125,6 +123,10 @@ export function checkLocalRequest(
   // absence of a bad signal.
   if (STATE_CHANGING.has(method.toUpperCase()) && origin === undefined && !hasClientHeader) {
     return `State-changing request requires an Origin header or ${CLIENT_HEADER}: 1`;
+  }
+
+  if (origin === undefined && !hasClientHeader && secFetchSite?.toLowerCase() !== "same-origin") {
+    return `API request requires an Origin header, same-origin fetch metadata, or ${CLIENT_HEADER}: 1`;
   }
 
   return null;

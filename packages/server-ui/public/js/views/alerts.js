@@ -1,3 +1,5 @@
+import { apiFetch } from '../components/api.js';
+
 /**
  * Alert management view — rules CRUD, history, and real-time SSE notifications.
  */
@@ -120,7 +122,7 @@ window.views.alerts = {
       btn.disabled = true;
       btn.textContent = 'Sending...';
       try {
-        const res = await fetch('/api/alerts/test-email', {
+        const res = await apiFetch('/api/alerts/test-email', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email }),
@@ -184,7 +186,7 @@ window.views.alerts = {
     }
 
     try {
-      const res = await fetch('/api/alerts/rules', {
+      const res = await apiFetch('/api/alerts/rules', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -200,7 +202,7 @@ window.views.alerts = {
 
   async loadRules() {
     try {
-      const res = await fetch('/api/alerts/rules');
+      const res = await apiFetch('/api/alerts/rules');
       const rules = await res.json();
       this.renderRules(rules);
     } catch (err) {
@@ -258,7 +260,7 @@ window.views.alerts = {
 
   async toggleRule(id, enabled) {
     try {
-      await fetch(`/api/alerts/rules/${id}`, {
+      await apiFetch(`/api/alerts/rules/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled }),
@@ -271,7 +273,7 @@ window.views.alerts = {
 
   async deleteRule(id) {
     try {
-      const res = await fetch(`/api/alerts/rules/${id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/alerts/rules/${id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Failed to delete');
       window.showToast('Rule deleted', 'success');
       this.loadRules();
@@ -282,7 +284,7 @@ window.views.alerts = {
 
   async loadHistory() {
     try {
-      const res = await fetch('/api/alerts/history?limit=50');
+      const res = await apiFetch('/api/alerts/history?limit=50');
       const events = await res.json();
       this.renderHistory(events);
     } catch (err) {

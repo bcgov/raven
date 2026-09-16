@@ -84,8 +84,8 @@ See [Configure Authentication](#2-configure-authentication) for the SharePoint l
 
 ## Prerequisites
 
-- **Node.js** >= 20 (check: `node -v`)
-- **Playwright** browsers (installed automatically on first build)
+- **Node.js** 24 LTS recommended; supported versions are 22.12+ within 22.x, 24.x, or 26+ (check: `node -v`). Vitest 5 does not support Node 20, 23, or 25.
+- **Playwright Chromium** — install with `npx playwright install chromium`; repeat after Playwright dependency updates.
 - **An MCP-capable chat client** — see [Choosing a Client](#choosing-a-client)
 - **BC Gov IDIR credentials** for SiteMinder authentication
 
@@ -99,6 +99,7 @@ RAVEN is a TypeScript monorepo (npm workspaces):
 git clone https://github.com/bcgov/raven.git ~/Projects/raven
 cd ~/Projects/raven
 npm install
+npx playwright install chromium
 npm run build
 ```
 

@@ -12,7 +12,7 @@ RAVEN is a **TypeScript / Node.js npm-workspace monorepo** for BC Gov NR Sector.
 - **`@nrs/server-ui`** — an Express web dashboard at `http://localhost:3777` for monitoring app servers.
 - **`@nrs/pipeline`** — an autonomous DevOps CLI (`raven-pipeline`) that detects production errors, triages with AI, generates fixes, and opens PRs.
 
-There are **15 MCP workspaces** under `packages/`. **TypeScript 5.9 strict, ES2022, NodeNext modules.** Tests use **vitest**. **Node ≥20** required (see `engines` in `package.json`).
+There are **15 MCP workspaces** under `packages/`. **TypeScript 5.9 strict, ES2022, NodeNext modules.** Tests use **vitest**. **Node 24 LTS** recommended; supported versions are 22.12+ within 22.x, 24.x, or 26+ (see `engines` in `package.json`).
 
 The repo lives inside the `bcgov-c/epsilon` monorepo at path `raven/`. Most paths in this file are relative to `raven/` (the npm workspace root).
 

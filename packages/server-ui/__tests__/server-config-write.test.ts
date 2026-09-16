@@ -223,15 +223,18 @@ describe("server settings writes validate the full batch before persistence", ()
       reloadAppData: vi.fn().mockResolvedValue(undefined), showToast: vi.fn(),
     };
     const status = { innerHTML: "" };
-    runInNewContext(readFileSync(new URL("../public/js/views/settings.js", import.meta.url), "utf-8"), {
+    const apiSource = readFileSync(new URL("../public/js/components/api.js", import.meta.url), "utf-8")
+      .replace("export function apiFetch", "function apiFetch");
+    const settingsSource = readFileSync(new URL("../public/js/views/settings.js", import.meta.url), "utf-8")
+      .replace("import { apiFetch } from '../components/api.js';", "");
+    runInNewContext(`${apiSource}\n${settingsSource}`, {
       window: browserWindow,
+      Headers,
       document: {
         querySelectorAll: () => [{ querySelector: (selector: string) => ({ value: classes[selector] }) }],
         getElementById: () => status,
       },
-      fetch: (url: string, options: RequestInit) => fetch(`${baseUrl}${url}`, {
-        ...options, headers: { ...options.headers, Origin: baseUrl },
-      }),
+      fetch: (url: string, options: RequestInit) => fetch(`${baseUrl}${url}`, options),
     });
     browserWindow.views.settings.renderTable = vi.fn();
     await browserWindow.views.settings.save();

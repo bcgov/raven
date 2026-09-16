@@ -6,7 +6,8 @@ import { searchLogs, sshExec, sshExecStream } from "@nrs/server-mcp/client";
 import { logsRouter } from "../src/routes/logs.js";
 import { logDownloadRouter } from "../src/routes/log-download.js";
 
-vi.mock("@nrs/server-mcp/client", () => ({
+vi.mock("@nrs/server-mcp/client", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@nrs/server-mcp/client")>(),
   searchLogs: vi.fn(),
   sshExec: vi.fn(),
   sshExecStream: vi.fn(),
@@ -80,6 +81,19 @@ describe.each([
 });
 
 describe("valid HTTP log dates", () => {
+  it.each(["2026-02-30", "2025-02-29", "1900-02-29", "2026-04-31", "2026-00-01", "2026-01-00"])("rejects impossible date %s before SSH", async (date) => {
+    for (const field of ["date", "dateFrom", "dateTo"]) {
+      const response = await request("logs", { [field]: date });
+      expect(response.status, field).toBe(400);
+      await response.text();
+    }
+    const response = await request("download", { date });
+    expect(response.status).toBe(400);
+    await response.text();
+    expect(searchLogs).not.toHaveBeenCalled();
+    expect(sshExec).not.toHaveBeenCalled();
+  });
+
   it.each([
     { date: undefined, expected: undefined },
     { date: "2026-09-15", expected: "2026-09-15" },

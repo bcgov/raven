@@ -15,7 +15,8 @@ vi.mock("@nrs/auth", async (importOriginal) => ({
   }],
 }));
 
-vi.mock("../commands/log-search.js", () => ({
+vi.mock("../commands/log-search.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../commands/log-search.js")>(),
   searchLogs: vi.fn(),
   searchHttpdLogs: vi.fn(),
 }));
@@ -78,7 +79,21 @@ describe.each([
     }
   });
 
-  it.each(["2026-09-15", "today"])("accepts the complete date value %s", async (date) => {
+  it.each(["2026-02-30", "2025-02-29", "2026-13-01"])("rejects impossible date %s before invoking the search", async date => {
+    const server = createServerMonitoringServer();
+    const client = new Client({ name: "date-validation-test", version: "0.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      const result = await client.callTool({ name, arguments: { server: "testserver", pattern: "ERROR", ...args, date } });
+      expect(result.isError).toBe(true);
+      expect(search).not.toHaveBeenCalled();
+    } finally {
+      await Promise.all([client.close(), server.close()]);
+    }
+  });
+
+  it.each(["2026-09-15", "2024-02-29", "today"])("accepts the complete date value %s", async (date) => {
     vi.mocked(search).mockResolvedValue({ output: "No matches", exitCode: 0 });
     const server = createServerMonitoringServer();
     const client = new Client({ name: "date-validation-test", version: "0.0.0" });

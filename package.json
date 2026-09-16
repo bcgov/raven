@@ -35,12 +35,12 @@
     "gen-inventory:check": "npm run build && node scripts/gen-inventory.mjs --check"
   },
   "engines": {
-    "node": ">=20.16.0 <21 || >=22.3.0"
+    "node": "^22.12.0 || ^24.0.0 || >=26.0.0"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.5.1",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.0"
   }
 }

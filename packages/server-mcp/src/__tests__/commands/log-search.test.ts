@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ServerEntry } from "@nrs/auth";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // Mock the SSH layer so searchLogs tests exercise only the stdout/stderr
 // selection logic, not a real connection. vi.hoisted keeps the mock fn
@@ -159,6 +163,66 @@ describe("log command builders reject trailing input terminators", () => {
     }
     expect(() => buildHttpdLogSearchCommand({ ...httpdBase, domain: `portal.example.invalid${suffix}` }))
       .toThrow(/invalid characters/);
+  });
+});
+
+describe("calendar dates", () => {
+  const app = { logsBase: "/logs", app: "APP", component: "api", pattern: "ERROR", logType: "app" as const, maxLines: 10, contextLines: 0 };
+  const httpd = { logsBase: "/logs", domain: "default", pattern: "ERROR", logType: "access" as const, maxLines: 10, contextLines: 0 };
+
+  it.each(["2026-02-30", "2025-02-29", "1900-02-29", "2026-04-31", "2026-13-01", "2026-01-00"])("rejects impossible calendar date %s in either builder", (date) => {
+    for (const field of ["date", "dateFrom", "dateTo"]) {
+      expect(() => buildLogSearchCommand({ ...app, [field]: date })).toThrow(/YYYY-MM-DD/);
+      expect(() => buildHttpdLogSearchCommand({ ...httpd, [field]: date })).toThrow(/YYYY-MM-DD/);
+    }
+  });
+
+  it.each(["2024-02-29", "2000-02-29", "2026-04-30", "9999-12-31"])("accepts valid calendar date %s", (date) => {
+    for (const field of ["date", "dateFrom", "dateTo"]) {
+      expect(() => buildLogSearchCommand({ ...app, [field]: date })).not.toThrow();
+      expect(() => buildHttpdLogSearchCommand({ ...httpd, [field]: date })).not.toThrow();
+    }
+  });
+});
+
+describe.skipIf(process.platform === "win32")("bounded date-range execution", () => {
+  const builders = [
+    (logsBase: string, dateFrom: string, dateTo: string) => buildLogSearchCommand({
+      logsBase, app: "APP", component: "api", logType: "app", pattern: "ERROR",
+      maxLines: 100, contextLines: 0, dateFrom, dateTo,
+    }),
+    (logsBase: string, dateFrom: string, dateTo: string) => buildHttpdLogSearchCommand({
+      logsBase, domain: "default", logType: "access", pattern: "ERROR",
+      maxLines: 100, contextLines: 0, dateFrom, dateTo,
+    }),
+  ];
+
+  it.each(builders)("stops after a failed date increment", build => {
+    const dir = mkdtempSync(join(tmpdir(), "raven-date-range-"));
+    try {
+      writeFileSync(join(dir, "date"), "#!/bin/sh\nprintf 'attempt\\n' >> attempts\nexit 1\n", { mode: 0o700 });
+      execFileSync("/bin/sh", ["-c", build(dir, "2026-09-01", "2026-09-02")], {
+        cwd: dir, env: { PATH: `${dir}:/usr/bin:/bin` }, timeout: 2_000,
+      });
+      expect(readFileSync(join(dir, "attempts"), "utf-8")).toBe("attempt\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(builders)("does not increment past the inclusive end date", build => {
+    const dir = mkdtempSync(join(tmpdir(), "raven-date-range-"));
+    try {
+      writeFileSync(join(dir, "attempts"), "");
+      writeFileSync(join(dir, "date"), "#!/bin/sh\nprintf 'attempt\\n' >> attempts\nexit 1\n", { mode: 0o700 });
+      const output = execFileSync("/bin/sh", ["-c", build(dir, "9999-12-31", "9999-12-31")], {
+        cwd: dir, env: { PATH: `${dir}:/usr/bin:/bin` }, timeout: 2_000, encoding: "utf-8",
+      });
+      expect(output).toBe("");
+      expect(readFileSync(join(dir, "attempts"), "utf-8")).toBe("");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

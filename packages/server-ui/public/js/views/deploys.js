@@ -1,3 +1,5 @@
+import { apiFetch } from '../components/api.js';
+
 /**
  * Deployment timeline view — shows version changes with real dates from server filesystem.
  */
@@ -50,7 +52,7 @@ window.views.deploys = {
     if (app) params.set('app', app);
 
     try {
-      const res = await fetch(`/api/deploys?${params}`);
+      const res = await apiFetch(`/api/deploys?${params}`);
       const data = await res.json();
       if (data.error) throw new Error(data.error);
 

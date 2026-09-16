@@ -1,3 +1,5 @@
+import { apiFetch } from '../components/api.js';
+
 /**
  * Config Diff view — compare configs between environments.
  */
@@ -61,7 +63,7 @@ window.views['config-diff'] = {
 
       try {
         const params = new URLSearchParams({ app, component, file, servers });
-        const res = await fetch(`/api/config-diff?${params}`);
+        const res = await apiFetch(`/api/config-diff?${params}`);
         const data = await res.json();
         if (data.error) throw new Error(data.error);
 

@@ -1,3 +1,5 @@
+import { apiFetch } from '../components/api.js';
+
 /**
  * Dashboard view — morning status summary with styled cards.
  */
@@ -48,7 +50,7 @@ window.views.dashboard = {
 
       try {
         const params = app ? `?app=${encodeURIComponent(app)}` : '';
-        const res = await fetch(`/api/dashboard${params}`);
+        const res = await apiFetch(`/api/dashboard${params}`);
         const data = await res.json();
         if (data.error) throw new Error(data.error);
 

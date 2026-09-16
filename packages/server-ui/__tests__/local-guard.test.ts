@@ -87,8 +87,11 @@ describe("checkLocalRequest — reads", () => {
     expect(checkLocalRequest("GET", OK_HOST, OK_ORIGIN, false, PORT)).toBeNull();
   });
 
-  it("allows a GET with no Origin, which browsers omit for same-origin reads", () => {
-    expect(checkLocalRequest("GET", OK_HOST, undefined, false, PORT)).toBeNull();
+  it("requires caller proof when GET and HEAD omit Origin and Fetch Metadata", () => {
+    for (const method of ["GET", "HEAD"]) {
+      expect(checkLocalRequest(method, OK_HOST, undefined, false, PORT)).toContain("requires");
+      expect(checkLocalRequest(method, OK_HOST, undefined, true, PORT)).toBeNull();
+    }
   });
 
   it("denies a cross-origin GET", () => {
@@ -161,13 +164,15 @@ describe("checkLocalRequest — Sec-Fetch-Site (no-cors embeds)", () => {
       .toBe("Cross-site request denied");
   });
 
-  it("allows same-origin and user-initiated navigations", () => {
+  it("allows same-origin reads but requires proof for direct API navigations", () => {
     expect(checkLocalRequest("GET", OK_HOST, undefined, false, PORT, "same-origin")).toBeNull();
-    expect(checkLocalRequest("GET", OK_HOST, undefined, false, PORT, "none")).toBeNull();
+    expect(checkLocalRequest("GET", OK_HOST, undefined, false, PORT, "none")).toContain("requires");
   });
 
-  it("fails open when the header is absent, since Origin still governs writes", () => {
-    expect(checkLocalRequest("GET", OK_HOST, undefined, false, PORT, undefined)).toBeNull();
+  it("rejects absent or unrecognized metadata without other caller proof", () => {
+    for (const site of [undefined, "", "unknown"]) {
+      expect(checkLocalRequest("GET", OK_HOST, undefined, false, PORT, site)).toContain("requires");
+    }
   });
 
   it("applies to state changes as well", () => {

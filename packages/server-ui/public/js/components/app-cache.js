@@ -1,3 +1,5 @@
+import { apiFetch } from './api.js';
+
 /**
  * App discovery cache — loads server config + cached discovery results on
  * startup (no SSH). Discovery only happens when the user explicitly requests
@@ -44,8 +46,8 @@ export function loadAppData() {
   if (loadPromise) return loadPromise;
 
   loadPromise = Promise.all([
-    fetch('/api/servers').then(r => r.json()),
-    fetch('/api/discover/cache').then(r => r.json()),
+    apiFetch('/api/servers').then(r => r.json()),
+    apiFetch('/api/discover/cache').then(r => r.json()),
   ])
     .then(([serverConfig, cacheData]) => {
       window.appData.serverConfig = serverConfig;

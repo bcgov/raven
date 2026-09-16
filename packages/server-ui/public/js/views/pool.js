@@ -1,3 +1,5 @@
+import { apiFetch } from '../components/api.js';
+
 /**
  * Connection Pool view — JDBC pool config and recent pool events.
  */
@@ -52,7 +54,7 @@ window.views.pool = {
 
       try {
         const params = new URLSearchParams({ server, app, component });
-        const res = await fetch(`/api/pool?${params}`);
+        const res = await apiFetch(`/api/pool?${params}`);
         const data = await res.json();
         if (data.error) throw new Error(data.error);
 

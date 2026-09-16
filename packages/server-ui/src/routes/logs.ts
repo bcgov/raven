@@ -5,7 +5,7 @@
  * Supports single date (date=YYYY-MM-DD) or range (dateFrom + dateTo).
  */
 import { Router } from "express";
-import { searchLogs, type LogType } from "@nrs/server-mcp/client";
+import { searchLogs, isValidLogDate, type LogType } from "@nrs/server-mcp/client";
 import { validateServer, validateAppName, validatePattern } from "../lib/validate.js";
 import { getServerConfig } from "../lib/server-config.js";
 import { logger } from "../lib/logger.js";
@@ -47,12 +47,11 @@ logsRouter.get("/", async (req, res) => {
   const maxLines = Math.min(parseInt((req.query.maxLines as string) || "100", 10), 500);
   const context = Math.min(parseInt((req.query.context as string) || "0", 10), 10);
 
-  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
-  if (dateFrom && !dateRe.test(dateFrom)) {
+  if (dateFrom !== undefined && !isValidLogDate(dateFrom)) {
     res.status(400).json({ error: "Invalid dateFrom format (use YYYY-MM-DD)" });
     return;
   }
-  if (dateTo && !dateRe.test(dateTo)) {
+  if (dateTo !== undefined && !isValidLogDate(dateTo)) {
     res.status(400).json({ error: "Invalid dateTo format (use YYYY-MM-DD)" });
     return;
   }
@@ -61,7 +60,7 @@ logsRouter.get("/", async (req, res) => {
   // returns the same 400 as its siblings rather than a 500 raised from the
   // builder. "current" is this route's sentinel for the active log file and
   // is mapped to undefined below.
-  if (date && date !== "current" && date !== "today" && !dateRe.test(date)) {
+  if (date !== undefined && date !== "current" && date !== "today" && !isValidLogDate(date)) {
     res.status(400).json({ error: "Invalid date format (use YYYY-MM-DD, 'today', or 'current')" });
     return;
   }

@@ -44,6 +44,18 @@ node dist/index.js
 
 The dashboard opens at **http://localhost:3777**.
 
+### API access
+
+Every `/api` request needs an allowed local Origin, `X-Raven-UI: 1`, or (for reads) the browser's `Sec-Fetch-Site: same-origin` header. The dashboard adds the custom header to its fetch calls. Native live streams and download links require a browser that sends same-origin fetch metadata. Requests without caller verification receive HTTP 403, even for GET and HEAD.
+
+For scripted access, include the client header:
+
+```bash
+curl -H 'X-Raven-UI: 1' http://localhost:3777/api/servers
+```
+
+Host validation and cross-origin rejection still apply when this header is present. This guard restricts browser origins; it does not authenticate local processes.
+
 ### start.sh Commands
 
 ```bash
