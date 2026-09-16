@@ -53,7 +53,8 @@ describe.each(identifierBuilders)("%s identifier boundary", (_name, build) => {
   });
 
   it("preserves valid case, underscores, dots and hyphens", () => {
-    expect(build("RRS_2", "rrs-api.v2")).toContain("RRS_2/rrs-api.v2");
+    // Heap represents literal dots as character classes in its grep pattern.
+    expect(build("RRS_2", "rrs-api.v2").replaceAll("[.]", ".")).toContain("RRS_2/rrs-api.v2");
   });
 
   it.each(["_api", "-api"])("preserves UI-supported leading punctuation in %j", (identifier) => {

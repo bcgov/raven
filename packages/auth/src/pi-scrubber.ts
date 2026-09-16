@@ -206,19 +206,23 @@ function scrubCredentials(text: string): string {
   return parts.join("");
 }
 
-/** Match attribution phrases in any case, but only uppercase IDIR candidates. */
+/** Preserve attribution heuristics and explicit identity labels through JSON wrappers. */
 function scrubAttributedIdirs(text: string): string {
-  const prefixes = /\b(?:assigned to|reported by|created by|updated by|modified by|resolved by|closed by|requested by|submitted by|owner|reporter|assignee|reviewer|approver|author)(?:\\*["'])?[:\s]+(?:\\*["'])?/gi;
-  const token = /[A-Z]{5,8}\b/y; // Check exactly the next token, without case folding.
+  const prefixes = /\b(?:(username|author|idir)|assigned to|reported by|created by|updated by|modified by|resolved by|closed by|requested by|submitted by|owner|reporter|assignee|reviewer|approver)(?:\\*["'])?[:\s]+(?:\\*["'])?/gi;
+  const attributedToken = /[A-Z]{5,8}\b/y;
+  // Explicit labels already accept 3-8 letters in either case in plain text.
+  const labelledToken = /[A-Za-z]{3,8}\b/y;
   const parts: string[] = [];
   let previousEnd = 0;
+  let prefix: RegExpExecArray | null;
 
-  while (prefixes.exec(text) !== null) {
+  while ((prefix = prefixes.exec(text)) !== null) {
+    const token = prefix[1] ? labelledToken : attributedToken;
     token.lastIndex = prefixes.lastIndex;
     const match = token.exec(text);
     // A rejected token can start another attribution ("owner assigned to
     // JSMITH"), so only advance past the token when it is actually redacted.
-    if (!match || IDIR_STOPLIST.has(match[0])) continue;
+    if (!match || (!prefix[1] && IDIR_STOPLIST.has(match[0]))) continue;
     parts.push(text.slice(previousEnd, prefixes.lastIndex), "[IDIR]");
     previousEnd = token.lastIndex;
     prefixes.lastIndex = previousEnd;

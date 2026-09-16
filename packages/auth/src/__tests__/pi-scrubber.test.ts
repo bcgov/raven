@@ -203,6 +203,18 @@ describe("PiScrubber.scrubText — bare IDIR in attribution context (review Issu
     }
   });
 
+  it.each(["username", "idir", "author"])("applies the explicit identity-label rule to JSON field %s", key => {
+    for (const value of ["JSMITH", "jsmith", "BLI"]) {
+      let input = JSON.stringify({ [key]: value });
+      let expected = JSON.stringify({ [key]: "[IDIR]" });
+      for (let depth = 0; depth < 3; depth++) {
+        expect(pi.scrubText(input)).toBe(expected);
+        input = JSON.stringify(input);
+        expected = JSON.stringify(expected);
+      }
+    }
+  });
+
   it.each(["jsmith", "JSmith", "ERROR", "SYSTEM", "JSMITHSON"])("preserves non-IDIR structured attribution %s", value => {
     const input = JSON.stringify({ owner: value });
     expect(pi.scrubText(input)).toBe(input);

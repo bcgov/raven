@@ -36,8 +36,11 @@ const kbToMb = (kb: number): number => Math.floor(kb / 1024);
 export function buildHeapCommand(app: string, component: string): string {
   assertSafeServerIdentifier(app, "App");
   assertSafeServerIdentifier(component, "Component");
+  // Dot is the only regex metacharacter allowed in these identifiers.
+  const appPattern = app.replaceAll(".", "[.]");
+  const componentPattern = component.replaceAll(".", "[.]");
   return `
-psline=$(ps -ef | grep "[j]ava.*catalina.base=.*/${app}/${component}" | head -1)
+psline=$(ps -ef | grep -E "[j]ava.*-Dcatalina[.]base=[^[:space:]]*/${appPattern}/${componentPattern}/?([[:space:]]|$)" | head -1)
 if [ -z "$psline" ]; then
   echo "HERR:not_found"
 else

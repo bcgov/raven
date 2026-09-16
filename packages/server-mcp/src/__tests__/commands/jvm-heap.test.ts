@@ -1,5 +1,31 @@
 import { describe, it, expect } from "vitest";
-import { parseHeapOutput } from "../../commands/jvm-heap.js";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildHeapCommand, parseHeapOutput } from "../../commands/jvm-heap.js";
+
+describe.skipIf(process.platform === "win32")("heap process selection", () => {
+  it.each(["", "/"])("matches dotted identifiers and the complete component path (suffix %j)", suffix => {
+    const dir = mkdtempSync(join(tmpdir(), "raven-heap-match-"));
+    const bin = join(dir, "bin");
+    try {
+      mkdirSync(bin);
+      writeFileSync(join(bin, "ps"), '#!/bin/sh\ncat "$FIXTURE_PS"\n', { mode: 0o700 });
+      writeFileSync(join(bin, "jstat"), '#!/bin/sh\necho "fixture metrics"\n', { mode: 0o700 });
+      const paths = ["APPx1/api.v2", "APP.1/apixv2", "APP.1/api.v2-extra", `APP.1/api.v2${suffix}`];
+      writeFileSync(join(dir, "processes"), paths.map((path, index) =>
+        `tester ${index + 11} 1 0 00:00 ? 00:00:00 ${bin}/java -Xmx256m -Dcatalina.base=/apps/${path} other-arg\n`,
+      ).join(""));
+      const output = execFileSync("/bin/sh", ["-c", buildHeapCommand("APP.1", "api.v2")], {
+        env: { PATH: `${bin}:/usr/bin:/bin`, FIXTURE_PS: join(dir, "processes") }, timeout: 2_000, encoding: "utf-8",
+      });
+      expect(output).toBe("HDATA:14|256m|fixture metrics\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("parseHeapOutput", () => {
   it("parses HDATA line into heap metrics", () => {
