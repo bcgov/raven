@@ -217,12 +217,13 @@ function scrubAttributedIdirs(text: string): string {
   let prefix: RegExpExecArray | null;
 
   while ((prefix = prefixes.exec(text)) !== null) {
-    const token = prefix[1] ? labelledToken : attributedToken;
+    const explicitLabel = Boolean(prefix[1]) && prefix[0].includes(":");
+    const token = explicitLabel ? labelledToken : attributedToken;
     token.lastIndex = prefixes.lastIndex;
     const match = token.exec(text);
     // A rejected token can start another attribution ("owner assigned to
     // JSMITH"), so only advance past the token when it is actually redacted.
-    if (!match || (!prefix[1] && IDIR_STOPLIST.has(match[0]))) continue;
+    if (!match || (!explicitLabel && IDIR_STOPLIST.has(match[0]))) continue;
     parts.push(text.slice(previousEnd, prefixes.lastIndex), "[IDIR]");
     previousEnd = token.lastIndex;
     prefixes.lastIndex = previousEnd;

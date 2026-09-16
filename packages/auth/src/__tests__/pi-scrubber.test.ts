@@ -215,6 +215,12 @@ describe("PiScrubber.scrubText — bare IDIR in attribution context (review Issu
     }
   });
 
+  it.each(["author wrote the report", "Author SYSTEM created the report", "author JSmith"])(
+    "preserves ordinary attribution text outside explicit identity fields: %s", text => {
+      expect(pi.scrubText(text)).toBe(text);
+    },
+  );
+
   it.each(["jsmith", "JSmith", "ERROR", "SYSTEM", "JSMITHSON"])("preserves non-IDIR structured attribution %s", value => {
     const input = JSON.stringify({ owner: value });
     expect(pi.scrubText(input)).toBe(input);
