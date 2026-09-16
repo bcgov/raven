@@ -37,7 +37,7 @@ const REMOTE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
  * is written, rather than becoming `refs/heads/refs/heads/main` later.
  */
 export function isValidBranchName(name: string): boolean {
-  if (!BRANCH_RE.test(name)) return false;
+  if (name === "HEAD" || !BRANCH_RE.test(name)) return false;
   if (name.startsWith("refs/") || name.endsWith("/") || name.includes("//")) return false;
   if (name.includes("..") || name.includes("@{") || name.endsWith(".")) return false;
   return !name.split("/").some((s) => s.startsWith(".") || s.endsWith(".lock"));
@@ -216,8 +216,8 @@ export const defaultGitExec: GitExec = async (args, opts) => {
           }
         }
       };
+      let bytes = 0;
       const capture = (stream: NodeJS.ReadableStream, chunks: Buffer[]) => {
-        let bytes = 0;
         stream.on("data", (chunk: Buffer) => {
           if (failure) return;
           bytes += chunk.length;

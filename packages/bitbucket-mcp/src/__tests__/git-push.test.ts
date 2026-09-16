@@ -108,7 +108,7 @@ describe("isValidBranchName", () => {
 
   it("refuses full refs, option or refspec shapes, and git-invalid names", () => {
     for (const bad of [
-      "", "refs/heads/main", "-x", "+main", "a:b", "a b", "a..b", "a@{1}", "feature/", "a//b",
+      "", "HEAD", "@", "refs/heads/main", "-x", "+main", "a:b", "a b", "a..b", "a@{1}", "feature/", "a//b",
       ".hidden", "a/.b", "x.lock", "a/b.lock", "main.", "a~b", "a^b", "a?b", "a*b", "a[b", "a\\b",
     ]) {
       expect(isValidBranchName(bad), JSON.stringify(bad)).toBe(false);
@@ -417,7 +417,7 @@ describe("pushRepo", () => {
 
   it("refuses option- or refspec-shaped branch and remote names", async () => {
     const dir = repoDir();
-    for (const branch of ["-danger", "+main", "a:b", "a b", "refs/heads/main", "a..b", "feature/"]) {
+    for (const branch of ["HEAD", "@", "-danger", "+main", "a:b", "a b", "refs/heads/main", "a..b", "feature/"]) {
       const git = fakeGit({
         toplevel: dir,
         remoteUrl: `https://${HOST}/scm/nrs/repo.git`,

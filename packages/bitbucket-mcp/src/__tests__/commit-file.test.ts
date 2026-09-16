@@ -20,7 +20,7 @@ function lookups(state: {
 
 describe("planCommitFile", () => {
   it("refuses a full ref or malformed branch name before any lookup", async () => {
-    for (const branch of ["refs/heads/main", "", "-x", "a..b"]) {
+    for (const branch of ["HEAD", "@", "refs/heads/main", "", "-x", "a..b"]) {
       const bb = lookups({ type: "FILE" });
       const plan = await planCommitFile(bb, { ...T, branch, sourceCommitId: "b".repeat(40) });
       expect(plan).toMatchObject({ ok: false, reason: expect.stringMatching(/Refusing branch name/) });

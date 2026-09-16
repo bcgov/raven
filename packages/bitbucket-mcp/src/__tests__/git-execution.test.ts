@@ -89,6 +89,16 @@ describe("Git credential isolation", () => {
 });
 
 describe("asynchronous Git execution", () => {
+  it("shares the output ceiling across stdout and stderr", async () => {
+    const dir = join(root, "combined-output-limit");
+    await g(["init", "-q", dir]);
+    writeFileSync(join(dir, "payload"), Buffer.alloc(9 * 1024 * 1024, "x"));
+    // Each stream is below 16 MiB, but the invocation emits 18 MiB in total.
+    const error = await g(["-c", "alias.emit=!cat payload; cat payload >&2", "emit"], dir)
+      .then(() => undefined, (failure: Error) => failure);
+    expect(error?.message).toMatch(/output limit/);
+  });
+
   it("enforces the output ceiling while reading a large Git object", async () => {
     const dir = join(root, "output-limit");
     await g(["init", "-q", dir]);
