@@ -45,7 +45,7 @@ const SERVERS = [
   { display: "Bug Classifier", pkg: "bug-classifier-mcp", mcpKey: "bug-classifier", group: "Atlassian (shared auth session)", factory: createBugClassifierServer },
   { display: "Server Monitor", pkg: "server-mcp", mcpKey: "server-monitor", group: "Server / infrastructure", factory: createServerMonitoringServer, note: "`.mcp.json` key is `server-monitor`; tools are exposed to the AI as `mcp__server-monitor__*`." },
   { display: "IMIS", pkg: "imis-mcp", mcpKey: "imis", group: "Server / infrastructure", factory: createImisServer },
-  { display: "Azure DevOps", pkg: "ado-mcp", mcpKey: "ado", group: "Azure DevOps", factory: createAdoServer },
+  { display: "Azure DevOps / TFS", pkg: "ado-mcp", mcpKey: "ado", group: "Azure DevOps / TFS", factory: createAdoServer },
   { display: "Sonar", pkg: "sonar-mcp", mcpKey: "sonar", group: "Code quality", factory: createSonarServer },
   { display: "Jenkins", pkg: "jenkins-mcp", mcpKey: "jenkins", group: "CI/CD", factory: createJenkinsServer },
   { display: "RFC Buddy", pkg: "rfcbuddy-mcp", mcpKey: "rfcbuddy", group: "RFC tracking & schedules", factory: createRfcBuddyServer },

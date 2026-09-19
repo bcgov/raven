@@ -138,6 +138,36 @@ export interface AdoPipelineList {
   count: number;
 }
 
+/** Build service definition, including classic build pipelines. */
+export interface AdoBuildPipeline {
+  id: number;
+  name: string;
+  path?: string;
+  revision?: number;
+  type?: string;
+  queueStatus?: string;
+  url?: string;
+}
+
+export interface AdoBuildPipelineList {
+  value: AdoBuildPipeline[];
+  count: number;
+}
+
+/** Classic release pipeline definition. */
+export interface AdoReleasePipeline {
+  id: number;
+  name: string;
+  path?: string;
+  revision: number;
+  _links?: Record<string, { href: string }>;
+}
+
+export interface AdoReleasePipelineList {
+  value: AdoReleasePipeline[];
+  count: number;
+}
+
 /** Project collection (ADO Server on-premises). */
 export interface AdoCollection {
   id: string;

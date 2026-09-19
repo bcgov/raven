@@ -9,6 +9,8 @@ import type {
   AdoPullRequest,
   AdoPullRequestList,
   AdoPipelineList,
+  AdoBuildPipelineList,
+  AdoReleasePipelineList,
   AdoPatchOperation,
   AdoProjectList,
   AdoCollectionList,
@@ -334,6 +336,20 @@ export class AdoClient {
   async listPipelines(project: string, collection?: string): Promise<AdoPipelineList> {
     return this.request<AdoPipelineList>(
       `${this.projectPrefix(project, collection)}/_apis/pipelines`
+    );
+  }
+
+  /** List build service definitions, including classic build pipelines. */
+  async listBuildPipelines(project: string, collection?: string): Promise<AdoBuildPipelineList> {
+    return this.request<AdoBuildPipelineList>(
+      `${this.projectPrefix(project, collection)}/_apis/build/definitions`
+    );
+  }
+
+  /** List classic release pipeline definitions in a project. */
+  async listReleasePipelines(project: string, collection?: string): Promise<AdoReleasePipelineList> {
+    return this.request<AdoReleasePipelineList>(
+      `${this.projectPrefix(project, collection)}/_apis/release/definitions`
     );
   }
 

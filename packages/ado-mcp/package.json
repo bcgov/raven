@@ -1,7 +1,7 @@
 {
   "name": "@nrs/ado-mcp",
   "version": "0.1.0",
-  "description": "Azure DevOps Server MCP server for RAVEN suite",
+  "description": "Azure DevOps Server / TFS MCP server for RAVEN suite",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -16,7 +16,7 @@ export const JARVIS_SECTION = `### Remote proxy (data egress)
 - The tool list is **whatever the remote advertises at runtime** — currently ~6: \`get_application\`, \`list_ministries\`, \`search_applications\`, \`list_technologies\`, \`get_application_provenance\` (read) and \`update_application\` (write). Treat that count as a snapshot, not a fixed contract.
 - **This is the only server that proxies MCP traffic to a remote endpoint.** Every RAVEN server makes outbound calls to its upstream; what's unique to Jarvis is that it forwards opaque MCP requests/responses to a separately-hosted BC Gov API whose tool surface is defined remotely, rather than running a fixed local tool set. Relevant to the "local-only" framing and to FOIPPA/data-residency review — see \`SYSTEM_DESIGN_AND_ARCHITECTURE.md\`.`;
 
-export const INTRO = `Servers map 1:1 to the keys in [\`../.mcp.json\`](../.mcp.json). The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share one SiteMinder/Basic-Auth session; Server Monitor, IMIS, Azure DevOps, Sonar, Jenkins, Artifactory, RFC Buddy, and Jarvis authenticate separately via \`~/.raven/.env\`.`;
+export const INTRO = `Servers map 1:1 to the keys in [\`../.mcp.json\`](../.mcp.json). The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share one SiteMinder/Basic-Auth session; Server Monitor, IMIS, Azure DevOps / TFS, Sonar, Jenkins, Artifactory, RFC Buddy, and Jarvis authenticate separately via \`~/.raven/.env\`.`;
 
 /** Split a server's tools into read / write / missing by their readOnlyHint annotation. */
 export function classify(tools, ctx) {
