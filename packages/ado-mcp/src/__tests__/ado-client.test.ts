@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { AdoClient } from "../ado-client.js";
+import { formatPipelineName } from "../server.js";
 
 // ---------------------------------------------------------------------------
 // Mock fetch factory — same pattern used across other MCP packages
@@ -11,11 +12,13 @@ function createMockFetch(response: {
   statusText?: string;
   body?: unknown;
   text?: string;
+  headers?: HeadersInit;
 }) {
   return vi.fn().mockResolvedValue({
     ok: response.ok,
     status: response.status,
     statusText: response.statusText ?? (response.ok ? "OK" : "Error"),
+    headers: new Headers(response.headers),
     json: () => Promise.resolve(response.body),
     text: () => Promise.resolve(response.text ?? JSON.stringify(response.body ?? {})),
   });
@@ -106,9 +109,9 @@ describe("URL path building with collection", () => {
     });
     const client = new AdoClient("https://ado.example.com", "pat", "7.1", mockFetch as any);
 
-    await client.listRepositories("My Project", "LBR Projects Collection");
+    await client.listRepositories("My Project", "Test Collection");
     const url: string = mockFetch.mock.calls[0][0];
-    expect(url).toContain("LBR%20Projects%20Collection");
+    expect(url).toContain("Test%20Collection");
     expect(url).toContain("My%20Project");
   });
 
@@ -175,6 +178,72 @@ describe("URL path building with collection", () => {
     await client.listReleasePipelines("Proj", "TestCollection");
     const url: string = mockFetch.mock.calls[0][0];
     expect(url).toContain("/TestCollection/Proj/_apis/release/definitions");
+  });
+
+  it("aggregates paginated build pipeline definitions", async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Headers({ "x-ms-continuationtoken": "page-2" }),
+        json: () => Promise.resolve({ value: [{ id: 1, name: "First" }], count: 1 }),
+        text: () => Promise.resolve(""),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Headers(),
+        json: () => Promise.resolve({ value: [{ id: 2, name: "Second" }], count: 1 }),
+        text: () => Promise.resolve(""),
+      });
+    const client = new AdoClient("https://ado.example.com", "pat", "7.1", mockFetch as any);
+
+    const result = await client.listBuildPipelines("Proj", "TestCollection");
+
+    expect(result.value.map((pipeline) => pipeline.name)).toEqual(["First", "Second"]);
+    expect(result.count).toBe(2);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch.mock.calls[1][0]).toContain("continuationToken=page-2");
+  });
+
+  it("aggregates paginated release pipeline definitions", async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Headers({ "x-ms-continuationtoken": "page-2" }),
+        json: () => Promise.resolve({ value: [{ id: 1, name: "First" }], count: 1 }),
+        text: () => Promise.resolve(""),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Headers(),
+        json: () => Promise.resolve({ value: [{ id: 2, name: "Second" }], count: 1 }),
+        text: () => Promise.resolve(""),
+      });
+    const client = new AdoClient("https://ado.example.com", "pat", "7.1", mockFetch as any);
+
+    const result = await client.listReleasePipelines("Proj", "TestCollection");
+
+    expect(result.value.map((pipeline) => pipeline.name)).toEqual(["First", "Second"]);
+    expect(result.count).toBe(2);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch.mock.calls[1][0]).toContain("continuationToken=page-2");
+  });
+});
+
+describe("formatPipelineName", () => {
+  it("does not duplicate a root path separator", () => {
+    expect(formatPipelineName("\\", "Pipeline")).toBe("\\Pipeline");
+  });
+
+  it("adds a separator to a folder path when needed", () => {
+    expect(formatPipelineName("\\Folder", "Pipeline")).toBe("\\Folder\\Pipeline");
   });
 });
 

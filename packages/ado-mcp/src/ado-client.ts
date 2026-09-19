@@ -8,8 +8,11 @@ import type {
   AdoGitItemList,
   AdoPullRequest,
   AdoPullRequestList,
+  AdoPipeline,
   AdoPipelineList,
+  AdoBuildPipeline,
   AdoBuildPipelineList,
+  AdoReleasePipeline,
   AdoReleasePipelineList,
   AdoPatchOperation,
   AdoProjectList,
@@ -47,10 +50,10 @@ export class AdoClient {
   // Internal helpers
   // ---------------------------------------------------------------------------
 
-  private async request<T>(
+  private async requestPage<T>(
     path: string,
     options?: RequestInit & { params?: Record<string, string> }
-  ): Promise<T> {
+  ): Promise<{ data: T; continuationToken?: string }> {
     const { params, ...fetchOpts } = options ?? {};
     const query = params ? `?${new URLSearchParams({ ...params, "api-version": this.apiVersion })}` : `?api-version=${this.apiVersion}`;
     const url = `${this.baseUrl}/${path.replace(/^\//, "")}${query}`;
@@ -69,9 +72,36 @@ export class AdoClient {
       const body = await resp.text().catch(() => "");
       throw new Error(`ADO API error ${resp.status} ${resp.statusText}: ${body.slice(0, 500)}`);
     }
+    const continuationToken = resp.headers?.get("x-ms-continuationtoken") || undefined;
     // Some endpoints return 204 No Content
-    if (resp.status === 204) return {} as T;
-    return (await resp.json()) as T;
+    if (resp.status === 204) return { data: {} as T, continuationToken };
+    return { data: (await resp.json()) as T, continuationToken };
+  }
+
+  private async request<T>(
+    path: string,
+    options?: RequestInit & { params?: Record<string, string> }
+  ): Promise<T> {
+    return (await this.requestPage<T>(path, options)).data;
+  }
+
+  private async listAllPages<T>(path: string): Promise<T[]> {
+    const values: T[] = [];
+    let continuationToken: string | undefined;
+
+    do {
+      const page = await this.requestPage<{ value?: T[] }>(
+        path,
+        continuationToken ? { params: { continuationToken } } : undefined
+      );
+      values.push(...(page.data.value ?? []));
+      if (page.continuationToken && page.continuationToken === continuationToken) {
+        throw new Error("ADO API returned a repeated continuation token.");
+      }
+      continuationToken = page.continuationToken;
+    } while (continuationToken);
+
+    return values;
   }
 
   // ---------------------------------------------------------------------------
@@ -334,23 +364,26 @@ export class AdoClient {
 
   /** List pipelines (build definitions) in a project. */
   async listPipelines(project: string, collection?: string): Promise<AdoPipelineList> {
-    return this.request<AdoPipelineList>(
+    const value = await this.listAllPages<AdoPipeline>(
       `${this.projectPrefix(project, collection)}/_apis/pipelines`
     );
+    return { value, count: value.length };
   }
 
   /** List build service definitions, including classic build pipelines. */
   async listBuildPipelines(project: string, collection?: string): Promise<AdoBuildPipelineList> {
-    return this.request<AdoBuildPipelineList>(
+    const value = await this.listAllPages<AdoBuildPipeline>(
       `${this.projectPrefix(project, collection)}/_apis/build/definitions`
     );
+    return { value, count: value.length };
   }
 
   /** List classic release pipeline definitions in a project. */
   async listReleasePipelines(project: string, collection?: string): Promise<AdoReleasePipelineList> {
-    return this.request<AdoReleasePipelineList>(
+    const value = await this.listAllPages<AdoReleasePipeline>(
       `${this.projectPrefix(project, collection)}/_apis/release/definitions`
     );
+    return { value, count: value.length };
   }
 
   /** List all project collections on this ADO Server instance. */

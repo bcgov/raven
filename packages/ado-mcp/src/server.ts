@@ -39,6 +39,11 @@ function refNameToBranch(refName: string): string {
   return refName.replace(/^refs\/heads\//, "");
 }
 
+export function formatPipelineName(path: string | undefined, name: string): string {
+  if (!path) return name;
+  return path.endsWith("\\") || path.endsWith("/") ? `${path}${name}` : `${path}\\${name}`;
+}
+
 // ---------------------------------------------------------------------------
 // Server factory
 // ---------------------------------------------------------------------------
@@ -531,7 +536,7 @@ Priority values: 1 (Critical), 2 (High), 3 (Medium), 4 (Low).`,
         const data = await ado.listPipelines(proj, defaultCollection(collection));
         if (data.count === 0) return { content: [{ type: "text", text: `No pipelines found in ${proj}.` }] };
         const lines = data.value.map(
-          (p) => `- **#${p.id}** ${p.folder ? p.folder + "\\" : ""}${p.name}`
+          (p) => `- **#${p.id}** ${formatPipelineName(p.folder, p.name)}`
         );
         return { content: [{ type: "text", text: `**${data.count} pipeline(s) in ${proj}:**\n\n${lines.join("\n")}` }] };
       } catch (err) {
@@ -555,7 +560,7 @@ Priority values: 1 (Critical), 2 (High), 3 (Medium), 4 (Low).`,
         const data = await ado.listBuildPipelines(proj, defaultCollection(collection));
         if (data.count === 0) return { content: [{ type: "text", text: `No build pipelines found in ${proj}.` }] };
         const lines = data.value.map(
-          (p) => `- **#${p.id}** ${p.path ? p.path + "\\" : ""}${p.name}${p.queueStatus ? ` (${p.queueStatus})` : ""}`
+          (p) => `- **#${p.id}** ${formatPipelineName(p.path, p.name)}${p.queueStatus ? ` (${p.queueStatus})` : ""}`
         );
         return { content: [{ type: "text", text: `**${data.count} build pipeline(s) in ${proj}:**\n\n${lines.join("\n")}` }] };
       } catch (err) {
@@ -579,7 +584,7 @@ Priority values: 1 (Critical), 2 (High), 3 (Medium), 4 (Low).`,
         const data = await ado.listReleasePipelines(proj, defaultCollection(collection));
         if (data.count === 0) return { content: [{ type: "text", text: `No release pipelines found in ${proj}.` }] };
         const lines = data.value.map(
-          (p) => `- **#${p.id}** ${p.path ? p.path + "\\" : ""}${p.name}`
+          (p) => `- **#${p.id}** ${formatPipelineName(p.path, p.name)}`
         );
         return { content: [{ type: "text", text: `**${data.count} release pipeline(s) in ${proj}:**\n\n${lines.join("\n")}` }] };
       } catch (err) {
