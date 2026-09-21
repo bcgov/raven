@@ -3,12 +3,26 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
-import { readJson, validateCatalog, writeLaunchers } from "./release-lib.mjs";
+import {
+  isSemVerCore,
+  readJson,
+  validateCatalog,
+  writeLaunchers,
+} from "./release-lib.mjs";
 
 test("release catalog matches package metadata and MCP configuration", () => {
   const catalog = validateCatalog();
-  assert.match(catalog.suiteVersion, /^0\.1\.\d+$/);
+  assert.equal(isSemVerCore(catalog.suiteVersion), true);
   assert.equal(catalog.servers.length, 17);
+});
+
+test("suite versions accept SemVer core without leading zeroes", () => {
+  for (const version of ["0.1.0", "0.2.0", "1.0.0", "12.34.56"]) {
+    assert.equal(isSemVerCore(version), true, version);
+  }
+  for (const version of ["01.2.3", "1.02.3", "1.2.03", "1.2", "v1.2.3"]) {
+    assert.equal(isSemVerCore(version), false, version);
+  }
 });
 
 test("launchers use bundled Node and package entrypoints", () => {

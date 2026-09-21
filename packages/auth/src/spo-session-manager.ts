@@ -12,7 +12,11 @@ import {
 import type { SpoAuthConfig, SpoAuthResult, SpoCookies } from "./types.js";
 import { BROWSER_USER_AGENT } from "./browser-ua.js";
 
-const DEFAULT_CACHE_PATH = join(homedir(), ".workflow-suite", "spo-session.json");
+const DEFAULT_CACHE_PATH = join(
+  homedir(),
+  ".workflow-suite",
+  "spo-session.json",
+);
 const DEFAULT_TTL = 28800; // 8 hours
 
 /**
@@ -48,7 +52,7 @@ export class SpoSessionManager {
 
     const cached = await readCachedSpoSession(
       this.config.cachePath,
-      this.config.sessionTtlSeconds
+      this.config.sessionTtlSeconds,
     );
     if (cached) {
       this.cookies = cached;
@@ -156,7 +160,7 @@ const { chromium } = require('playwright');
       // Run from the monorepo root so require('playwright') resolves
       // from the hoisted node_modules regardless of the caller's cwd.
       const monorepoRoot = join(__dirname, "..", "..", "..");
-      const result = execFileSync("node", ["-e", script], {
+      const result = execFileSync(process.execPath, ["-e", script], {
         encoding: "utf-8",
         timeout: 240_000,
         cwd: monorepoRoot,
@@ -172,7 +176,7 @@ const { chromium } = require('playwright');
 
       if (parsed.status !== "ok" || !parsed.fedAuth || !parsed.rtFa) {
         throw new Error(
-          parsed.message ?? "Authentication failed: cookies not captured"
+          parsed.message ?? "Authentication failed: cookies not captured",
         );
       }
 
@@ -189,7 +193,7 @@ const { chromium } = require('playwright');
           `To fix this, run one of:\n` +
           `  1. npx raven-auth --sharepoint   (opens browser for IDIR/Entra login)\n` +
           `  2. Set SPO_FEDAUTH and SPO_RTFA env vars (paste cookie values from browser DevTools)\n\n` +
-          `The session caches to ~/.workflow-suite/spo-session.json for 8 hours.`
+          `The session caches to ~/.workflow-suite/spo-session.json for 8 hours.`,
       );
     }
   }

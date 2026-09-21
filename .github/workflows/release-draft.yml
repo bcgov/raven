@@ -53,7 +53,7 @@ jobs:
         run: |
           $catalog = Get-Content ./release/server-catalog.json -Raw | ConvertFrom-Json
           $version = $catalog.suiteVersion
-          if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
+          if ($version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
             throw "Raven requires a semantic version in major.minor.patch form; found $version."
           }
           "version=$version" >> $env:GITHUB_OUTPUT

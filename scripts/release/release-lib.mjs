@@ -20,6 +20,7 @@ export const repoRoot = resolve(
   "..",
 );
 export const catalogPath = join(repoRoot, "release", "server-catalog.json");
+const SEMVER_CORE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 
 export function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
@@ -27,6 +28,10 @@ export function readJson(path) {
 
 export function sha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+export function isSemVerCore(value) {
+  return typeof value === "string" && SEMVER_CORE.test(value);
 }
 
 export function git(...args) {
@@ -48,6 +53,7 @@ export function validateCatalog(catalog = readJson(catalogPath)) {
   const mcp = readJson(join(repoRoot, ".mcp.json"));
   if (
     catalog.schemaVersion !== 1 ||
+    !isSemVerCore(catalog.suiteVersion) ||
     catalog.suiteVersion !== rootPackage.version
   ) {
     throw new Error(
