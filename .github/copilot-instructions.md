@@ -334,9 +334,9 @@ Query the Jira Assets (Insight) CMDB for ministry applications, environments, te
 
 **IMPORTANT — PR target branch:** Most BC Gov repos do NOT have a `main` branch. The default target for PRs should be the **release branch** you branched from (e.g., `release/2.0.3`), NOT `main`. Always set `toBranch` to the release branch.
 
-### Azure DevOps (14 tools)
+### Azure DevOps / TFS (16 tools)
 
-On-prem Azure DevOps Server — work items (WIQL), repos, and pipelines. Requires `ADO_BASE_URL` + `ADO_PAT` in `~/.raven/.env`.
+On-prem Azure DevOps Server / TFS — work items (WIQL), repos, pull requests, YAML/designer pipelines, classic build pipelines, and classic release pipelines. Use these tools for TFS URLs with collection/project paths and `/_build` or `/_release` routes. Requires `ADO_BASE_URL` + `ADO_PAT` in `~/.raven/.env`.
 
 **Search & read:**
 - `list_projects` — List all projects across all collections.
@@ -345,7 +345,9 @@ On-prem Azure DevOps Server — work items (WIQL), repos, and pipelines. Require
 - `list_repos` / `list_branches` — Repos and branches in a project.
 - `browse_files` / `read_file` — Browse and read repo files.
 - `list_pull_requests` / `get_pull_request` — PR list and details.
-- `list_pipelines` — Build/release pipeline definitions.
+- `list_pipelines` — YAML and designer-configured pipeline records from the Pipelines service.
+- `list_build_pipelines` — Azure DevOps / TFS Build service definitions, including classic build pipelines.
+- `list_release_pipelines` — Classic release pipeline definitions.
 
 **Write:**
 - `create_work_item` — Create a work item. **Confirm with the user.**

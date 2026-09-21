@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { AdoClient } from "../ado-client.js";
+import { formatPipelineName } from "../server.js";
 
 // ---------------------------------------------------------------------------
 // Mock fetch factory — same pattern used across other MCP packages
@@ -11,11 +12,13 @@ function createMockFetch(response: {
   statusText?: string;
   body?: unknown;
   text?: string;
+  headers?: HeadersInit;
 }) {
   return vi.fn().mockResolvedValue({
     ok: response.ok,
     status: response.status,
     statusText: response.statusText ?? (response.ok ? "OK" : "Error"),
+    headers: new Headers(response.headers),
     json: () => Promise.resolve(response.body),
     text: () => Promise.resolve(response.text ?? JSON.stringify(response.body ?? {})),
   });
@@ -82,7 +85,7 @@ describe("URL path building with collection", () => {
     await client.listRepositories("MyProject");
     const url: string = mockFetch.mock.calls[0][0];
     expect(url).toContain("/MyProject/_apis/git/repositories");
-    expect(url).not.toContain("ECON");
+    expect(url).not.toContain("TestCollection");
   });
 
   it("builds collection/project path when collection is given", async () => {
@@ -93,9 +96,9 @@ describe("URL path building with collection", () => {
     });
     const client = new AdoClient("https://ado.example.com", "pat", "7.1", mockFetch as any);
 
-    await client.listRepositories("MyProject", "ECON");
+    await client.listRepositories("MyProject", "TestCollection");
     const url: string = mockFetch.mock.calls[0][0];
-    expect(url).toContain("/ECON/MyProject/_apis/git/repositories");
+    expect(url).toContain("/TestCollection/MyProject/_apis/git/repositories");
   });
 
   it("encodes special characters in project and collection names", async () => {
@@ -106,9 +109,9 @@ describe("URL path building with collection", () => {
     });
     const client = new AdoClient("https://ado.example.com", "pat", "7.1", mockFetch as any);
 
-    await client.listRepositories("My Project", "LBR Projects Collection");
+    await client.listRepositories("My Project", "Test Collection");
     const url: string = mockFetch.mock.calls[0][0];
-    expect(url).toContain("LBR%20Projects%20Collection");
+    expect(url).toContain("Test%20Collection");
     expect(url).toContain("My%20Project");
   });
 
@@ -120,9 +123,9 @@ describe("URL path building with collection", () => {
     });
     const client = new AdoClient("https://ado.example.com", "pat", "7.1", mockFetch as any);
 
-    await client.queryWiql("SELECT [System.Id] FROM WorkItems", "Proj", 10, "ECON");
+    await client.queryWiql("SELECT [System.Id] FROM WorkItems", "Proj", 10, "TestCollection");
     const url: string = mockFetch.mock.calls[0][0];
-    expect(url).toContain("/ECON/Proj/_apis/wit/wiql");
+    expect(url).toContain("/TestCollection/Proj/_apis/wit/wiql");
   });
 
   it("propagates collection through to browseFiles", async () => {
@@ -133,9 +136,9 @@ describe("URL path building with collection", () => {
     });
     const client = new AdoClient("https://ado.example.com", "pat", "7.1", mockFetch as any);
 
-    await client.browseFiles("Proj", "my-repo", "/", "main", "ECON");
+    await client.browseFiles("Proj", "my-repo", "/", "main", "TestCollection");
     const url: string = mockFetch.mock.calls[0][0];
-    expect(url).toContain("/ECON/Proj/_apis/git/repositories/my-repo/items");
+    expect(url).toContain("/TestCollection/Proj/_apis/git/repositories/my-repo/items");
   });
 
   it("propagates collection through to listPipelines", async () => {
@@ -146,9 +149,101 @@ describe("URL path building with collection", () => {
     });
     const client = new AdoClient("https://ado.example.com", "pat", "7.1", mockFetch as any);
 
-    await client.listPipelines("Proj", "ECON");
+    await client.listPipelines("Proj", "TestCollection");
     const url: string = mockFetch.mock.calls[0][0];
-    expect(url).toContain("/ECON/Proj/_apis/pipelines");
+    expect(url).toContain("/TestCollection/Proj/_apis/pipelines");
+  });
+
+  it("propagates collection through to listBuildPipelines", async () => {
+    const mockFetch = createMockFetch({
+      ok: true,
+      status: 200,
+      body: { value: [], count: 0 },
+    });
+    const client = new AdoClient("https://ado.example.com", "pat", "7.1", mockFetch as any);
+
+    await client.listBuildPipelines("Proj", "TestCollection");
+    const url: string = mockFetch.mock.calls[0][0];
+    expect(url).toContain("/TestCollection/Proj/_apis/build/definitions");
+  });
+
+  it("propagates collection through to listReleasePipelines", async () => {
+    const mockFetch = createMockFetch({
+      ok: true,
+      status: 200,
+      body: { value: [], count: 0 },
+    });
+    const client = new AdoClient("https://ado.example.com", "pat", "7.1", mockFetch as any);
+
+    await client.listReleasePipelines("Proj", "TestCollection");
+    const url: string = mockFetch.mock.calls[0][0];
+    expect(url).toContain("/TestCollection/Proj/_apis/release/definitions");
+  });
+
+  it("aggregates paginated build pipeline definitions", async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Headers({ "x-ms-continuationtoken": "page-2" }),
+        json: () => Promise.resolve({ value: [{ id: 1, name: "First" }], count: 1 }),
+        text: () => Promise.resolve(""),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Headers(),
+        json: () => Promise.resolve({ value: [{ id: 2, name: "Second" }], count: 1 }),
+        text: () => Promise.resolve(""),
+      });
+    const client = new AdoClient("https://ado.example.com", "pat", "7.1", mockFetch as any);
+
+    const result = await client.listBuildPipelines("Proj", "TestCollection");
+
+    expect(result.value.map((pipeline) => pipeline.name)).toEqual(["First", "Second"]);
+    expect(result.count).toBe(2);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch.mock.calls[1][0]).toContain("continuationToken=page-2");
+  });
+
+  it("aggregates paginated release pipeline definitions", async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Headers({ "x-ms-continuationtoken": "page-2" }),
+        json: () => Promise.resolve({ value: [{ id: 1, name: "First" }], count: 1 }),
+        text: () => Promise.resolve(""),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Headers(),
+        json: () => Promise.resolve({ value: [{ id: 2, name: "Second" }], count: 1 }),
+        text: () => Promise.resolve(""),
+      });
+    const client = new AdoClient("https://ado.example.com", "pat", "7.1", mockFetch as any);
+
+    const result = await client.listReleasePipelines("Proj", "TestCollection");
+
+    expect(result.value.map((pipeline) => pipeline.name)).toEqual(["First", "Second"]);
+    expect(result.count).toBe(2);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch.mock.calls[1][0]).toContain("continuationToken=page-2");
+  });
+});
+
+describe("formatPipelineName", () => {
+  it("does not duplicate a root path separator", () => {
+    expect(formatPipelineName("\\", "Pipeline")).toBe("\\Pipeline");
+  });
+
+  it("adds a separator to a folder path when needed", () => {
+    expect(formatPipelineName("\\Folder", "Pipeline")).toBe("\\Folder\\Pipeline");
   });
 });
 
@@ -165,11 +260,11 @@ describe("readFile", () => {
     });
     const client = new AdoClient("https://ado.example.com", "pat", "7.1", mockFetch as any);
 
-    const content = await client.readFile("Proj", "repo", "/src/App.cs", "develop", "ECON");
+    const content = await client.readFile("Proj", "repo", "/src/App.cs", "develop", "TestCollection");
     expect(content).toBe("file content here");
 
     const url: string = mockFetch.mock.calls[0][0];
-    expect(url).toContain("/ECON/Proj/_apis/git/repositories/repo/items");
+    expect(url).toContain("/TestCollection/Proj/_apis/git/repositories/repo/items");
     expect(url).toContain("path=%2Fsrc%2FApp.cs");
     expect(url).toContain("versionDescriptor=develop");
     expect(url).toContain("versionType=branch");
@@ -249,9 +344,9 @@ describe("listProjects", () => {
     });
     const client = new AdoClient("https://ado.example.com", "pat", "7.1", mockFetch as any);
 
-    await client.listProjects("ECON");
+    await client.listProjects("TestCollection");
     const url: string = mockFetch.mock.calls[0][0];
-    expect(url).toContain("/ECON/_apis/projects");
+    expect(url).toContain("/TestCollection/_apis/projects");
     expect(url).toContain("$top=200");
     expect(url).toContain("api-version=7.1");
   });
@@ -317,11 +412,11 @@ describe("createPullRequest", () => {
       title: "My PR",
       sourceRefName: "refs/heads/feature/x",
       targetRefName: "refs/heads/main",
-    }, "ECON");
+    }, "TestCollection");
 
     expect(result.pullRequestId).toBe(10);
     const [url, opts] = mockFetch.mock.calls[0];
-    expect(url).toContain("/ECON/Proj/_apis/git/repositories/repo/pullrequests");
+    expect(url).toContain("/TestCollection/Proj/_apis/git/repositories/repo/pullrequests");
     expect(opts.method).toBe("POST");
     const body = JSON.parse(opts.body);
     expect(body.title).toBe("My PR");

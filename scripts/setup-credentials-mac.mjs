@@ -153,7 +153,7 @@ const SECTIONS = [
     ],
   },
   {
-    header: "Azure DevOps Server (leave blank to skip)",
+    header: "Azure DevOps Server / TFS (leave blank to skip)",
     fields: [
       ["ADO_BASE_URL", "ADO base URL (e.g. https://ado.example.gov.bc.ca)", false],
       ["ADO_DEFAULT_COLLECTION", "ADO default collection (e.g. DefaultCollection)", false],
