@@ -1,0 +1,212 @@
+name: Raven release draft
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+    branches:
+      - main
+
+concurrency:
+  group: raven-release-draft
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Resolve release
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.context.outputs.commit }}
+      release_needed: ${{ steps.release.outputs.release_needed }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Validate triggering commit
+        id: context
+        env:
+          COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [[ ! "$COMMIT_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "The validated source must be a full commit SHA." >&2
+            exit 1
+          fi
+          echo "commit=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Check out exact validated commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.context.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve version and duplicate state
+        id: release
+        shell: pwsh
+        run: |
+          $catalog = Get-Content ./release/server-catalog.json -Raw | ConvertFrom-Json
+          $version = $catalog.suiteVersion
+          if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
+            throw "Raven requires a semantic version in major.minor.patch form; found $version."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          & git ls-remote --exit-code --tags origin "refs/tags/v$version" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            "release_needed=false" >> $env:GITHUB_OUTPUT
+            Write-Host "v$version already exists; no release candidate is needed."
+          } elseif ($LASTEXITCODE -eq 2) {
+            "release_needed=true" >> $env:GITHUB_OUTPUT
+            $notes = ".github/release-notes/v$version.md"
+            if (-not (Test-Path -LiteralPath $notes -PathType Leaf)) {
+              throw "Reviewed release notes are required at $notes."
+            }
+          } else {
+            throw "Could not query the remote tag for v$version."
+          }
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: prepare
+    if: needs.prepare.outputs.release_needed == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x64
+          - runner: windows-2025
+            platform: win32-x64
+          - runner: macos-15-intel
+            platform: darwin-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out exact validated commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+
+      - name: Set up bundled Node runtime
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.21.0
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install, build, and validate release contract
+        run: |
+          npm ci --engine-strict
+          npm run build
+          npx vitest run --root . scripts/release/release.test.mjs
+          node scripts/gen-inventory.mjs --check
+
+      - name: Generate production SBOM
+        shell: bash
+        run: |
+          mkdir -p build
+          npm sbom --omit=dev --sbom-format=spdx > build/sbom.spdx.json
+
+      - name: Remove development dependencies
+        run: npm prune --omit=dev
+
+      - name: Build and smoke-test bundle
+        run: node scripts/release/build-bundle.mjs --sbom build/sbom.spdx.json --output build/release
+
+      - name: Attest bundle provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            build/release/*.tar.gz
+            build/release/*.manifest.json
+            build/release/*.sbom.spdx.json
+
+      - name: Attest bundle SBOM
+        uses: actions/attest-sbom@v3
+        with:
+          subject-path: build/release/*.tar.gz
+          sbom-path: build/release/*.sbom.spdx.json
+
+      - name: Upload platform candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: raven-${{ needs.prepare.outputs.version }}-${{ matrix.platform }}
+          path: |
+            build/release/*.tar.gz
+            build/release/*.manifest.json
+            build/release/*.sbom.spdx.json
+          if-no-files-found: error
+          retention-days: 7
+
+  draft:
+    name: Create approved draft release
+    needs:
+      - prepare
+      - build
+    if: needs.prepare.outputs.release_needed == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: release
+    permissions:
+      actions: read
+      attestations: read
+      contents: write
+    steps:
+      - name: Check out exact approved commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download platform candidates
+        uses: actions/download-artifact@v5
+        with:
+          pattern: raven-${{ needs.prepare.outputs.version }}-*
+          path: build/release-candidate
+          merge-multiple: true
+
+      - name: Verify aggregate candidate
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/release/verify-release.mjs `
+            --directory build/release-candidate `
+            --commit '${{ needs.prepare.outputs.commit }}'
+          Get-ChildItem build/release-candidate -File | ForEach-Object {
+            gh attestation verify $_.FullName --repo '${{ github.repository }}'
+            if ($LASTEXITCODE -ne 0) {
+              throw "Attestation verification failed for $($_.Name)."
+            }
+          }
+
+      - name: Create and verify draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          $tokenBytes = [System.Text.Encoding]::ASCII.GetBytes("x-access-token:$env:GH_TOKEN")
+          $env:GIT_CONFIG_COUNT = '1'
+          $env:GIT_CONFIG_KEY_0 = 'http.https://github.com/.extraheader'
+          $env:GIT_CONFIG_VALUE_0 = "AUTHORIZATION: basic $([Convert]::ToBase64String($tokenBytes))"
+          git fetch origin main --no-tags
+          node scripts/release/create-draft.mjs `
+            --directory build/release-candidate `
+            --commit '${{ needs.prepare.outputs.commit }}' `
+            --notes '.github/release-notes/v${{ needs.prepare.outputs.version }}.md' `
+            --confirm
