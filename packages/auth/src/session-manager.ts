@@ -11,6 +11,7 @@ import {
 } from "./cookie-cache.js";
 import type { AuthConfig, AuthResult } from "./types.js";
 import { BROWSER_USER_AGENT } from "./browser-ua.js";
+import { authCliPath } from "./auth-cli-path.js";
 
 const DEFAULT_CACHE_PATH = join(homedir(), ".workflow-suite", "session.json");
 const DEFAULT_TTL = 1500; // 25 minutes
@@ -225,7 +226,7 @@ const { chromium } = require('playwright');
       throw new Error(
         `No valid SMSESSION found. Browser auth failed: ${msg}\n\n` +
           `To fix this, run one of:\n` +
-          `  1. npx raven-auth          (opens browser for IDIR login)\n` +
+          `  1. "${process.execPath}" "${authCliPath}" (opens browser for IDIR login)\n` +
           `  2. Set SMSESSION env var  (paste cookie value from browser DevTools)\n\n` +
           `The session caches to ~/.workflow-suite/session.json for 25 minutes.`,
       );

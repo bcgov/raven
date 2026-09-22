@@ -31,6 +31,7 @@
     "clean": "tsc --build --clean",
     "test": "vitest run",
     "test:watch": "vitest",
+    "release:check-version": "node scripts/release/check-version.mjs",
     "release:bundle": "node scripts/release/build-bundle.mjs",
     "release:verify": "node scripts/release/verify-release.mjs",
     "gen-inventory": "npm run build && node scripts/gen-inventory.mjs",

@@ -9,6 +9,7 @@ import {
   findNodeLicense,
   git,
   readJson,
+  releasedEntries,
   repoRoot,
   resetDirectory,
   sha256,
@@ -85,7 +86,8 @@ const bundleMetadata = {
   catalog: "server-catalog.json",
   sbom: sbomName,
   smokeTests: {
-    launcherCount: catalog.servers.length,
+    validatedLauncherCount: releasedEntries(catalog).length,
+    startedServerCount: catalog.servers.length,
     status: "pending",
   },
 };

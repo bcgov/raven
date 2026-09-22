@@ -21,8 +21,10 @@ jobs:
     name: Resolve release
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.repository.full_name == github.repository
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.head_sha == github.sha
     runs-on: ubuntu-24.04
     outputs:
       commit: ${{ steps.context.outputs.commit }}
@@ -71,6 +73,9 @@ jobs:
             throw "Could not query the remote tag for v$version."
           }
 
+      - name: Enforce version release guards
+        run: node scripts/release/check-version.mjs
+
   build:
     name: Build ${{ matrix.platform }}
     needs: prepare
@@ -101,7 +106,7 @@ jobs:
       - name: Set up bundled Node runtime
         uses: actions/setup-node@v7
         with:
-          node-version: 24.21.0
+          node-version-file: .node-version
           cache: npm
           cache-dependency-path: package-lock.json
 
@@ -136,7 +141,7 @@ jobs:
         uses: actions/attest-sbom@v3
         with:
           subject-path: build/release/*.tar.gz
-          sbom-path: build/release/*.sbom.spdx.json
+          sbom-path: build/release/raven-${{ needs.prepare.outputs.version }}-${{ matrix.platform }}.sbom.spdx.json
 
       - name: Upload platform candidate
         uses: actions/upload-artifact@v4

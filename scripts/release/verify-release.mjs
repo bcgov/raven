@@ -12,6 +12,7 @@ import { spawnSync } from "node:child_process";
 import {
   catalogPath,
   readJson,
+  releasedEntries,
   sha256,
   validateCatalog,
 } from "./release-lib.mjs";
@@ -80,7 +81,9 @@ for (const manifest of manifests) {
     manifest.nodeVersion !== catalog.nodeVersion ||
     (expectedCommit && manifest.sourceCommit !== expectedCommit) ||
     manifest.smokeTests?.status !== "passed" ||
-    manifest.smokeTests?.launcherCount !== catalog.servers.length
+    manifest.smokeTests?.validatedLauncherCount !==
+      releasedEntries(catalog).length ||
+    manifest.smokeTests?.startedServerCount !== catalog.servers.length
   ) {
     throw new Error(
       `Manifest for '${manifest.platform}' has inconsistent release metadata.`,

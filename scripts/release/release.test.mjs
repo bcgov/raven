@@ -6,6 +6,8 @@ import { test } from "vitest";
 import {
   isSemVerCore,
   readJson,
+  releasedEntries,
+  requiresMajorApproval,
   validateCatalog,
   writeLaunchers,
 } from "./release-lib.mjs";
@@ -13,7 +15,15 @@ import {
 test("release catalog matches package metadata and MCP configuration", () => {
   const catalog = validateCatalog();
   assert.equal(isSemVerCore(catalog.suiteVersion), true);
-  assert.equal(catalog.servers.length, 17);
+  assert.ok(catalog.servers.length > 0);
+  assert.ok(releasedEntries(catalog).length > catalog.servers.length);
+});
+
+test("major version increases require independent approval", () => {
+  assert.equal(requiresMajorApproval("0.2.0", ["0.1.0"]), false);
+  assert.equal(requiresMajorApproval("1.0.0", ["0.9.0"]), true);
+  assert.equal(requiresMajorApproval("2.1.0", ["1.8.4", "2.0.0"]), false);
+  assert.equal(requiresMajorApproval("1.0.0", []), false);
 });
 
 test("suite versions accept SemVer core without leading zeroes", () => {
@@ -28,6 +38,14 @@ test("suite versions accept SemVer core without leading zeroes", () => {
 test("launchers use bundled Node and package entrypoints", () => {
   const directory = mkdtempSync(join(tmpdir(), "raven-release-"));
   const catalog = {
+    utilities: [
+      {
+        id: "auth",
+        package: "@nrs/auth",
+        launcher: "raven-auth",
+        entrypoint: "packages/auth/dist/cli.js",
+      },
+    ],
     servers: [
       {
         id: "jira",
@@ -41,6 +59,11 @@ test("launchers use bundled Node and package entrypoints", () => {
   const launcher = readFileSync(join(directory, "bin", "raven-jira"), "utf8");
   assert.match(launcher, /runtime\/node/);
   assert.match(launcher, /node_modules\/@nrs\/jira-mcp\/dist\/index\.js/);
+  assert.match(launcher, /RAVEN_BUNDLED_RUNTIME=1/);
+  assert.match(
+    readFileSync(join(directory, "bin", "raven-auth"), "utf8"),
+    /node_modules\/@nrs\/auth\/dist\/cli\.js/,
+  );
 
   writeLaunchers(directory, catalog, "win32");
   const windowsLauncher = readFileSync(
@@ -48,12 +71,17 @@ test("launchers use bundled Node and package entrypoints", () => {
     "utf8",
   );
   assert.match(windowsLauncher, /runtime\\node\.exe/);
+  assert.match(windowsLauncher, /set "PATH=.*runtime;%PATH%"/);
   assert.match(
     windowsLauncher,
     /node_modules\\@nrs\\jira-mcp\\dist\\index\.js/,
   );
   assert.match(windowsLauncher, /goto run/);
   assert.match(windowsLauncher, /exit \/b %ERRORLEVEL%\r\n:run/);
+  assert.match(
+    readFileSync(join(directory, "bin", "raven-auth.cmd"), "utf8"),
+    /node_modules\\@nrs\\auth\\dist\\cli\.js/,
+  );
 });
 
 test("catalog is valid JSON with an explicit platform contract", () => {
@@ -65,5 +93,11 @@ test("catalog is valid JSON with an explicit platform contract", () => {
     "linux-x64",
     "win32-x64",
   ]);
-  assert.equal(catalog.nodeVersion, "24.21.0");
+  assert.equal(
+    catalog.nodeVersion,
+    readFileSync(
+      new URL("../../.node-version", import.meta.url),
+      "utf8",
+    ).trim(),
+  );
 });

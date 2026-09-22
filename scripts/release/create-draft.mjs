@@ -2,7 +2,12 @@
 import { readdirSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { git, repoRoot, validateCatalog } from "./release-lib.mjs";
+import {
+  assertMajorReleaseApproval,
+  git,
+  repoRoot,
+  validateCatalog,
+} from "./release-lib.mjs";
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -38,6 +43,7 @@ if (!/^[0-9a-f]{40}$/.test(commit ?? ""))
   throw new Error("A full source commit SHA is required.");
 
 const catalog = validateCatalog();
+assertMajorReleaseApproval(catalog.suiteVersion);
 const tag = `v${catalog.suiteVersion}`;
 if (git("rev-parse", "HEAD").toLowerCase() !== commit)
   throw new Error("HEAD does not match the approved commit.");

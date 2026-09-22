@@ -4,6 +4,15 @@
   "nodeVersion": "24.21.0",
   "protocolCompatibility": "MCP over stdio",
   "supportedPlatforms": ["darwin-x64", "linux-x64", "win32-x64"],
+  "utilities": [
+    {
+      "id": "auth",
+      "package": "@nrs/auth",
+      "packageVersion": "0.1.0",
+      "entrypoint": "packages/auth/dist/cli.js",
+      "launcher": "raven-auth"
+    }
+  ],
   "servers": [
     {
       "id": "jira",

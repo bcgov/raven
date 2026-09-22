@@ -4,11 +4,11 @@ Raven uses semantic versioning for the complete runtime suite.
 
 ## Version selection
 
-| Change                                                                                                                                                                        | Version                           |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
-| Compatible correction, dependency update, clarification, release automation, bugfix, documentation, compatible tool addition, or fix to an existing capability | Patch                             |
-| New MCP server                                                                                                                                                                | Minor                             |
-| Incompatible rename, removal, installation change, invocation contract change, launcher or catalog contract change, supported-platform removal, or output contract break      | Major, only when the user decides |
+| Change                                                                                                                                                                   | Version                           |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------- |
+| Compatible correction, dependency update, clarification, release automation, bugfix, documentation, compatible tool addition, or fix to an existing capability           | Patch                             |
+| New MCP server                                                                                                                                                           | Minor                             |
+| Incompatible rename, removal, installation change, invocation contract change, launcher or catalog contract change, supported-platform removal, or output contract break | Major, only when the user decides |
 
 Use the highest classification present in the complete release diff. A new MCP
 server remains minor even when it also updates existing servers, agents,
@@ -18,9 +18,20 @@ they add a new MCP server or require an incompatible contract.
 ## Major release control
 
 Explain the incompatibility and ask the user whether to release a major
-version. Release automation must require a second explicit major-version guard.
-Neither prior release history nor the apparent size of a change authorizes a
-major release.
+version. When the selected major version exceeds the latest release tag, record
+the separate approval in `.github/release-major/v<version>.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "version": "1.0.0",
+  "approved": true
+}
+```
+
+The version-specific file must be reviewed and committed. Both candidate
+preparation and draft creation validate it independently. Neither prior release
+history nor the apparent size of a change authorizes a major release.
 
 ## Release source of truth
 

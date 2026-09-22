@@ -33,13 +33,14 @@ GitHub draft release. Draft publication remains manual.
 
 ## Supported platforms
 
-The initial contract covers `linux-x64`, `win32-x64`, and `darwin-x64` with
-Node.js 24.21.0. A platform is supported only when its hosted clean runner
-builds the bundle and every MCP entrypoint survives the startup smoke test.
+The initial contract covers `linux-x64`, `win32-x64`, and `darwin-x64` with the
+exact Node.js version pinned in `.node-version` and the release catalog. A
+platform is supported only when its hosted clean runner builds the bundle and
+every MCP entrypoint survives the startup smoke test.
 
 Playwright browser binaries are not bundled. Interactive SiteMinder login
-requires the documented Playwright browser installation; Basic Auth and cached
-SiteMinder sessions do not.
+requires the documented Playwright browser installation through the bundled
+runtime; Basic Auth and cached SiteMinder sessions do not.
 
 ## Transitional source builds
 

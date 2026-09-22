@@ -11,6 +11,7 @@ import {
 } from "./spo-cookie-cache.js";
 import type { SpoAuthConfig, SpoAuthResult, SpoCookies } from "./types.js";
 import { BROWSER_USER_AGENT } from "./browser-ua.js";
+import { authCliPath } from "./auth-cli-path.js";
 
 const DEFAULT_CACHE_PATH = join(
   homedir(),
@@ -191,7 +192,7 @@ const { chromium } = require('playwright');
       throw new Error(
         `No valid SharePoint session found. Browser auth failed: ${msg}\n\n` +
           `To fix this, run one of:\n` +
-          `  1. npx raven-auth --sharepoint   (opens browser for IDIR/Entra login)\n` +
+          `  1. "${process.execPath}" "${authCliPath}" --sharepoint (opens browser for IDIR/Entra login)\n` +
           `  2. Set SPO_FEDAUTH and SPO_RTFA env vars (paste cookie values from browser DevTools)\n\n` +
           `The session caches to ~/.workflow-suite/spo-session.json for 8 hours.`,
       );
