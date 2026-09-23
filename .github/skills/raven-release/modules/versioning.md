@@ -15,6 +15,10 @@ server remains minor even when it also updates existing servers, agents,
 skills, documentation, or release automation. Security fixes are patch unless
 they add a new MCP server or require an incompatible contract.
 
+The candidate must be newer than the latest prior SemVer release. An existing
+tag equal to the candidate is ignored only when retrying draft creation for
+that same immutable release; older candidate versions are rejected.
+
 ## Major release control
 
 Explain the incompatibility and ask the user whether to release a major

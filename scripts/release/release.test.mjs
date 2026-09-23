@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
 import {
   isSemVerCore,
+  copyWorkspacePackages,
   readJson,
   releasedEntries,
   requiresMajorApproval,
@@ -24,6 +25,14 @@ test("major version increases require independent approval", () => {
   assert.equal(requiresMajorApproval("1.0.0", ["0.9.0"]), true);
   assert.equal(requiresMajorApproval("2.1.0", ["1.8.4", "2.0.0"]), false);
   assert.equal(requiresMajorApproval("1.0.0", []), false);
+  assert.throws(
+    () => requiresMajorApproval("1.9.0", ["2.0.0"]),
+    /must be newer than latest release 2\.0\.0/,
+  );
+  assert.equal(
+    requiresMajorApproval("2.0.0", ["1.9.0", "2.0.0"]),
+    true,
+  );
 });
 
 test("suite versions accept SemVer core without leading zeroes", () => {
@@ -99,5 +108,25 @@ test("catalog is valid JSON with an explicit platform contract", () => {
       new URL("../../.node-version", import.meta.url),
       "utf8",
     ).trim(),
+  );
+});
+
+test("workspace packages include package-root runtime assets", () => {
+  const directory = mkdtempSync(join(tmpdir(), "raven-workspaces-"));
+  copyWorkspacePackages(directory);
+
+  const bundledConfig = join(
+    directory,
+    "@nrs",
+    "sonar-mcp",
+    "sonar.config",
+  );
+  assert.equal(existsSync(bundledConfig), true);
+  assert.equal(
+    readFileSync(bundledConfig, "utf8"),
+    readFileSync(
+      new URL("../../packages/sonar-mcp/sonar.config", import.meta.url),
+      "utf8",
+    ),
   );
 });

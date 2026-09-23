@@ -78,9 +78,16 @@ export function compareSemVerCore(left, right) {
 export function requiresMajorApproval(version, previousVersions) {
   if (!isSemVerCore(version))
     throw new Error(`Invalid suite version '${version}'.`);
-  const validPrevious = previousVersions.filter(isSemVerCore);
+  const validPrevious = previousVersions
+    .filter(isSemVerCore)
+    .filter((previousVersion) => previousVersion !== version);
   if (validPrevious.length === 0) return false;
   const latest = validPrevious.sort(compareSemVerCore).at(-1);
+  if (compareSemVerCore(version, latest) <= 0) {
+    throw new Error(
+      `Candidate version ${version} must be newer than latest release ${latest}.`,
+    );
+  }
   return Number(version.split(".")[0]) > Number(latest.split(".")[0]);
 }
 
@@ -265,9 +272,12 @@ export function copyWorkspacePackages(destination) {
     mkdirSync(target, { recursive: true });
     cpSync(packagePath, join(target, "package.json"));
     cpSync(distPath, join(target, "dist"), { recursive: true });
-    const publicPath = join(source, "public");
-    if (existsSync(publicPath))
-      cpSync(publicPath, join(target, "public"), { recursive: true });
+    for (const runtimeAsset of ["public", "sonar.config"]) {
+      const assetPath = join(source, runtimeAsset);
+      if (existsSync(assetPath)) {
+        cpSync(assetPath, join(target, runtimeAsset), { recursive: true });
+      }
+    }
   }
 }
 
