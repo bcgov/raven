@@ -374,6 +374,12 @@ export async function smokeTest(bundleRoot, catalog, timeoutMs = 1500) {
   }
   const smokeHome = mkdtempSync(join(tmpdir(), "raven-release-smoke-"));
   try {
+    const smokeBin = join(smokeHome, "bin");
+    mkdirSync(smokeBin, { recursive: true });
+    cpSync(
+      join(repoRoot, "servers.conf.example"),
+      join(smokeBin, "servers.conf"),
+    );
     for (const server of catalog.servers) {
       const { command, args } = launcherInvocation(bundleRoot, server);
       await new Promise((resolvePromise, rejectPromise) => {

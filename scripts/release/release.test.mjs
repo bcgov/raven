@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
@@ -9,6 +17,7 @@ import {
   readJson,
   releasedEntries,
   requiresMajorApproval,
+  smokeTest,
   validateCatalog,
   writeLaunchers,
 } from "./release-lib.mjs";
@@ -129,4 +138,61 @@ test("workspace packages include package-root runtime assets", () => {
       "utf8",
     ),
   );
+});
+
+test("release smoke test seeds the isolated server inventory", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "raven-smoke-bundle-"));
+  const binDirectory = join(directory, "bin");
+  mkdirSync(binDirectory);
+  const probe = join(directory, "server-monitor-probe.mjs");
+  writeFileSync(
+    probe,
+    'import { existsSync } from "node:fs";\n' +
+      'import { join } from "node:path";\n' +
+      'if (!existsSync(join(process.env.HOME, "bin", "servers.conf"))) process.exit(2);\n' +
+    "setTimeout(() => process.exit(0), 1200);\n" +
+    "setInterval(() => {}, 1000);\n",
+  );
+
+  const launcher = join(
+    binDirectory,
+    `raven-server-monitor${process.platform === "win32" ? ".cmd" : ""}`,
+  );
+  if (process.platform === "win32") {
+    writeFileSync(
+      launcher,
+      `@echo off\r\nif "%RAVEN_RELEASE_LAUNCHER_CHECK%"=="1" exit /b 0\r\n"${process.execPath}" "${probe}"\r\n`,
+    );
+  } else {
+    writeFileSync(
+      launcher,
+      `#!/bin/sh\nif [ "\${RAVEN_RELEASE_LAUNCHER_CHECK:-}" = "1" ]; then exit 0; fi\nexec "${process.execPath}" "${probe}"\n`,
+    );
+    chmodSync(launcher, 0o755);
+  }
+
+  try {
+    await smokeTest(
+      directory,
+      {
+        servers: [
+          {
+            id: "server-monitor",
+            launcher: "raven-server-monitor",
+          },
+        ],
+      },
+      1000,
+    );
+  } finally {
+    if (process.platform === "win32") {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    rmSync(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 200,
+    });
+  }
 });
