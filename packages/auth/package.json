@@ -12,7 +12,7 @@
     "build": "tsc --build && node -e \"require('node:fs').chmodSync('dist/cli.js', 0o755)\""
   },
   "dependencies": {
-    "dotenv": "^17.3.1",
+    "dotenv": "^18.0.1",
     "pdf-parse": "^2.4.5",
     "playwright": "^1.63.0",
     "zod": "^4.6.5"
