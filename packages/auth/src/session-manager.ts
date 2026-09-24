@@ -11,6 +11,7 @@ import {
 } from "./cookie-cache.js";
 import type { AuthConfig, AuthResult } from "./types.js";
 import { BROWSER_USER_AGENT } from "./browser-ua.js";
+import { authCliPath } from "./auth-cli-path.js";
 
 const DEFAULT_CACHE_PATH = join(homedir(), ".workflow-suite", "session.json");
 const DEFAULT_TTL = 1500; // 25 minutes
@@ -50,7 +51,7 @@ export class SessionManager {
     // 2. Disk cache
     const cached = await readCachedSession(
       this.config.cachePath,
-      this.config.sessionTtlSeconds
+      this.config.sessionTtlSeconds,
     );
     if (cached) {
       this.smsession = cached;
@@ -71,7 +72,7 @@ export class SessionManager {
     const legacyCachePath = join(homedir(), ".confluence-mcp", "session.json");
     const legacyCached = await readCachedSession(
       legacyCachePath,
-      this.config.sessionTtlSeconds
+      this.config.sessionTtlSeconds,
     );
     if (legacyCached) {
       this.smsession = legacyCached;
@@ -194,7 +195,7 @@ const { chromium } = require('playwright');
       // Run from the monorepo root so require('playwright') resolves
       // from the hoisted node_modules regardless of the caller's cwd.
       const monorepoRoot = join(__dirname, "..", "..", "..");
-      const result = execFileSync("node", ["-e", script], {
+      const result = execFileSync(process.execPath, ["-e", script], {
         encoding: "utf-8",
         timeout: 180_000,
         cwd: monorepoRoot,
@@ -211,7 +212,7 @@ const { chromium } = require('playwright');
 
       if (parsed.status !== "ok" || !parsed.smsession) {
         throw new Error(
-          parsed.message ?? "Authentication failed: no cookie captured"
+          parsed.message ?? "Authentication failed: no cookie captured",
         );
       }
 
@@ -224,10 +225,10 @@ const { chromium } = require('playwright');
         err instanceof Error ? err.message : "Unknown authentication error";
       throw new Error(
         `No valid SMSESSION found. Browser auth failed: ${msg}\n\n` +
-        `To fix this, run one of:\n` +
-        `  1. npx raven-auth          (opens browser for IDIR login)\n` +
-        `  2. Set SMSESSION env var  (paste cookie value from browser DevTools)\n\n` +
-        `The session caches to ~/.workflow-suite/session.json for 25 minutes.`
+          `To fix this, run one of:\n` +
+          `  1. "${process.execPath}" "${authCliPath}" (opens browser for IDIR login)\n` +
+          `  2. Set SMSESSION env var  (paste cookie value from browser DevTools)\n\n` +
+          `The session caches to ~/.workflow-suite/session.json for 25 minutes.`,
       );
     }
   }
