@@ -72,6 +72,9 @@ jobs:
           } else {
             throw "Could not query the remote tag for v$version."
           }
+          # ls-remote exits 2 when the tag is absent; clear it so the runner's
+          # trailing `exit $LASTEXITCODE` does not fail the step.
+          $global:LASTEXITCODE = 0
 
       - name: Enforce version release guards
         run: node scripts/release/check-version.mjs
