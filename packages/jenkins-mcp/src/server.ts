@@ -4,6 +4,7 @@ import {
   SessionManager,
   createAuthenticatedFetch,
   createBasicAuthFetch,
+  isLoginRedirect,
   PiScrubber,
   authCliPath,
 } from "@nrs/auth";
@@ -101,6 +102,53 @@ export function withJenkinsSessionCookies(fetchFn: AuthenticatedFetch, baseUrl: 
   };
 }
 
+/**
+ * Basic credentials that fall back to the SiteMinder session if, and only if,
+ * the host answers with a redirect into the login flow.
+ *
+ * On a SiteMinder-protected host (the apps host, as opposed to the BWA
+ * gateway) the challenge happens before Jenkins ever sees the Authorization
+ * header, so Basic credentials can never succeed there and every call would
+ * fail with a bare 302. That redirect is the signal to use the session
+ * instead; once seen, it is remembered so later calls skip the doomed attempt.
+ * A 401/403 from the controller itself is a real credential answer and is
+ * returned untouched. The session is created at most once, and a failed
+ * creation (e.g. the login window was closed) is retried on the next call.
+ */
+function basicFetchWithSessionFallback(
+  basicFetch: AuthenticatedFetch,
+  createSessionFetch: () => Promise<AuthenticatedFetch>,
+): AuthenticatedFetch {
+  let sessionFetch: Promise<AuthenticatedFetch> | null = null;
+
+  const useSession = (): Promise<AuthenticatedFetch> => {
+    if (!sessionFetch) {
+      const pending = createSessionFetch();
+      sessionFetch = pending;
+      pending.catch(() => {
+        if (sessionFetch === pending) sessionFetch = null;
+      });
+    }
+    return sessionFetch;
+  };
+
+  return async (url, init) => {
+    if (sessionFetch) return (await sessionFetch)(url, init);
+
+    const response = await basicFetch(url, { ...init, redirect: "manual" });
+    if (!isLoginRedirect(response.status, response.headers.get("location") ?? "")) {
+      return response;
+    }
+
+    process.stderr.write(
+      "[raven-jenkins] Basic credentials were redirected to the SiteMinder login; " +
+        "using the SMSESSION session instead. Point JENKINS_URL at a host that accepts " +
+        "Basic auth, or unset JENKINS_USER, to silence this.\n",
+    );
+    return (await useSession())(url, init);
+  };
+}
+
 /** Create the configured Jenkins authentication transport with session-cookie retention. */
 export async function createJenkinsFetch(
   baseUrl: string,
@@ -112,13 +160,13 @@ export async function createJenkinsFetch(
     createSessionFetch: async () => createAuthenticatedFetch(new SessionManager()),
   };
 
-  const authFetch = basicAuth
-    ? resolvedFactories.createBasicFetch(basicAuth.user, basicAuth.password)
+  const authFetch: AuthenticatedFetch = basicAuth
+    ? basicFetchWithSessionFallback(
+        resolvedFactories.createBasicFetch(basicAuth.user, basicAuth.password),
+        resolvedFactories.createSessionFetch,
+      )
     : await resolvedFactories.createSessionFetch();
-  const redirectSafeFetch: AuthenticatedFetch = basicAuth
-    ? (url, init) => authFetch(url, { ...init, redirect: "manual" })
-    : authFetch;
-  return withJenkinsSessionCookies(redirectSafeFetch, baseUrl);
+  return withJenkinsSessionCookies(authFetch, baseUrl);
 }
 
 function formatDate(timestamp?: number): string {
