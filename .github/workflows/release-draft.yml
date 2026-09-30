@@ -180,7 +180,7 @@ jobs:
           persist-credentials: false
 
       - name: Download platform candidates
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           pattern: raven-${{ needs.prepare.outputs.version }}-*
           path: build/release-candidate
