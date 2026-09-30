@@ -77,6 +77,19 @@ export function siteMinderWebUrl(baseUrl: string): string {
   }
 }
 
+/**
+ * Locations that mean "you are being sent to log in": the SiteMinder/BC Gov
+ * logon pages, the Entra login host, and SiteMinder's fedLaunch hop. Shared by
+ * the Node-side session probe and the generated capture script so both judge a
+ * cookie the same way.
+ */
+export const LOGIN_REDIRECT_PATTERN = /(?:login|logon|signin|siteminder|fedlaunch)/i;
+
+/** Whether a response is a redirect into the login flow. */
+export function isLoginRedirect(status: number, location: string): boolean {
+  return status >= 300 && status < 400 && LOGIN_REDIRECT_PATTERN.test(location);
+}
+
 /** Options for {@link buildCaptureScript}. */
 export interface CaptureScriptOptions {
   /** Full URL the capture navigates to (must trigger the login flow). */
@@ -92,6 +105,15 @@ export interface CaptureScriptOptions {
   readonly navTimeoutMs?: number;
   /** Total budget for the cookie poll (default 180s). */
   readonly pollBudgetMs?: number;
+  /** Delay between cookie polls (default 1s). */
+  readonly pollIntervalMs?: number;
+  /**
+   * Protected URL used to confirm a captured cookie is honoured before it is
+   * accepted. The persistent profile can hold a dead cookie from a previous
+   * run, so "a cookie exists" is not evidence of a login. Omit to accept the
+   * first real value (the SharePoint capture).
+   */
+  readonly verifyUrl?: string;
   /** Emit the credential-autofill routine. */
   readonly autofill: boolean;
 }
@@ -152,6 +174,7 @@ const AUTOFILL_SNIPPET = `
 export function buildCaptureScript(opts: CaptureScriptOptions): string {
   const navTimeoutMs = opts.navTimeoutMs ?? 120_000;
   const pollBudgetMs = opts.pollBudgetMs ?? 180_000;
+  const pollIntervalMs = opts.pollIntervalMs ?? 1_000;
 
   return `
 const { chromium } = require('playwright');
@@ -217,24 +240,66 @@ ${opts.autofill ? AUTOFILL_SNIPPET : ""}
 
   const wanted = ${JSON.stringify(opts.cookieNames)};
   const domainFilter = ${opts.cookieDomainFilter ? JSON.stringify(opts.cookieDomainFilter) : "null"};
-  const found = {};
+  const verifyUrl = ${opts.verifyUrl ? JSON.stringify(opts.verifyUrl) : "null"};
+  const LOGIN_REDIRECT = new RegExp(${JSON.stringify(LOGIN_REDIRECT_PATTERN.source)}, 'i');
+
+  // The persistent profile keeps cookies between runs, so the jar can already
+  // hold SiteMinder's SMSESSION=LOGGEDOFF marker (or an expired real value)
+  // before the user has logged in. Neither is a session: taking the first
+  // value seen ended the capture before the login and cached a placeholder.
+  const isDead = (value) => !value || String(value).trim().toUpperCase() === 'LOGGEDOFF';
+
+  // Ask the protected page whether the server honours the cookies now in the
+  // jar (the context's request API shares them). A redirect into the login
+  // flow or a 401/403 means dead; a transport error or 5xx is "unknown" and
+  // is re-checked rather than treated as either answer.
+  async function probe() {
+    try {
+      const res = await context.request.get(verifyUrl, { maxRedirects: 0, failOnStatusCode: false, timeout: 15000 });
+      const status = res.status();
+      const location = (res.headers() || {})['location'] || '';
+      if (status === 401 || status === 403) return 'dead';
+      if (status >= 300 && status < 400) return LOGIN_REDIRECT.test(location) ? 'dead' : 'live';
+      if (status >= 200 && status < 300) return 'live';
+      return 'unknown';
+    } catch (probeErr) {
+      return 'unknown';
+    }
+  }
+
+  let found = {};
+  let accepted = false;
+  let judged = '';
   const startTime = Date.now();
   while (Date.now() - startTime < ${pollBudgetMs}) {
+    found = {};
     const cookies = await context.cookies();
     for (const cookie of cookies) {
       if (domainFilter && (!cookie.domain || cookie.domain.indexOf(domainFilter) === -1)) continue;
-      if (wanted.indexOf(cookie.name) !== -1) found[cookie.name] = cookie.value;
+      if (wanted.indexOf(cookie.name) !== -1 && !isDead(cookie.value)) found[cookie.name] = cookie.value;
     }
-    if (wanted.every((name) => found[name])) break;
-    await new Promise((r) => setTimeout(r, 1000));
+    if (wanted.every((name) => found[name])) {
+      if (!verifyUrl) { accepted = true; break; }
+      // Judge each distinct candidate once; a dead one is skipped until the
+      // login replaces it, an unknown one is asked again on the next poll.
+      const signature = wanted.map((name) => found[name]).join('|');
+      if (signature !== judged) {
+        const verdict = await probe();
+        if (verdict === 'live') { accepted = true; break; }
+        if (verdict === 'dead') judged = signature;
+      }
+    }
+    await new Promise((r) => setTimeout(r, ${pollIntervalMs}));
   }
 
   await context.close();
 
-  if (wanted.every((name) => found[name])) {
+  if (accepted) {
     console.log(JSON.stringify({ status: 'ok', cookies: found }));
   } else {
-    const missing = wanted.filter((name) => !found[name]).join(', ');
+    // A candidate that was present but rejected leaves nothing "missing";
+    // say so rather than print an empty list.
+    const missing = wanted.filter((name) => !found[name]).join(', ') || (wanted.join(', ') + ' (present but not accepted by the server)');
     console.log(JSON.stringify({ status: 'error', message: 'Cookies not captured within ${Math.round(pollBudgetMs / 1000)}s: ' + missing }));
   }
 })();

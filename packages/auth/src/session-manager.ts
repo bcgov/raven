@@ -8,11 +8,14 @@ import {
   readCachedSession,
   writeCachedSession,
   clearCachedSession,
+  clearCachedSessionIf,
+  isUsableSmsession,
 } from "./cookie-cache.js";
 import {
   authProfileDir,
   buildCaptureScript,
   ensureProfileDir,
+  isLoginRedirect,
   resolveAutofillCredentials,
   siteMinderProbeUrl,
   siteMinderWebUrl,
@@ -23,6 +26,43 @@ import { BROWSER_USER_AGENT } from "./browser-ua.js";
 
 const DEFAULT_CACHE_PATH = join(homedir(), ".workflow-suite", "session.json");
 const DEFAULT_TTL = 1500; // 25 minutes
+const PROBE_TIMEOUT_MS = 15_000;
+
+/** Whether the server currently honours a cookie. `unknown` = could not tell. */
+export type ProbeVerdict = "live" | "dead" | "unknown";
+
+/** Result of checking the cached cookie against the server. */
+export type CacheCheck =
+  | { state: "none" }
+  | { state: ProbeVerdict; cookie: string };
+
+/**
+ * Ask the SiteMinder-protected page whether it honours `cookie`. A redirect
+ * into the login flow or a 401/403 is `dead`; a transport error or 5xx is
+ * `unknown` so a network blip never discards a working session.
+ */
+export async function probeSession(
+  cookie: string,
+  probeUrl: string,
+  fetchImpl: typeof fetch = globalThis.fetch
+): Promise<ProbeVerdict> {
+  try {
+    const response = await fetchImpl(probeUrl, {
+      headers: { Cookie: `SMSESSION=${cookie}`, "User-Agent": BROWSER_USER_AGENT },
+      redirect: "manual",
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    const { status } = response;
+    if (status === 401 || status === 403) return "dead";
+    if (status >= 300 && status < 400) {
+      return isLoginRedirect(status, response.headers.get("location") ?? "") ? "dead" : "live";
+    }
+    if (status >= 200 && status < 300) return "live";
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 
 /**
  * Manages SMSESSION cookie lifecycle: cache, refresh, and browser-based capture.
@@ -71,7 +111,7 @@ export class SessionManager {
 
     // 3. Environment variable
     const envCookie = process.env["SMSESSION"];
-    if (envCookie) {
+    if (isUsableSmsession(envCookie)) {
       this.smsession = envCookie;
       await writeCachedSession(this.config.cachePath, envCookie);
       this.log("Loaded SMSESSION from environment variable");
@@ -114,14 +154,18 @@ export class SessionManager {
     const profileDir = authProfileDir();
     await ensureProfileDir(profileDir);
     const credentials = resolveAutofillCredentials(process.env);
+    const probeUrl = siteMinderProbeUrl(this.config.targetUrl);
 
     const script = buildCaptureScript({
-      targetUrl: siteMinderProbeUrl(this.config.targetUrl),
+      targetUrl: probeUrl,
       cookieNames: ["SMSESSION"],
       profileDir,
       userAgent: BROWSER_USER_AGENT,
       navTimeoutMs: 120_000,
       pollBudgetMs: 120_000,
+      // The persistent profile can already hold a dead SMSESSION; only accept
+      // one the protected page actually honours.
+      verifyUrl: probeUrl,
       autofill: credentials !== null,
     });
 
@@ -153,7 +197,7 @@ export class SessionManager {
       const parsed: CaptureResult = JSON.parse(result.trim());
       const smsession = parsed.cookies?.["SMSESSION"];
 
-      if (parsed.status !== "ok" || !smsession) {
+      if (parsed.status !== "ok" || !isUsableSmsession(smsession)) {
         throw new Error(
           parsed.message ?? "Authentication failed: no cookie captured"
         );
@@ -170,6 +214,7 @@ export class SessionManager {
         `No valid SMSESSION found. Browser auth failed: ${msg}\n\n` +
         `To fix this, run one of:\n` +
         `  1. npx raven-auth          (opens browser for IDIR login)\n` +
+        `     npx raven-auth --force  (re-login even if the cached session looks fresh)\n` +
         `  2. Set SMSESSION env var  (paste cookie value from browser DevTools)\n\n` +
         `The session caches to ~/.workflow-suite/session.json for 25 minutes.`
       );
@@ -177,12 +222,49 @@ export class SessionManager {
   }
 
   /**
-   * Invalidate the current session (e.g., on 302/expiry detection).
+   * Check the cached cookie against the server rather than trusting its age:
+   * a cookie can be minutes old and already dead server-side.
+   *
+   * @param fetchImpl - Override the transport (tests).
    */
-  async invalidate(): Promise<void> {
+  async checkCache(fetchImpl?: typeof fetch): Promise<CacheCheck> {
+    const cookie = await readCachedSession(
+      this.config.cachePath,
+      this.config.sessionTtlSeconds
+    );
+    if (!cookie) return { state: "none" };
+
+    const state = await probeSession(
+      cookie,
+      siteMinderProbeUrl(this.config.targetUrl),
+      fetchImpl
+    );
+    return { state, cookie };
+  }
+
+  /**
+   * Invalidate the current session (e.g., on 302/expiry detection).
+   *
+   * Pass the cookie that just failed: the disk cache is then removed only if
+   * it still holds that cookie. Long-lived MCP servers keep their cookie in
+   * memory, so a re-login done elsewhere (the CLI, a sibling server) would
+   * otherwise be deleted here and the next call would launch another browser
+   * instead of adopting it.
+   */
+  async invalidate(failedCookie?: string): Promise<void> {
     this.smsession = null;
-    await clearCachedSession(this.config.cachePath);
-    this.log("Session invalidated");
+    if (failedCookie === undefined) {
+      await clearCachedSession(this.config.cachePath);
+      this.log("Session invalidated");
+      return;
+    }
+
+    const removed = await clearCachedSessionIf(this.config.cachePath, failedCookie);
+    this.log(
+      removed
+        ? "Session invalidated"
+        : "Session invalidated (kept a newer cached login)"
+    );
   }
 
   /** User agent string for HTTP requests (matches Playwright browser) */

@@ -117,8 +117,9 @@ export async function createAuthenticatedFetch(
 
     // Check for session expiry
     if (isSessionExpired(response)) {
-      // Invalidate and retry once
-      await sessionManager.invalidate();
+      // Invalidate and retry once. Name the cookie that failed so a fresher
+      // login cached by another process is adopted, not deleted.
+      await sessionManager.invalidate(currentCookie);
       const freshCookie = await sessionManager.getSession();
 
       const retryHeaders = new Headers(init?.headers);

@@ -9,32 +9,49 @@
  *
  * Usage:
  *   npx raven-auth                    # SiteMinder (default)
+ *   npx raven-auth --force            # SiteMinder, ignore the cached session
  *   npx raven-auth --sharepoint       # SharePoint Online
  *   node packages/auth/dist/cli.js
  */
 
 import { SessionManager } from "./session-manager.js";
-import { readCachedSession } from "./cookie-cache.js";
 import { SpoSessionManager } from "./spo-session-manager.js";
 import { readCachedSpoSession } from "./spo-cookie-cache.js";
 import { loadEnv } from "./load-env.js";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
-const cachePath = join(homedir(), ".workflow-suite", "session.json");
 const spoCachePath = join(homedir(), ".workflow-suite", "spo-session.json");
 
 async function siteMinderAuth(): Promise<void> {
   console.log("RAVEN Auth - SiteMinder Session Manager");
   console.log("======================================\n");
 
-  // Check if we already have a valid session
-  const existing = await readCachedSession(cachePath, 1500);
-  if (existing) {
-    console.log("Valid SMSESSION found in cache.");
-    console.log(`  Cache:  ~/.workflow-suite/session.json`);
-    console.log("\nYour RAVEN tools should work. Session refreshes automatically.");
-    return;
+  const sm = new SessionManager();
+
+  if (process.argv.includes("--force")) {
+    console.log("--force: ignoring any cached session.\n");
+    await sm.invalidate();
+  } else {
+    // A cookie's age says nothing about whether the server still honours it,
+    // so ask the server before declaring the cache good.
+    const check = await sm.checkCache();
+    if (check.state === "live") {
+      console.log("Valid SMSESSION found in cache (confirmed with the server).");
+      console.log(`  Cache:  ~/.workflow-suite/session.json`);
+      console.log("\nYour RAVEN tools should work. Session refreshes automatically.");
+      return;
+    }
+    if (check.state === "unknown") {
+      console.log("A cached SMSESSION exists, but the server could not be reached to confirm it.");
+      console.log("Check your VPN/network; run with --force to log in again regardless.");
+      return;
+    }
+    if (check.state === "dead") {
+      console.log("The cached SMSESSION was rejected by the server (expired or logged off).");
+      console.log("Discarding it and logging in again...\n");
+      await sm.invalidate(check.cookie);
+    }
   }
 
   console.log("No valid session found. Opening browser for IDIR login...");
@@ -43,8 +60,6 @@ async function siteMinderAuth(): Promise<void> {
   console.log("  - The window closes automatically once authenticated");
   console.log("  - If a page shows 'This site can't be reached', it retries");
   console.log("    automatically; refresh the page manually if it lingers\n");
-
-  const sm = new SessionManager();
 
   try {
     await sm.authenticate();

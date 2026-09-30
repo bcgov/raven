@@ -1,4 +1,5 @@
-export { SessionManager } from "./session-manager.js";
+export { SessionManager, probeSession } from "./session-manager.js";
+export type { CacheCheck, ProbeVerdict } from "./session-manager.js";
 export {
   createAuthenticatedFetch,
   createBasicAuthFetch,
@@ -28,6 +29,8 @@ export {
   readCachedSession,
   writeCachedSession,
   clearCachedSession,
+  clearCachedSessionIf,
+  isUsableSmsession,
 } from "./cookie-cache.js";
 export { PiScrubber } from "./pi-scrubber.js";
 export {
@@ -93,6 +96,8 @@ export {
   authProfileDir,
   buildCaptureScript,
   ensureProfileDir,
+  isLoginRedirect,
+  LOGIN_REDIRECT_PATTERN,
   resolveAutofillCredentials,
   siteMinderProbeUrl,
   siteMinderWebUrl,
