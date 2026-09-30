@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -80,6 +80,28 @@ describe("SMSESSION cache", () => {
       await writeCachedSession(cachePath, "real-cookie", "apps.example.gov.bc.ca");
       expect(JSON.parse(await readFile(cachePath, "utf-8")).smsession).toBe("real-cookie");
     });
+
+    it("replaces the file atomically: no temp files left behind and readers never see partial JSON", async () => {
+      // A plain writeFile truncates in place, so a sibling reading mid-write
+      // saw a half-written file and (via the corrupt-file path) deleted it.
+      const writes = Array.from({ length: 25 }, (_, i) =>
+        writeCachedSession(cachePath, `cookie-${i}`, "apps.example.gov.bc.ca")
+      );
+      const reads = Array.from({ length: 50 }, async () => {
+        try {
+          return JSON.parse(await readFile(cachePath, "utf-8")).smsession as string;
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+          throw err; // a SyntaxError here means a torn read
+        }
+      });
+
+      const observed = await Promise.all([...reads, ...writes]);
+
+      expect(observed.filter((v) => typeof v === "string").every((v) => /^cookie-\d+$/.test(v as string))).toBe(true);
+      expect((await readdir(dir)).sort()).toEqual(["session.json"]);
+      expect((await stat(cachePath)).mode & 0o777).toBe(0o600);
+    });
   });
 
   describe("clearCachedSessionIf", () => {
@@ -104,6 +126,12 @@ describe("SMSESSION cache", () => {
 
     it("is a no-op when there is no cache file", async () => {
       expect(await clearCachedSessionIf(cachePath, "dead-cookie")).toBe(false);
+    });
+
+    it("leaves an unparseable file alone instead of deleting what may be a sibling's in-flight write", async () => {
+      await writeFile(cachePath, '{"smsession": "fresh-cook');
+      expect(await clearCachedSessionIf(cachePath, "dead-cookie")).toBe(false);
+      expect(await readFile(cachePath, "utf-8")).toBe('{"smsession": "fresh-cook');
     });
   });
 });

@@ -13,13 +13,8 @@ export interface AuthConfig {
   cachePath: string;
   /** Session TTL in seconds (default: 1500 = 25 minutes) */
   sessionTtlSeconds: number;
-}
-
-/** Result from the Playwright auth subprocess */
-export interface AuthResult {
-  status: "ok" | "error";
-  smsession?: string;
-  message?: string;
+  /** Cross-process lock serialising captures on the shared browser profile (default: beside the profile) */
+  lockPath?: string;
 }
 
 /** A fetch-like function with authentication attached */
@@ -56,12 +51,6 @@ export interface SpoAuthConfig {
   cachePath: string;
   /** Session TTL in seconds (default: 28800 = 8 hours) */
   sessionTtlSeconds: number;
-}
-
-/** Result from the SPO Playwright auth subprocess */
-export interface SpoAuthResult {
-  status: "ok" | "error";
-  fedAuth?: string;
-  rtFa?: string;
-  message?: string;
+  /** Cross-process lock serialising captures on the shared browser profile (default: beside the profile) */
+  lockPath?: string;
 }

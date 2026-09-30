@@ -34,20 +34,36 @@ export interface AutofillCredentials {
 }
 
 /**
+ * The cross-process lock that serialises captures on the shared profile
+ * (see `withAuthLock`). It lives beside the profile directory.
+ */
+export function authLockPath(): string {
+  return join(homedir(), ".workflow-suite", "browser-profile.lock");
+}
+
+/**
  * Resolve autofill credentials from the environment: the dedicated
  * IDIR_USERNAME/IDIR_PASSWORD pair first, else ATLASSIAN_EMAIL/
  * ATLASSIAN_PASSWORD (which already hold the same IDIR credentials for
  * the BWA Basic-auth route). RAVEN_AUTH_AUTOFILL=off disables autofill
- * entirely. Returns null when disabled or incomplete.
+ * entirely. Only a complete pair is ever used: a half-configured IDIR pair
+ * is skipped rather than combined with the other account's half, because a
+ * mismatched login burns IDIR lockout attempts. Returns null when disabled
+ * or when neither pair is complete.
  */
 export function resolveAutofillCredentials(
   env: Record<string, string | undefined>
 ): AutofillCredentials | null {
   if (env["RAVEN_AUTH_AUTOFILL"] === "off") return null;
-  const username = env["IDIR_USERNAME"] ?? env["ATLASSIAN_EMAIL"];
-  const password = env["IDIR_PASSWORD"] ?? env["ATLASSIAN_PASSWORD"];
-  if (!username || !password) return null;
-  return { username, password };
+
+  const pairs: ReadonlyArray<readonly [string | undefined, string | undefined]> = [
+    [env["IDIR_USERNAME"], env["IDIR_PASSWORD"]],
+    [env["ATLASSIAN_EMAIL"], env["ATLASSIAN_PASSWORD"]],
+  ];
+  for (const [username, password] of pairs) {
+    if (username && password) return { username, password };
+  }
+  return null;
 }
 
 /**
@@ -77,17 +93,35 @@ export function siteMinderWebUrl(baseUrl: string): string {
   }
 }
 
-/**
- * Locations that mean "you are being sent to log in": the SiteMinder/BC Gov
- * logon pages, the Entra login host, and SiteMinder's fedLaunch hop. Shared by
- * the Node-side session probe and the generated capture script so both judge a
- * cookie the same way.
- */
-export const LOGIN_REDIRECT_PATTERN = /(?:login|logon|signin|siteminder|fedlaunch)/i;
+// What "you are being sent to log in" looks like. Matched on the parsed
+// Location, never as a substring of the whole value, so an application's own
+// canonical redirect (a Jenkins job called `login-service`) is not mistaken
+// for SiteMinder. Shared by the Node-side probes and the generated capture
+// script so both judge a cookie the same way.
+
+/** BC Gov logon hosts (logon7, logontest7, loginproxy...) and the Entra login host. */
+export const LOGIN_HOST_PATTERN = /^(?:(?:logon|login)[a-z0-9-]*\.gov\.bc\.ca|login\.microsoftonline\.com)$/i;
+/** Paths owned by SiteMinder itself. */
+export const LOGIN_PATH_PATTERN = /\/(?:siteminderagent|clp-cgi)\//i;
+/** Query parameters SiteMinder adds when it bounces a request to login. */
+export const LOGIN_QUERY_PATTERN = /(?:^|[?&])(?:SMAGENTNAME|SMAUTHREASON|fedLaunch)(?:=|&|$)/i;
 
 /** Whether a response is a redirect into the login flow. */
 export function isLoginRedirect(status: number, location: string): boolean {
-  return status >= 300 && status < 400 && LOGIN_REDIRECT_PATTERN.test(location);
+  if (status < 300 || status >= 400) return false;
+  let url: URL;
+  try {
+    // Relative locations resolve against a placeholder; only SiteMinder paths
+    // and query parameters can match those, never a host.
+    url = new URL(location, "https://placeholder.invalid");
+  } catch {
+    return false;
+  }
+  return (
+    LOGIN_HOST_PATTERN.test(url.hostname) ||
+    LOGIN_PATH_PATTERN.test(url.pathname) ||
+    LOGIN_QUERY_PATTERN.test(url.search)
+  );
 }
 
 /** Options for {@link buildCaptureScript}. */
@@ -241,7 +275,15 @@ ${opts.autofill ? AUTOFILL_SNIPPET : ""}
   const wanted = ${JSON.stringify(opts.cookieNames)};
   const domainFilter = ${opts.cookieDomainFilter ? JSON.stringify(opts.cookieDomainFilter) : "null"};
   const verifyUrl = ${opts.verifyUrl ? JSON.stringify(opts.verifyUrl) : "null"};
-  const LOGIN_REDIRECT = new RegExp(${JSON.stringify(LOGIN_REDIRECT_PATTERN.source)}, 'i');
+  // Same rules as isLoginRedirect() in capture-script.ts, on the parsed Location.
+  const LOGIN_HOST = new RegExp(${JSON.stringify(LOGIN_HOST_PATTERN.source)}, 'i');
+  const LOGIN_PATH = new RegExp(${JSON.stringify(LOGIN_PATH_PATTERN.source)}, 'i');
+  const LOGIN_QUERY = new RegExp(${JSON.stringify(LOGIN_QUERY_PATTERN.source)}, 'i');
+  function isLoginLocation(location) {
+    let url;
+    try { url = new URL(location, 'https://placeholder.invalid'); } catch (e) { return false; }
+    return LOGIN_HOST.test(url.hostname) || LOGIN_PATH.test(url.pathname) || LOGIN_QUERY.test(url.search);
+  }
 
   // The persistent profile keeps cookies between runs, so the jar can already
   // hold SiteMinder's SMSESSION=LOGGEDOFF marker (or an expired real value)
@@ -259,7 +301,7 @@ ${opts.autofill ? AUTOFILL_SNIPPET : ""}
       const status = res.status();
       const location = (res.headers() || {})['location'] || '';
       if (status === 401 || status === 403) return 'dead';
-      if (status >= 300 && status < 400) return LOGIN_REDIRECT.test(location) ? 'dead' : 'live';
+      if (status >= 300 && status < 400) return isLoginLocation(location) ? 'dead' : 'live';
       if (status >= 200 && status < 300) return 'live';
       return 'unknown';
     } catch (probeErr) {

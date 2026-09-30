@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +22,7 @@ const captureOutput = (cookie: string) =>
 
 describe("SessionManager", () => {
   let cachePath: string;
+  let lockPath: string;
   let savedEnvCookie: string | undefined;
 
   const seed = (smsession: string, ageSeconds = 0) =>
@@ -34,11 +35,12 @@ describe("SessionManager", () => {
       })
     );
   const manager = () =>
-    new SessionManager({ targetUrl: TARGET, cachePath, sessionTtlSeconds: 1500 });
+    new SessionManager({ targetUrl: TARGET, cachePath, lockPath, sessionTtlSeconds: 1500 });
 
   beforeEach(async () => {
     home.dir = await mkdtemp(join(tmpdir(), "auth-home-"));
     cachePath = join(home.dir, "session.json");
+    lockPath = join(home.dir, "browser-profile.lock");
     savedEnvCookie = process.env["SMSESSION"];
     delete process.env["SMSESSION"];
     vi.mocked(execFileSync).mockReset();
@@ -63,6 +65,47 @@ describe("SessionManager", () => {
 
       await expect(manager().authenticate()).resolves.toBe("real-cookie");
       expect(JSON.parse(await readFile(cachePath, "utf-8")).smsession).toBe("real-cookie");
+    });
+
+    it("adopts the login another process finishes while waiting for the profile lock, without a second browser", async () => {
+      // Two servers hit expiry together; Chromium lets one process own the
+      // persistent profile. The waiter must reuse the winner's login rather
+      // than fail on the profile lock or launch another window.
+      await writeFile(lockPath, JSON.stringify({ pid: process.pid, at: Date.now(), token: "sibling" }));
+      const sibling = new Promise<void>((resolve) =>
+        setTimeout(async () => {
+          await seed("cookie-from-sibling");
+          await unlink(lockPath);
+          resolve();
+        }, 80)
+      );
+
+      await expect(manager().authenticate()).resolves.toBe("cookie-from-sibling");
+      await sibling;
+
+      expect(execFileSync).not.toHaveBeenCalled();
+    });
+
+    it("holds the profile lock only while the capture runs", async () => {
+      let heldDuringCapture = false;
+      vi.mocked(execFileSync).mockImplementation(() => {
+        heldDuringCapture = existsSync(lockPath);
+        return captureOutput("real-cookie");
+      });
+
+      await manager().authenticate();
+
+      expect(heldDuringCapture).toBe(true);
+      expect(existsSync(lockPath)).toBe(false);
+    });
+
+    it("releases the profile lock when the capture fails", async () => {
+      vi.mocked(execFileSync).mockImplementation(() => {
+        throw new Error("Chromium crashed");
+      });
+
+      await expect(manager().authenticate()).rejects.toThrow(/Browser auth failed/);
+      expect(existsSync(lockPath)).toBe(false);
     });
 
     it("has the capture confirm the cookie against the protected page before accepting it", async () => {

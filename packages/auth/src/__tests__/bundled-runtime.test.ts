@@ -17,6 +17,8 @@ describe("browser authentication subprocess runtime", () => {
     );
     const manager = new SessionManager({
       cachePath: join(tmpdir(), `raven-auth-${randomUUID()}.json`),
+      // Never contend with a real login holding the user's profile lock.
+      lockPath: join(tmpdir(), `raven-auth-${randomUUID()}.lock`),
     });
 
     await manager.authenticate();
@@ -37,6 +39,7 @@ describe("browser authentication subprocess runtime", () => {
     );
     const manager = new SpoSessionManager({
       cachePath: join(tmpdir(), `raven-spo-auth-${randomUUID()}.json`),
+      lockPath: join(tmpdir(), `raven-spo-auth-${randomUUID()}.lock`),
     });
 
     await manager.authenticate();

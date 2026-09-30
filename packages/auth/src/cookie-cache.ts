@@ -1,4 +1,5 @@
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { readFile, writeFile, mkdir, rename, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 import type { SessionData } from "./types.js";
@@ -69,7 +70,17 @@ export async function writeCachedSession(
     await mkdir(dir, { recursive: true, mode: 0o700 });
   }
 
-  await writeFile(cachePath, JSON.stringify(data, null, 2), { encoding: "utf-8", mode: 0o600 });
+  // Write to a sibling temp file and rename it into place. Renaming is atomic
+  // on one filesystem, so a concurrent reader sees the old file or the new
+  // one, never a truncated file mid-write.
+  const tmpPath = `${cachePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tmpPath, JSON.stringify(data, null, 2), { encoding: "utf-8", mode: 0o600 });
+    await rename(tmpPath, cachePath);
+  } catch (err) {
+    await unlink(tmpPath).catch(() => {});
+    throw err;
+  }
 }
 
 /**
@@ -85,23 +96,29 @@ export async function clearCachedSession(cachePath: string): Promise<void> {
 }
 
 /**
- * Delete the cache only if it still holds `failedCookie` (or holds nothing
- * usable). A sibling process or the CLI may have cached a fresher login since
- * the caller's cookie died; deleting that would throw the new login away.
- * Returns whether the file was removed.
+ * Delete the cache only if it still holds `failedCookie` (or a value that is
+ * not a usable session). A sibling process or the CLI may have cached a
+ * fresher login since the caller's cookie died; deleting that would throw the
+ * new login away. A file that cannot be read or parsed is left alone: writes
+ * are atomic, so it is not a sibling's half-finished write, and readers
+ * already ignore it until the next write replaces it. Returns whether the
+ * file was removed.
+ *
+ * The read and the unlink are two steps, so a sibling could still cache a new
+ * cookie between them. That window is well under a millisecond and the worst
+ * outcome is one extra login, so it is accepted rather than locked.
  */
 export async function clearCachedSessionIf(
   cachePath: string,
   failedCookie: string
 ): Promise<boolean> {
+  let data: SessionData;
   try {
-    if (!existsSync(cachePath)) return false;
-
-    const data: SessionData = JSON.parse(await readFile(cachePath, "utf-8"));
-    if (isUsableSmsession(data.smsession) && data.smsession !== failedCookie) return false;
+    data = JSON.parse(await readFile(cachePath, "utf-8"));
   } catch {
-    // Unreadable or corrupt cache is not worth keeping.
+    return false;
   }
+  if (isUsableSmsession(data.smsession) && data.smsession !== failedCookie) return false;
 
   await clearCachedSession(cachePath);
   return true;

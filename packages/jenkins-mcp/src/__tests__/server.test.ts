@@ -205,9 +205,16 @@ describe("Jenkins MCP server", () => {
       expect(factories.createSessionFetch).not.toHaveBeenCalled();
     });
 
-    it("does not fall back on an ordinary redirect inside Jenkins", async () => {
+    it.each([
+      `${BASE}/job/A/`,
+      `${BASE}/job/login-service/`,
+      `${BASE}/job/logon-audit/lastBuild/`,
+      "/int/jenkins/job/signin-tests/",
+    ])("does not fall back on an ordinary redirect inside Jenkins: %s", async (location) => {
+      // A job named login-service must not flip the whole process off valid
+      // Basic credentials and into interactive authentication.
       const basicFetch = vi.fn().mockResolvedValue(
-        new Response(null, { status: 302, headers: { Location: `${BASE}/job/A/` } }),
+        new Response(null, { status: 302, headers: { Location: location } }),
       );
       const factories = factoriesFor(basicFetch, vi.fn());
       const fetch = await createJenkinsFetch(BASE, { user: "jenkins-bot", password: "api-token" }, factories);

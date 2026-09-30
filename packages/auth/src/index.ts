@@ -78,7 +78,6 @@ export type { ServerEntry } from "./server-config.js";
 export type {
   SessionData,
   AuthConfig,
-  AuthResult,
   AuthenticatedFetch,
   BasicAuthConfig,
 } from "./types.js";
@@ -93,16 +92,21 @@ export {
 export type { AttachmentKind, McpContentBlock } from "./content-blocks.js";
 export { SpoSessionManager } from "./spo-session-manager.js";
 export {
+  authLockPath,
   authProfileDir,
   buildCaptureScript,
   ensureProfileDir,
   isLoginRedirect,
-  LOGIN_REDIRECT_PATTERN,
+  LOGIN_HOST_PATTERN,
+  LOGIN_PATH_PATTERN,
+  LOGIN_QUERY_PATTERN,
   resolveAutofillCredentials,
   siteMinderProbeUrl,
   siteMinderWebUrl,
 } from "./capture-script.js";
 export type { AutofillCredentials, CaptureResult, CaptureScriptOptions } from "./capture-script.js";
+export { withAuthLock } from "./auth-lock.js";
+export type { AuthLockOptions } from "./auth-lock.js";
 export { createSpoFetch, isSpoSessionExpired } from "./spo-http-client.js";
 export { spoLimiterOpts } from "./rate-limit.js";
 export {
@@ -114,7 +118,6 @@ export type {
   SpoCookies,
   SpoSessionData,
   SpoAuthConfig,
-  SpoAuthResult,
 } from "./types.js";
 export {
   AuditLog,

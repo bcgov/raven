@@ -1,8 +1,16 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SpoSessionManager } from "../spo-session-manager.js";
+
+// A wrong implementation must fail the test, not open a real browser.
+vi.mock("node:child_process", () => ({
+  execFileSync: vi.fn(() => {
+    throw new Error("a browser capture must not be launched in this test");
+  }),
+}));
 import { writeCachedSpoSession, readCachedSpoSession } from "../spo-cookie-cache.js";
 
 let dir: string;
@@ -60,6 +68,26 @@ describe("SpoSessionManager", () => {
     await sm.getSession();
     await sm.invalidate();
     expect(await readCachedSpoSession(cachePath)).toBeNull();
+  });
+
+  it("adopts the login another process finishes while waiting for the shared profile lock", async () => {
+    // SharePoint and SiteMinder captures share one Chromium profile, so they
+    // share one lock too; the waiter reuses the winner's cookies.
+    const lockPath = join(dir, "browser-profile.lock");
+    await writeFile(lockPath, JSON.stringify({ pid: process.pid, at: Date.now(), token: "sibling" }));
+    const sibling = new Promise<void>((resolve) =>
+      setTimeout(async () => {
+        await writeCachedSpoSession(cachePath, { fedAuth: "sibling-fa", rtFa: "sibling-rt" }, "example.sharepoint.com");
+        await unlink(lockPath);
+        resolve();
+      }, 80)
+    );
+
+    const sm = new SpoSessionManager({ cachePath, lockPath });
+    await expect(sm.authenticate()).resolves.toEqual({ fedAuth: "sibling-fa", rtFa: "sibling-rt" });
+    await sibling;
+
+    expect(execFileSync).not.toHaveBeenCalled();
   });
 
   it("exposes targetUrl and a browser user agent", () => {

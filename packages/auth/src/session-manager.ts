@@ -12,6 +12,7 @@ import {
   isUsableSmsession,
 } from "./cookie-cache.js";
 import {
+  authLockPath,
   authProfileDir,
   buildCaptureScript,
   ensureProfileDir,
@@ -21,6 +22,7 @@ import {
   siteMinderWebUrl,
   type CaptureResult,
 } from "./capture-script.js";
+import { withAuthLock } from "./auth-lock.js";
 import type { AuthConfig } from "./types.js";
 import { BROWSER_USER_AGENT } from "./browser-ua.js";
 import { authCliPath } from "./auth-cli-path.js";
@@ -88,6 +90,7 @@ export class SessionManager {
           : "https://apps.example.gov.bc.ca/int/confluence"),
       cachePath: config?.cachePath ?? DEFAULT_CACHE_PATH,
       sessionTtlSeconds: config?.sessionTtlSeconds ?? DEFAULT_TTL,
+      lockPath: config?.lockPath,
     };
   }
 
@@ -148,12 +151,35 @@ export class SessionManager {
    * completes the flow with no typing; when a full login is needed,
    * credentials autofill from the environment and only the MFA prompt is
    * left to the human.
+   *
+   * Captures are serialised across processes: Chromium lets one process own
+   * the persistent profile, and several MCP servers can hit expiry at once.
+   * Having won the lock, this re-checks the cache first, so a waiter adopts
+   * the login the previous owner just finished rather than opening a second
+   * browser.
    */
   async authenticate(): Promise<string> {
-    this.log("Starting browser authentication flow...");
-
     const profileDir = authProfileDir();
     await ensureProfileDir(profileDir);
+
+    return withAuthLock(this.config.lockPath ?? authLockPath(), async () => {
+      const adopted = await readCachedSession(
+        this.config.cachePath,
+        this.config.sessionTtlSeconds
+      );
+      if (adopted) {
+        this.smsession = adopted;
+        this.log("Adopted the session another process just captured");
+        return adopted;
+      }
+      return this.captureSession(profileDir);
+    });
+  }
+
+  /** Run the browser capture and cache the result. Callers hold the auth lock. */
+  private async captureSession(profileDir: string): Promise<string> {
+    this.log("Starting browser authentication flow...");
+
     const credentials = resolveAutofillCredentials(process.env);
     const probeUrl = siteMinderProbeUrl(this.config.targetUrl);
 

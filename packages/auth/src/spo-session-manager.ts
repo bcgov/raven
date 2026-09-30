@@ -10,12 +10,14 @@ import {
   clearCachedSpoSession,
 } from "./spo-cookie-cache.js";
 import {
+  authLockPath,
   authProfileDir,
   buildCaptureScript,
   ensureProfileDir,
   resolveAutofillCredentials,
   type CaptureResult,
 } from "./capture-script.js";
+import { withAuthLock } from "./auth-lock.js";
 import type { SpoAuthConfig, SpoCookies } from "./types.js";
 import { BROWSER_USER_AGENT } from "./browser-ua.js";
 import { authCliPath } from "./auth-cli-path.js";
@@ -48,6 +50,7 @@ export class SpoSessionManager {
       sessionTtlSeconds:
         config?.sessionTtlSeconds ??
         (Number(process.env["SHAREPOINT_SESSION_TTL"]) || DEFAULT_TTL),
+      lockPath: config?.lockPath,
     };
   }
 
@@ -90,12 +93,33 @@ export class SpoSessionManager {
    * session usually completes the flow with no typing; when a full login is
    * needed, credentials autofill from the environment and only the MFA
    * prompt is left to the human.
+   *
+   * Shares the profile (and so the cross-process lock) with the SiteMinder
+   * capture; after winning the lock it adopts a session another process just
+   * cached instead of opening a second browser.
    */
   async authenticate(): Promise<SpoCookies> {
-    this.log("Starting SPO browser authentication flow...");
-
     const profileDir = authProfileDir();
     await ensureProfileDir(profileDir);
+
+    return withAuthLock(this.config.lockPath ?? authLockPath(), async () => {
+      const adopted = await readCachedSpoSession(
+        this.config.cachePath,
+        this.config.sessionTtlSeconds,
+      );
+      if (adopted) {
+        this.cookies = adopted;
+        this.log("Adopted the SPO session another process just captured");
+        return adopted;
+      }
+      return this.captureSession(profileDir);
+    });
+  }
+
+  /** Run the browser capture and cache the result. Callers hold the auth lock. */
+  private async captureSession(profileDir: string): Promise<SpoCookies> {
+    this.log("Starting SPO browser authentication flow...");
+
     const credentials = resolveAutofillCredentials(process.env);
 
     const script = buildCaptureScript({

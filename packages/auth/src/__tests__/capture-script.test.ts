@@ -79,6 +79,35 @@ describe("resolveAutofillCredentials", () => {
     expect(resolveAutofillCredentials({})).toBeNull();
   });
 
+  it("never pairs one account's username with the other account's password", () => {
+    // A half-configured IDIR_* pair next to a full Atlassian pair used to
+    // submit a mismatched login, which burns IDIR lockout attempts.
+    expect(
+      resolveAutofillCredentials({
+        IDIR_USERNAME: "jdoe",
+        ATLASSIAN_EMAIL: "jane@example.com",
+        ATLASSIAN_PASSWORD: "atlassian-pw",
+      })
+    ).toEqual({ username: "jane@example.com", password: "atlassian-pw" });
+
+    expect(
+      resolveAutofillCredentials({
+        IDIR_PASSWORD: "idir-pw",
+        ATLASSIAN_EMAIL: "jane@example.com",
+        ATLASSIAN_PASSWORD: "atlassian-pw",
+      })
+    ).toEqual({ username: "jane@example.com", password: "atlassian-pw" });
+  });
+
+  it("returns null rather than a mixed pair when neither account is complete", () => {
+    expect(
+      resolveAutofillCredentials({ IDIR_USERNAME: "jdoe", ATLASSIAN_PASSWORD: "atlassian-pw" })
+    ).toBeNull();
+    expect(
+      resolveAutofillCredentials({ IDIR_PASSWORD: "idir-pw", ATLASSIAN_EMAIL: "jane@example.com" })
+    ).toBeNull();
+  });
+
   it("honours the off switch", () => {
     expect(
       resolveAutofillCredentials({
@@ -200,6 +229,28 @@ describe("isLoginRedirect", () => {
   ])("does not flag a live response: %i %j", (status, location) => {
     expect(isLoginRedirect(status, location)).toBe(false);
   });
+
+  it.each([
+    "/job/login-service/",
+    "https://jenkins.example.gov.bc.ca/int/jenkins/job/login-service/",
+    "/int/jenkins/job/logon-audit/lastBuild/",
+    "/int/jenkins/job/signin-tests/",
+    "https://apps.example.gov.bc.ca/int/jenkins/user/login-bot/",
+  ])("does not mistake an ordinary in-app redirect for SiteMinder: %s", (location) => {
+    // A substring match on "login" sent Jenkins canonical redirects such as
+    // /job/login-service/ down the interactive-auth path.
+    expect(isLoginRedirect(302, location)).toBe(false);
+  });
+
+  it.each([
+    "https://logontest7.gov.bc.ca/clp-cgi/capBceid/logon.cgi",
+    "https://loginproxy.gov.bc.ca/auth/realms/standard",
+    "https://apps.example.gov.bc.ca/clp-cgi/dirSelect.cgi?x=1",
+    "https://apps.example.gov.bc.ca/int/jenkins/?SMAGENTNAME=abc",
+    "https://apps.example.gov.bc.ca/x?SMAUTHREASON=0",
+  ])("still recognises other SiteMinder/IdP redirects: %s", (location) => {
+    expect(isLoginRedirect(302, location)).toBe(true);
+  });
 });
 
 /**
@@ -314,6 +365,14 @@ describe("capture script cookie acceptance", () => {
     const result = await capture(
       { jar: ["live-cookie"], probes: { "live-cookie": { status: 302, location: "/int/confluence/dashboard.action" } } },
       { verify: true }
+    );
+    expect(result).toEqual({ status: "ok", cookies: { SMSESSION: "live-cookie" } });
+  });
+
+  it("does not reject a live cookie because an in-app redirect mentions login", async () => {
+    const result = await capture(
+      { jar: ["live-cookie"], probes: { "live-cookie": { status: 302, location: "/int/jenkins/job/login-service/" } } },
+      { verify: true, pollBudgetMs: 400 }
     );
     expect(result).toEqual({ status: "ok", cookies: { SMSESSION: "live-cookie" } });
   });
