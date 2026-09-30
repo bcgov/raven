@@ -141,7 +141,7 @@ jobs:
             build/release/*.sbom.spdx.json
 
       - name: Attest bundle SBOM
-        uses: actions/attest-sbom@v3
+        uses: actions/attest-sbom@v4
         with:
           subject-path: build/release/*.tar.gz
           sbom-path: build/release/raven-${{ needs.prepare.outputs.version }}-${{ matrix.platform }}.sbom.spdx.json
