@@ -2,6 +2,7 @@ import type { SpoSessionManager } from "./spo-session-manager.js";
 import type { AuthenticatedFetch } from "./types.js";
 import { setCookieHeader } from "./http-client.js";
 import { wrapFetchWithLimits, spoLimiterOpts } from "./rate-limit.js";
+import { authCliPath } from "./auth-cli-path.js";
 
 /**
  * Check whether a SharePoint Online response indicates an expired or missing
@@ -35,7 +36,7 @@ export function isSpoSessionExpired(response: Response): boolean {
  * SPO twin of createAuthenticatedFetch (SMSESSION).
  */
 export async function createSpoFetch(
-  sessionManager: SpoSessionManager
+  sessionManager: SpoSessionManager,
 ): Promise<AuthenticatedFetch> {
   // Eagerly resolve once so auth problems surface at client construction.
   await sessionManager.getSession();
@@ -44,7 +45,10 @@ export async function createSpoFetch(
   // outbound request per SharePoint round-trip.
   const limitedFetch = wrapFetchWithLimits(globalThis.fetch, spoLimiterOpts());
 
-  const buildHeaders = (init: RequestInit | undefined, cookies: { fedAuth: string; rtFa: string }): Headers => {
+  const buildHeaders = (
+    init: RequestInit | undefined,
+    cookies: { fedAuth: string; rtFa: string },
+  ): Headers => {
     const headers = new Headers(init?.headers);
     setCookieHeader(headers, "FedAuth", cookies.fedAuth);
     setCookieHeader(headers, "rtFa", cookies.rtFa);
@@ -75,7 +79,7 @@ export async function createSpoFetch(
     if (isSpoSessionExpired(retryResponse)) {
       throw new Error(
         "SharePoint session expired and re-authentication failed. " +
-          "Run: npx raven-auth --sharepoint"
+          `Run: "${process.execPath}" "${authCliPath}" --sharepoint`,
       );
     }
 

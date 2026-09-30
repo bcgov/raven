@@ -5,6 +5,7 @@ node_modules/
 dist/
 *.tsbuildinfo
 *.pid
+build/
 
 # Local runtime data — may contain fetched Jira/IMIS content (PII). NEVER commit.
 .cache/

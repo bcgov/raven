@@ -6,6 +6,9 @@ Built by the Epsilon team at Connected Services BC (NR Sector Digital Services).
 
 > **Docs:** setup & usage (this file) · [tool catalog & env vars](docs/TOOL_INVENTORY.md) · [architecture & security](docs/SYSTEM_DESIGN_AND_ARCHITECTURE.md)
 
+> **Releases:** signed bundled runtimes, verification, and the transitional
+> pinned-source model are documented in [Packaging and Releases](docs/RELEASES.md).
+
 ## What It Does
 
 RAVEN gives your local LLM direct access to our Atlassian tools via [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) servers, and includes an **autonomous DevOps pipeline** that detects production errors, triages them with AI, generates code fixes, and creates pull requests.

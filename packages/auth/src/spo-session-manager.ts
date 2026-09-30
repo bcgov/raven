@@ -18,8 +18,13 @@ import {
 } from "./capture-script.js";
 import type { SpoAuthConfig, SpoCookies } from "./types.js";
 import { BROWSER_USER_AGENT } from "./browser-ua.js";
+import { authCliPath } from "./auth-cli-path.js";
 
-const DEFAULT_CACHE_PATH = join(homedir(), ".workflow-suite", "spo-session.json");
+const DEFAULT_CACHE_PATH = join(
+  homedir(),
+  ".workflow-suite",
+  "spo-session.json",
+);
 const DEFAULT_TTL = 28800; // 8 hours
 
 /**
@@ -55,7 +60,7 @@ export class SpoSessionManager {
 
     const cached = await readCachedSpoSession(
       this.config.cachePath,
-      this.config.sessionTtlSeconds
+      this.config.sessionTtlSeconds,
     );
     if (cached) {
       this.cookies = cached;
@@ -108,7 +113,7 @@ export class SpoSessionManager {
       // Run from the monorepo root so require('playwright') resolves
       // from the hoisted node_modules regardless of the caller's cwd.
       const monorepoRoot = join(__dirname, "..", "..", "..");
-      const result = execFileSync("node", ["-e", script], {
+      const result = execFileSync(process.execPath, ["-e", script], {
         encoding: "utf-8",
         timeout: 240_000,
         cwd: monorepoRoot,
@@ -134,7 +139,7 @@ export class SpoSessionManager {
 
       if (parsed.status !== "ok" || !fedAuth || !rtFa) {
         throw new Error(
-          parsed.message ?? "Authentication failed: cookies not captured"
+          parsed.message ?? "Authentication failed: cookies not captured",
         );
       }
 
@@ -149,9 +154,9 @@ export class SpoSessionManager {
       throw new Error(
         `No valid SharePoint session found. Browser auth failed: ${msg}\n\n` +
           `To fix this, run one of:\n` +
-          `  1. npx raven-auth --sharepoint   (opens browser for IDIR/Entra login)\n` +
+          `  1. "${process.execPath}" "${authCliPath}" --sharepoint (opens browser for IDIR/Entra login)\n` +
           `  2. Set SPO_FEDAUTH and SPO_RTFA env vars (paste cookie values from browser DevTools)\n\n` +
-          `The session caches to ~/.workflow-suite/spo-session.json for 8 hours.`
+          `The session caches to ~/.workflow-suite/spo-session.json for 8 hours.`,
       );
     }
   }

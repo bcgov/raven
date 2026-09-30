@@ -18,7 +18,8 @@ import {
 
 loadEnv();
 
-const token = process.env.JARVIS_TOKEN;
+const releaseSmokeTest = process.env.RAVEN_RELEASE_SMOKE_TEST === "1";
+const token = releaseSmokeTest ? "release-smoke-test" : process.env.JARVIS_TOKEN;
 if (!token) {
   console.error("Error: JARVIS_TOKEN is not defined in the secure credential store (DPAPI or .env).");
   process.exit(1);
@@ -67,7 +68,9 @@ try {
     }
   });
 
-  await client.connect(sseTransport);
+  if (!releaseSmokeTest) {
+    await client.connect(sseTransport);
+  }
 
   // 2. Initialize our local stdio server
   const server = new Server({
