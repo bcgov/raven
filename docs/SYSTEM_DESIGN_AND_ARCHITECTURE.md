@@ -336,9 +336,9 @@ loadEnv()  →  process.env  →  SessionManager  →  HTTP Headers (Cookie / Au
 
 1. **The `.env` file on disk** (encrypted at rest via macOS FileVault)
 2. **Process memory** (ephemeral, cleared when the MCP server exits)
-3. **The environment of the short-lived browser-capture subprocess**, only while a browser login runs with autofill enabled (the default whenever `IDIR_*` or `ATLASSIAN_*` credentials are set; `RAVEN_AUTH_AUTOFILL=off` disables it). The password is typed into the identity provider's HTTPS login page and nowhere else.
+3. **The environment of the short-lived browser-capture subprocess.** It inherits the MCP server's whole environment, so every credential loaded from `.env`, for as long as a browser login runs. With autofill enabled (the default whenever complete `IDIR_*` or `ATLASSIAN_*` credentials are set; `RAVEN_AUTH_AUTOFILL=off` disables it) the password is also typed into the identity provider's HTTPS login page and nowhere else.
 
-The browser-capture profile (`~/.workflow-suite/browser-profile`, mode 0700) also holds identity-provider session cookies at rest, so a later login can complete without typing ("Stay signed in"). Deleting that directory ends those sessions.
+The browser-capture profile (`~/.workflow-suite/browser-profile`) also holds identity-provider session cookies at rest, so a later login can complete without typing ("Stay signed in"). On macOS and Linux Playwright runs Chromium with a mock keychain, so that cookie store is not encrypted by the system keychain: it is protected by the directory's mode (0700) and by disk encryption, and on Windows by the permissions on the user profile. Deleting the directory discards the local copy; the sessions themselves stay valid at the identity provider until they expire or are revoked.
 
 **Credentials are absent from:**
 
@@ -364,7 +364,7 @@ Both methods authenticate the **individual developer** — the MCP server operat
 - **Session cache:** `~/.workflow-suite/session.json` (local disk only, `chmod 600`, replaced atomically)
 - **Verification:** a captured cookie is accepted only after the SiteMinder-protected page confirms it works, and `raven-auth` checks a cached cookie against the server instead of trusting its age
 - **Expiry detection:** HTTP 302 redirects to login pages are detected; session is refreshed automatically
-- **Session sharing:** Each MCP server instance keeps its own in-memory cookie but they share the on-disk cache and one persistent browser profile. A lock file (`~/.workflow-suite/browser-profile.lock`) lets only one browser login run at a time, and a process that waited adopts the login the previous one completed. A failed login is remembered for 30 seconds (one small file per product beside the lock, holding only the time and a one-line reason), so queued requests fail fast instead of each opening another login and autofilling the password again; `raven-auth --force` clears it
+- **Session sharing:** Each MCP server instance keeps its own in-memory cookie but they share the on-disk cache and one persistent browser profile. A lock file (`~/.workflow-suite/browser-profile.lock`) lets only one browser login run at a time, and a process that waited adopts the login the previous one completed. A failed login is remembered for 30 seconds (one small file per product beside the lock, holding only the time and a one-line reason), so queued requests fail fast instead of each opening another login and autofilling the password again; the `raven-auth` command ignores that wait, so running it is always the way to retry now
 
 ---
 
@@ -661,7 +661,7 @@ The MCP protocol architecture makes this structurally difficult:
 | **SSH command injection** | Impossible | N/A | Command allowlist + shell metacharacter rejection makes injection structurally impossible |
 | **Path traversal on servers** | Impossible | N/A | Paths validated: must be absolute, no `..`, no metacharacters |
 | **Unauthorized system access** | Very Low | Medium | Uses authenticated user's permissions; no privilege escalation |
-| **Session token theft** | Low | Medium | Tokens stored in memory with 25-min TTL; disk cache at `chmod 600`; browser profile (identity-provider session cookies) at `chmod 700` |
+| **Session token theft** | Low | Medium | Tokens stored in memory with 25-min TTL; disk cache at `chmod 600`; browser profile (identity-provider session cookies) at `chmod 700`, not keychain-encrypted on macOS and Linux |
 | **Prompt injection via tool output** | Low | Low | Tool responses are treated as untrusted content by the AI client; no code execution path |
 | **Data exfiltration by AI** | Very Low | High | No arbitrary destination tools; Artifactory upload reads only from a protected directory and sends only to the configured internal HTTPS endpoint |
 | **Malicious tool modification** | Very Low | High | Tools are compiled TypeScript; source is code-reviewed; no runtime modification |

@@ -244,7 +244,7 @@ Log in once with a browser flow that captures the SharePoint FedAuth/rtFa sessio
 npx raven-auth --sharepoint
 ```
 
-The session is cached and reused across tool calls until `SHAREPOINT_SESSION_TTL` expires, then it re-prompts. If you already hold valid cookie values (e.g. from another tool), you can skip the browser login entirely by setting `SPO_FEDAUTH` and `SPO_RTFA` directly in `~/.raven/.env` instead.
+Add `--force` to ignore the cached pair and log in again. The session is cached and reused across tool calls until `SHAREPOINT_SESSION_TTL` expires, then it re-prompts. If you already hold valid cookie values (e.g. from another tool), you can skip the browser login entirely by setting `SPO_FEDAUTH` and `SPO_RTFA` directly in `~/.raven/.env` instead.
 
 When using Jira MCP tools, both `create_issue` and `update_issue` accept an optional `epicKey` parameter to set Epic Link.
 
@@ -635,7 +635,7 @@ Create `~/.raven/.env` with these three variables:
 
 Each MCP server loads this file at startup via `dotenv`. Credentials are injected into the server process only — they are never exposed to the LLM client.
 
-**Security:** Never commit credentials to git. The `~/.raven/` directory should be `chmod 700` and the `.env` file `chmod 600`. The password stays on your local machine — RAVEN never logs it, and the only place it is sent is the identity provider's own login page, when browser autofill is enabled (see below).
+**Security:** Never commit credentials to git. The `~/.raven/` directory should be `chmod 700` and the `.env` file `chmod 600`. RAVEN never logs `ATLASSIAN_PASSWORD`. It is sent only to the Atlassian host you configure (`ATLASSIAN_BASE_URL`), as the Basic Auth header, and, when browser autofill is enabled, typed into the identity provider's own login page (see below).
 
 ### SMSESSION Cookie (Fallback)
 
@@ -644,11 +644,11 @@ If Basic Auth env vars are not set, RAVEN falls back to SiteMinder cookie authen
 1. Checks for a cached session (`~/.workflow-suite/session.json`); an entry older than 25 minutes is ignored
 2. If expired or missing, checks the `SMSESSION` environment variable
 3. If neither exists, opens a Chromium browser for interactive IDIR login. A cookie is accepted only once the SiteMinder-protected page confirms it works, so a logged-off or expired cookie left in the browser is never cached
-4. The cookie is cached for 25 minutes and shared across Jira/Confluence/Bitbucket. Several MCP servers can hit expiry together: a lock file (`~/.workflow-suite/browser-profile.lock`) lets only one browser login run at a time, and the others adopt its result. If that login fails, the failure is remembered for 30 seconds (`~/.workflow-suite/browser-profile.lock.siteminder-failed`, or `.sharepoint-failed`), so queued requests fail fast with the reason instead of each opening another login window and typing the password again; `raven-auth --force` clears it
+4. The cookie is cached for 25 minutes and shared across Jira/Confluence/Bitbucket. Several MCP servers can hit expiry together: a lock file (`~/.workflow-suite/browser-profile.lock`) lets only one browser login run at a time, and the others adopt its result. If that login fails, the failure is remembered for 30 seconds (`~/.workflow-suite/browser-profile.lock.siteminder-failed`, or `.sharepoint-failed`), so queued requests fail fast with the reason instead of each opening another login window and typing the password again. The `raven-auth` command ignores that wait, so running it is always the way to retry now
 
-The browser uses a persistent profile (`~/.workflow-suite/browser-profile`, mode 0700), so an existing identity-provider session usually signs you in without typing. The profile keeps identity-provider session cookies on disk (with autofill enabled, Entra's "Stay signed in?" prompt is answered Yes so they persist); delete the directory to end those sessions.
+The browser uses a persistent profile (`~/.workflow-suite/browser-profile`), so an existing identity-provider session usually signs you in without typing. The profile keeps identity-provider session cookies on disk (with autofill enabled, Entra's "Stay signed in?" prompt is answered Yes so they persist). On macOS and Linux Playwright runs Chromium with a mock keychain, so these cookies are not encrypted by the system keychain: they are protected by the directory's mode (0700) and by disk encryption, and on Windows by the permissions on your user profile. Deleting the directory discards the local copy; the sessions stay valid at the identity provider until they expire or are revoked.
 
-**Autofill.** If `IDIR_USERNAME` and `IDIR_PASSWORD` are both set, they are typed into the identity provider's HTTPS login page; otherwise `ATLASSIAN_EMAIL` and `ATLASSIAN_PASSWORD` are used when both are set. The password is submitted at most once per login attempt, the second factor is always left to you, and anything other than the known identity-provider hosts is ignored. Set `RAVEN_AUTH_AUTOFILL=off` to disable autofill.
+**Autofill.** If `IDIR_USERNAME` and `IDIR_PASSWORD` are both set, they are typed into the identity provider's HTTPS login page; otherwise `ATLASSIAN_EMAIL` and `ATLASSIAN_PASSWORD` are used when both are set. The password is submitted at most once per login attempt (if it is rejected, the connection drops, or a second password prompt follows, the rest is left to you), the second factor is always left to you, a form that already shows a different account is left alone, and anything other than the known identity-provider hosts is ignored. Set `RAVEN_AUTH_AUTOFILL=off` to disable autofill.
 
 ```bash
 # Authenticate via browser (a cached session is first checked against the server)
