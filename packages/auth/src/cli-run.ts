@@ -81,9 +81,16 @@ async function siteMinderLogin(deps: CliDeps, force: boolean): Promise<number> {
     if (check.state === "dead") {
       deps.log("The cached SMSESSION was rejected by the server (expired or logged off).");
       deps.log("Discarding it and logging in again...\n");
-      // Not checked: it also reports false when a newer login replaced the
-      // cookie, and that login is then adopted below.
-      await sm.invalidate(check.cookie);
+      // A newer login that replaced the cookie counts as removed (it is adopted
+      // below); a cookie that is still cached would be adopted again, and the
+      // command would report a login it never made.
+      if (!(await sm.invalidate(check.cookie))) {
+        deps.error(
+          "Could not remove the cached session the server rejected, so it would be used again.\n" +
+            "Close anything that has ~/.workflow-suite/session.json open, or delete it, and run again."
+        );
+        return 1;
+      }
     }
   }
 

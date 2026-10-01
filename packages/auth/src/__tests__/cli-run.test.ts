@@ -63,6 +63,20 @@ describe("runCli: SiteMinder login", () => {
     expect(h.out()).toContain("rejected by the server");
   });
 
+  it("stops, rather than reporting success, when the cookie the server rejected cannot be removed from the cache", async () => {
+    // Left in place, the login below would adopt that very cookie again and the
+    // command would print "Authentication successful" without logging in.
+    const h = harness();
+    h.sm.checkCache.mockResolvedValue({ state: "dead", cookie: "old-cookie" });
+    h.sm.invalidate.mockResolvedValue(false);
+
+    expect(await runCli([], h.deps)).toBe(1);
+
+    expect(h.sm.authenticate).not.toHaveBeenCalled();
+    expect(h.err()).toContain("Could not remove the cached session");
+    expect(h.out()).not.toContain("Authentication successful");
+  });
+
   it("logs in as an explicit request: a login that just failed elsewhere must not stop it, and an unsaved session is an error", async () => {
     const h = harness();
 

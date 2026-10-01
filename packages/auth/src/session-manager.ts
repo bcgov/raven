@@ -377,24 +377,34 @@ export class SessionManager {
    * otherwise be deleted here and the next call would launch another browser
    * instead of adopting it.
    *
-   * @returns true when the cache is gone afterwards (removed, or there was
-   *   none); false when it was left in place: a newer login replaced the cookie
-   *   that failed, or the file could not be read or removed. With no argument the
-   *   cache is removed whatever it holds, so false means it could not be removed.
+   * @returns true when the cache will no longer hand out the cookie that failed:
+   *   it was removed, there was none, or a newer login replaced it (which is kept).
+   *   false when the cache still holds that cookie and could not be updated, so the
+   *   next login would adopt it again. With no argument the cache is removed
+   *   whatever it holds, so false means it could not be removed.
    */
   async invalidate(failedCookie?: string): Promise<boolean> {
     this.smsession = null;
-    const removed =
-      failedCookie === undefined
-        ? await clearCachedSession(this.config.cachePath)
-        : await clearCachedSessionIf(this.config.cachePath, failedCookie);
+    if (failedCookie === undefined) {
+      const removed = await clearCachedSession(this.config.cachePath);
+      this.log(removed ? "Session invalidated" : "Session invalidated in memory; the cache could not be removed");
+      return removed;
+    }
+
+    if (await clearCachedSessionIf(this.config.cachePath, failedCookie)) {
+      this.log("Session invalidated");
+      return true;
+    }
+    // Left alone: a newer login replaced the cookie (fine, it is adopted next), or
+    // the cache still holds the cookie that failed and could not be removed.
+    // authenticate() reads the cache the same way, so asking it tells which.
+    const stillCached = (await readCachedSession(this.config.cachePath, this.config.sessionTtlSeconds)) === failedCookie;
     this.log(
-      removed
-        ? "Session invalidated"
-        : "Session invalidated in memory; the cache was left as it is " +
-            "(a newer login, or a file that could not be read or removed)"
+      stillCached
+        ? "Session invalidated in memory; the cache still holds it and could not be updated"
+        : "Session invalidated in memory; the cache holds a newer login (or nothing usable) and was left as it is"
     );
-    return removed;
+    return !stillCached;
   }
 
   /** User agent string for HTTP requests (matches Playwright browser) */

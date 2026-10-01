@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -575,6 +575,51 @@ describe("SessionManager", () => {
       await seed("any-cookie");
       await manager().invalidate();
       expect(existsSync(cachePath)).toBe(false);
+    });
+
+    describe("what it reports", () => {
+      // The caller wants to know one thing: will the cookie that just failed be
+      // handed out again? Removing it and a newer login replacing it both mean no.
+      const cannotForceDeleteFailure = process.platform === "win32" || process.getuid?.() === 0;
+
+      it("reports that the cookie is gone when it removed it", async () => {
+        await seed("dead-cookie");
+        await expect(manager().invalidate("dead-cookie")).resolves.toBe(true);
+      });
+
+      it("reports that the cookie is gone when a newer login replaced it, which is kept", async () => {
+        await seed("fresh-cookie");
+        await expect(manager().invalidate("dead-cookie")).resolves.toBe(true);
+        expect(JSON.parse(await readFile(cachePath, "utf-8")).smsession).toBe("fresh-cookie");
+      });
+
+      it("reports that the cookie is gone when there was no cache", async () => {
+        await expect(manager().invalidate("dead-cookie")).resolves.toBe(true);
+      });
+
+      it.skipIf(cannotForceDeleteFailure)(
+        "reports that it is NOT gone when the cache holds the failed cookie and cannot be removed",
+        async () => {
+          await seed("dead-cookie");
+          await chmod(home.dir, 0o500);
+          try {
+            await expect(manager().invalidate("dead-cookie")).resolves.toBe(false);
+          } finally {
+            await chmod(home.dir, 0o700);
+          }
+          expect(JSON.parse(await readFile(cachePath, "utf-8")).smsession).toBe("dead-cookie");
+        }
+      );
+
+      it.skipIf(cannotForceDeleteFailure)("with no argument, reports false when the cache cannot be removed", async () => {
+        await seed("any-cookie");
+        await chmod(home.dir, 0o500);
+        try {
+          await expect(manager().invalidate()).resolves.toBe(false);
+        } finally {
+          await chmod(home.dir, 0o700);
+        }
+      });
     });
   });
 

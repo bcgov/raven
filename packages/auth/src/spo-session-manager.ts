@@ -277,24 +277,34 @@ export class SpoSessionManager {
    * so a login another process cached since would otherwise be deleted here
    * and the next call would launch another browser instead of adopting it.
    *
-   * @returns true when the cache is gone afterwards (removed, or there was
-   *   none); false when it was left in place: a newer login replaced the pair
-   *   that failed, or the file could not be read or removed. With no argument the
-   *   cache is removed whatever it holds, so false means it could not be removed.
+   * @returns true when the cache will no longer hand out the pair that failed: it
+   *   was removed, there was none, or a newer login replaced it (which is kept).
+   *   false when the cache still holds that pair and could not be updated, so the
+   *   next login would adopt it again. With no argument the cache is removed
+   *   whatever it holds, so false means it could not be removed.
    */
   async invalidate(failedPair?: SpoCookies): Promise<boolean> {
     this.cookies = null;
-    const removed =
-      failedPair === undefined
-        ? await clearCachedSpoSession(this.config.cachePath)
-        : await clearCachedSpoSessionIf(this.config.cachePath, failedPair);
+    if (failedPair === undefined) {
+      const removed = await clearCachedSpoSession(this.config.cachePath);
+      this.log(removed ? "SPO session invalidated" : "SPO session invalidated in memory; the cache could not be removed");
+      return removed;
+    }
+
+    if (await clearCachedSpoSessionIf(this.config.cachePath, failedPair)) {
+      this.log("SPO session invalidated");
+      return true;
+    }
+    // Left alone: a newer login replaced the pair (fine, it is adopted next), or the
+    // cache still holds the pair that failed and could not be removed.
+    const cached = await readCachedSpoSession(this.config.cachePath, this.config.sessionTtlSeconds);
+    const stillCached = cached !== null && cached.fedAuth === failedPair.fedAuth && cached.rtFa === failedPair.rtFa;
     this.log(
-      removed
-        ? "SPO session invalidated"
-        : "SPO session invalidated in memory; the cache was left as it is " +
-            "(a newer login, or a file that could not be read or removed)",
+      stillCached
+        ? "SPO session invalidated in memory; the cache still holds it and could not be updated"
+        : "SPO session invalidated in memory; the cache holds a newer login (or nothing usable) and was left as it is",
     );
-    return removed;
+    return !stillCached;
   }
 
   /** User agent string for HTTP requests (matches the Playwright browser). */

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BROWSER_USER_AGENT } from "../browser-ua.js";
@@ -133,6 +133,35 @@ describe("SpoSessionManager", () => {
 
     expect(await sm.getSession()).toEqual({ fedAuth: "fa2", rtFa: "rt2" });
     expect(execFileSync).not.toHaveBeenCalled();
+  });
+
+  describe("what invalidate reports", () => {
+    // Will the pair that just failed be handed out again? Removing it and a newer
+    // login replacing it both mean no.
+    const cannotForceDeleteFailure = process.platform === "win32" || process.getuid?.() === 0;
+    const failed = { fedAuth: "fa1", rtFa: "rt1" };
+
+    it("true when it removed the pair", async () => {
+      await writeCachedSpoSession(cachePath, failed, "example.sharepoint.com");
+      await expect(new SpoSessionManager({ cachePath }).invalidate(failed)).resolves.toBe(true);
+    });
+
+    it("true when a newer pair replaced it, which is kept", async () => {
+      await writeCachedSpoSession(cachePath, { fedAuth: "fa2", rtFa: "rt2" }, "example.sharepoint.com");
+      await expect(new SpoSessionManager({ cachePath }).invalidate(failed)).resolves.toBe(true);
+      expect(await readCachedSpoSession(cachePath)).toEqual({ fedAuth: "fa2", rtFa: "rt2" });
+    });
+
+    it.skipIf(cannotForceDeleteFailure)("false when the cache holds the failed pair and cannot be removed", async () => {
+      await writeCachedSpoSession(cachePath, failed, "example.sharepoint.com");
+      await chmod(dir, 0o500);
+      try {
+        await expect(new SpoSessionManager({ cachePath }).invalidate(failed)).resolves.toBe(false);
+      } finally {
+        await chmod(dir, 0o700);
+      }
+      expect(await readCachedSpoSession(cachePath)).toEqual(failed);
+    });
   });
 
   it("invalidate(failedPair) still removes the cache when it holds the pair that failed", async () => {
