@@ -268,6 +268,8 @@ describe("capture script cookie acceptance", () => {
     probes?: Record<string, { status: number; location?: string }>;
     /** Number of leading probe calls that throw (e.g. offline). */
     probeThrows?: number;
+    /** Add an unrelated host's SMSESSION to the jar, visible only to an unscoped cookie query. */
+    unrelated?: boolean;
   }
 
   const STUB = `
@@ -278,9 +280,12 @@ describe("capture script cookie acceptance", () => {
       pages: () => [page],
       newPage: async () => page,
       close: async () => {},
-      cookies: async () => {
+      cookies: async (urls) => {
         current = cfg.jar[Math.min(polls++, cfg.jar.length - 1)];
-        return current === null ? [] : [{ name: 'SMSESSION', domain: '.gov.bc.ca', value: current }];
+        const jar = current === null ? [] : [{ name: 'SMSESSION', domain: '.gov.bc.ca', value: current }];
+        // Like Playwright: with URLs, only cookies the browser would send there.
+        if (cfg.unrelated && !urls) jar.push({ name: 'SMSESSION', domain: 'other.example', value: 'UNRELATED-OTHER-HOST' });
+        return jar;
       },
       request: { get: async () => {
         probeCalls += 1;
@@ -367,6 +372,14 @@ describe("capture script cookie acceptance", () => {
       { verify: true }
     );
     expect(result).toEqual({ status: "ok", cookies: { SMSESSION: "live-cookie" } });
+  });
+
+  it("only considers cookies the browser would send to the target URL", async () => {
+    // The persistent profile holds cookies for every host ever visited. Picking
+    // by name alone could cache an unrelated host's SMSESSION/FedAuth, even
+    // though the probe (which is URL-scoped) validated a different cookie.
+    const result = await capture({ jar: ["target-cookie"], unrelated: true });
+    expect(result).toEqual({ status: "ok", cookies: { SMSESSION: "target-cookie" } });
   });
 
   it("does not reject a live cookie because an in-app redirect mentions login", async () => {

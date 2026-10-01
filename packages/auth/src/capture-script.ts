@@ -315,7 +315,10 @@ ${opts.autofill ? AUTOFILL_SNIPPET : ""}
   const startTime = Date.now();
   while (Date.now() - startTime < ${pollBudgetMs}) {
     found = {};
-    const cookies = await context.cookies();
+    // Only cookies the browser would send to the target. The profile holds
+    // cookies for every host ever visited; picking by name alone could cache an
+    // unrelated SMSESSION/FedAuth that the URL-scoped probe never validated.
+    const cookies = await context.cookies(${JSON.stringify(opts.targetUrl)});
     for (const cookie of cookies) {
       if (domainFilter && (!cookie.domain || cookie.domain.indexOf(domainFilter) === -1)) continue;
       if (wanted.indexOf(cookie.name) !== -1 && !isDead(cookie.value)) found[cookie.name] = cookie.value;

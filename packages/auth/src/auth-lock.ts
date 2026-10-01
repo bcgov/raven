@@ -20,6 +20,7 @@ interface LockRecord {
 const DEFAULT_STALE_MS = 300_000;
 const DEFAULT_WAIT_MS = 300_000;
 const DEFAULT_POLL_MS = 250;
+const REAP_STALE_MS = 10_000;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -49,10 +50,10 @@ async function readLock(lockPath: string): Promise<LockRecord | null> {
  * Remove the lock if it is abandoned: its owner died, or it is older than
  * `staleMs` (which also covers a recycled pid). The record is re-read and
  * compared by token just before unlinking so a lock that changed hands in the
- * meantime is left alone. A sliver of race remains if two waiters judge the
- * same dead lock stale in the same instant; the cost is one extra login.
+ * meantime is left alone. Callers must hold the reclaim lease (see
+ * {@link clearIfStale}); without it, check-then-unlink is not atomic.
  */
-async function clearIfStale(lockPath: string, staleMs: number): Promise<boolean> {
+async function removeIfStale(lockPath: string, staleMs: number): Promise<boolean> {
   const seen = await readLock(lockPath);
   if (!seen) {
     // Empty or partial: either an owner mid-write (fresh) or one that died
@@ -71,6 +72,49 @@ async function clearIfStale(lockPath: string, staleMs: number): Promise<boolean>
   if (current?.token !== seen.token) return false;
   await unlink(lockPath).catch(() => {});
   return true;
+}
+
+/**
+ * Reclaim an abandoned lock, one process at a time.
+ *
+ * Judging a lock stale and unlinking it are two steps. Unserialised, two
+ * waiters could both judge the same stale lock, the first could unlink it and
+ * take a fresh one, and the second could then unlink that fresh lock and enter
+ * the critical section alongside it. Reclaiming therefore needs its own
+ * short-lived lease, `<lockPath>.reap`, created exclusively: whoever holds it
+ * judges and removes, everyone else just keeps polling. A second waiter that
+ * later wins the lease finds the first one's new, live lock and leaves it.
+ *
+ * The lease is held for milliseconds, so one older than `REAP_STALE_MS` was
+ * left by a crash and is cleared for the next poll. (That clearing is itself
+ * unserialised, but it only fires for a holder that stalled for 10 s inside a
+ * millisecond section.)
+ */
+async function clearIfStale(lockPath: string, staleMs: number): Promise<boolean> {
+  const leasePath = `${lockPath}.reap`;
+  let lease;
+  try {
+    lease = await open(leasePath, "wx", 0o600);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    try {
+      if (Date.now() - (await stat(leasePath)).mtimeMs > REAP_STALE_MS) await unlink(leasePath);
+    } catch {
+      // Released or replaced while we looked; the next poll sorts it out.
+    }
+    return false;
+  }
+
+  try {
+    await lease.writeFile(JSON.stringify({ pid: process.pid, at: Date.now() }));
+  } finally {
+    await lease.close();
+  }
+  try {
+    return await removeIfStale(lockPath, staleMs);
+  } finally {
+    await unlink(leasePath).catch(() => {});
+  }
 }
 
 /**

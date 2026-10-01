@@ -101,6 +101,63 @@ describe("withAuthLock", () => {
     ).rejects.toThrow(/another RAVEN process/i);
   });
 
+  describe("stale-lock reclamation", () => {
+    const deadOwner = () => spawnSync(process.execPath, ["-e", ""]).pid;
+    const reapPath = () => `${lockPath}.reap`;
+
+    it("never lets two waiters both reclaim the same stale lock and enter together", async () => {
+      // Reclaiming is check-then-unlink; unserialised, a slow waiter could
+      // unlink the lock a faster one had just taken, putting two processes in
+      // the critical section (two Chromiums on one profile).
+      for (let round = 0; round < 5; round += 1) {
+        await holdLock({ pid: deadOwner(), at: Date.now() });
+        let active = 0;
+        let peak = 0;
+        const critical = async () => {
+          active += 1;
+          peak = Math.max(peak, active);
+          await sleep(15);
+          active -= 1;
+        };
+
+        await Promise.all(
+          Array.from({ length: 8 }, () => withAuthLock(lockPath, critical, FAST))
+        );
+
+        expect(peak).toBe(1);
+      }
+    });
+
+    it("leaves a stale lock alone while another process holds the reclaim lease", async () => {
+      await holdLock({ pid: deadOwner(), at: Date.now() });
+      await writeFile(reapPath(), JSON.stringify({ pid: process.pid, at: Date.now() }));
+
+      await expect(
+        withAuthLock(lockPath, async () => "never", { ...FAST, waitMs: 150 })
+      ).rejects.toThrow(/another RAVEN process/i);
+
+      expect(existsSync(lockPath)).toBe(true);
+    });
+
+    it("clears an abandoned reclaim lease and then reclaims", async () => {
+      await holdLock({ pid: deadOwner(), at: Date.now() });
+      await writeFile(reapPath(), "");
+      const longAgo = new Date(Date.now() - 120_000);
+      await utimes(reapPath(), longAgo, longAgo);
+
+      await expect(withAuthLock(lockPath, async () => "ran", FAST)).resolves.toBe("ran");
+    });
+
+    it("leaves no reclaim lease behind", async () => {
+      await holdLock({ pid: deadOwner(), at: Date.now() });
+
+      await withAuthLock(lockPath, async () => {}, FAST);
+
+      expect(existsSync(reapPath())).toBe(false);
+      expect(existsSync(lockPath)).toBe(false);
+    });
+  });
+
   it("waits for a live owner and proceeds once it releases", async () => {
     await holdLock({ pid: process.pid, at: Date.now() });
     const release = sleep(100).then(() => unlink(lockPath));
