@@ -86,6 +86,95 @@ describe("SessionManager", () => {
       expect(execFileSync).toHaveBeenCalledTimes(1);
     });
 
+    describe("after a failed browser login", () => {
+      // Several MCP servers can queue behind one login. If it fails (the user
+      // ignores the window, the browser is missing), each waiter used to open
+      // its own login window in turn and autofill the password again: N windows
+      // and N password submits, which is how an IDIR account gets locked.
+      const memoFile = () => `${lockPath}.siteminder-failed`;
+      const failCapture = (message = "window closed") =>
+        vi.mocked(execFileSync).mockImplementation(() => JSON.stringify({ status: "error", message }));
+
+      it("makes the next caller fail fast with the earlier reason instead of opening another login", async () => {
+        failCapture("Cookies not captured within 120s: SMSESSION");
+        await expect(manager().authenticate()).rejects.toThrow(/Cookies not captured within 120s/);
+        expect(execFileSync).toHaveBeenCalledTimes(1);
+
+        const second = manager().authenticate();
+
+        await expect(second).rejects.toThrow(/No valid SMSESSION found\. Browser auth failed: A browser login just failed .*Cookies not captured within 120s/);
+        await expect(second).rejects.toThrow(/--force/);
+        expect(execFileSync).toHaveBeenCalledTimes(1);
+      });
+
+      it("lets one of N concurrent callers open the login and fails the rest fast", async () => {
+        failCapture();
+
+        const outcomes = await Promise.allSettled([1, 2, 3, 4].map(() => manager().authenticate()));
+
+        expect(outcomes.every((o) => o.status === "rejected")).toBe(true);
+        expect(execFileSync).toHaveBeenCalledTimes(1);
+      });
+
+      it("tries again once the cooldown has passed", async () => {
+        await writeFile(memoFile(), JSON.stringify({ at: Date.now() - 120_000, message: "old failure" }));
+        vi.mocked(execFileSync).mockReturnValue(captureOutput("real-cookie"));
+
+        await expect(manager().authenticate()).resolves.toBe("real-cookie");
+      });
+
+      it("forgets the failure after a successful login", async () => {
+        await writeFile(memoFile(), JSON.stringify({ at: Date.now() - 120_000, message: "old failure" }));
+        vi.mocked(execFileSync).mockReturnValue(captureOutput("real-cookie"));
+
+        await manager().authenticate();
+
+        expect(existsSync(memoFile())).toBe(false);
+      });
+
+      it("adopts a login a sibling completed even right after a failure", async () => {
+        failCapture();
+        await expect(manager().authenticate()).rejects.toThrow();
+        await seed("cookie-from-sibling");
+
+        await expect(manager().authenticate()).resolves.toBe("cookie-from-sibling");
+      });
+
+      it("is cleared by invalidate() with no argument (an explicit reset, as --force does) but not by invalidate(cookie)", async () => {
+        failCapture();
+        await expect(manager().authenticate()).rejects.toThrow();
+        expect(existsSync(memoFile())).toBe(true);
+
+        await manager().invalidate("some-expired-cookie");
+        expect(existsSync(memoFile())).toBe(true);
+
+        await manager().invalidate();
+        expect(existsSync(memoFile())).toBe(false);
+      });
+
+      it("does not record a failure to get the lock as a failed login", async () => {
+        await writeFile(lockPath, JSON.stringify({ pid: process.pid, at: Date.now(), token: "sibling" }));
+        const sm = new SessionManager({
+          targetUrl: TARGET,
+          cachePath,
+          lockPath,
+          sessionTtlSeconds: 1500,
+          lockOptions: { waitMs: 100, pollMs: 10 },
+        });
+
+        await expect(sm.authenticate()).rejects.toThrow(/Timed out waiting/);
+
+        expect(existsSync(memoFile())).toBe(false);
+      });
+
+      it("does not let a failed SharePoint login block a SiteMinder one: each product has its own memo", async () => {
+        await writeFile(`${lockPath}.sharepoint-failed`, JSON.stringify({ at: Date.now(), message: "sharepoint failed" }));
+        vi.mocked(execFileSync).mockReturnValue(captureOutput("real-cookie"));
+
+        await expect(manager().authenticate()).resolves.toBe("real-cookie");
+      });
+    });
+
     it("takes the shared browser-profile lock by default, beside the profile", async () => {
       // SiteMinder and SharePoint captures share one Chromium profile; the lock
       // that serialises them must be the same file for both.

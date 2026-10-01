@@ -182,6 +182,58 @@ describe("SpoSessionManager", () => {
       await expect(manager().authenticate()).rejects.toThrow(/Browser auth failed: Cookies not captured within 180s: FedAuth, rtFa/);
     });
 
+    describe("after a failed browser login", () => {
+      const lockPath = () => join(dir, "browser-profile.lock");
+      const memoFile = () => `${lockPath()}.sharepoint-failed`;
+      const failCapture = () =>
+        vi.mocked(execFileSync).mockImplementation(() => JSON.stringify({ status: "error", message: "window closed" }));
+
+      it("makes the next caller fail fast with the earlier reason instead of opening another login", async () => {
+        failCapture();
+        await expect(manager().authenticate()).rejects.toThrow(/window closed/);
+
+        await expect(manager().authenticate()).rejects.toThrow(
+          /No valid SharePoint session found\. Browser auth failed: A browser login just failed .*window closed/
+        );
+        expect(execFileSync).toHaveBeenCalledTimes(1);
+      });
+
+      it("lets one of N concurrent callers open the login and fails the rest fast", async () => {
+        failCapture();
+        const outcomes = await Promise.allSettled([1, 2, 3].map(() => manager().authenticate()));
+
+        expect(outcomes.every((o) => o.status === "rejected")).toBe(true);
+        expect(execFileSync).toHaveBeenCalledTimes(1);
+      });
+
+      it("forgets the failure after a successful login, and tries again once the cooldown has passed", async () => {
+        await writeFile(memoFile(), JSON.stringify({ at: Date.now() - 120_000, message: "old failure" }));
+        vi.mocked(execFileSync).mockReturnValueOnce(captured);
+
+        await manager().authenticate();
+
+        expect(existsSync(memoFile())).toBe(false);
+      });
+
+      it("is cleared by invalidate() with no argument but not by invalidate(pair)", async () => {
+        failCapture();
+        await expect(manager().authenticate()).rejects.toThrow();
+
+        await manager().invalidate({ fedAuth: "x", rtFa: "y" });
+        expect(existsSync(memoFile())).toBe(true);
+
+        await manager().invalidate();
+        expect(existsSync(memoFile())).toBe(false);
+      });
+
+      it("does not let a failed SiteMinder login block a SharePoint one", async () => {
+        await writeFile(`${lockPath()}.siteminder-failed`, JSON.stringify({ at: Date.now(), message: "siteminder failed" }));
+        vi.mocked(execFileSync).mockReturnValueOnce(captured);
+
+        await expect(manager().authenticate()).resolves.toEqual({ fedAuth: "fa", rtFa: "rt" });
+      });
+    });
+
     it("takes the same shared browser-profile lock by default as the SiteMinder capture", async () => {
       const lockFile = join(dir, ".workflow-suite", "browser-profile.lock");
       let heldDuringCapture = false;

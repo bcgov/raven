@@ -364,7 +364,7 @@ Both methods authenticate the **individual developer** — the MCP server operat
 - **Session cache:** `~/.workflow-suite/session.json` (local disk only, `chmod 600`, replaced atomically)
 - **Verification:** a captured cookie is accepted only after the SiteMinder-protected page confirms it works, and `raven-auth` checks a cached cookie against the server instead of trusting its age
 - **Expiry detection:** HTTP 302 redirects to login pages are detected; session is refreshed automatically
-- **Session sharing:** Each MCP server instance keeps its own in-memory cookie but they share the on-disk cache and one persistent browser profile. A lock file (`~/.workflow-suite/browser-profile.lock`) lets only one browser login run at a time, and a process that waited adopts the login the previous one completed
+- **Session sharing:** Each MCP server instance keeps its own in-memory cookie but they share the on-disk cache and one persistent browser profile. A lock file (`~/.workflow-suite/browser-profile.lock`) lets only one browser login run at a time, and a process that waited adopts the login the previous one completed. A failed login is remembered for 30 seconds (one small file per product beside the lock, holding only the time and a one-line reason), so queued requests fail fast instead of each opening another login and autofilling the password again; `raven-auth --force` clears it
 
 ---
 

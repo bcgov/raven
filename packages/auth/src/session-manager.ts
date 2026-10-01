@@ -27,6 +27,12 @@ import {
   siteMinderWebUrl,
   type CaptureResult,
 } from "./capture-script.js";
+import {
+  AUTH_FAILURE_COOLDOWN_MS,
+  clearAuthFailure,
+  readRecentAuthFailure,
+  recordAuthFailure,
+} from "./auth-failure-memo.js";
 import { withAuthLock } from "./auth-lock.js";
 import type { AuthConfig } from "./types.js";
 import { BROWSER_USER_AGENT } from "./browser-ua.js";
@@ -208,6 +214,10 @@ export class SessionManager {
             this.log("Adopted the session another process just captured");
             return adopted;
           }
+          // A login that just failed was seen by everyone queued behind it; do
+          // not open another window (and autofill the password again) for each.
+          const recent = await readRecentAuthFailure(this.failureMemoPath(), AUTH_FAILURE_COOLDOWN_MS);
+          if (recent) throw this.failure(this.cooldownDetail(recent));
           return this.captureSession(profileDir);
         },
         {
@@ -267,21 +277,43 @@ export class SessionManager {
       }
       smsession = captured;
     } catch (err) {
+      await recordAuthFailure(this.failureMemoPath(), describeCaptureFailure(err));
       throw this.authFailure(err);
     }
 
     // The login is verified. Failing to cache it must not turn it into a
     // failed login: keep it for this process and carry on.
     this.smsession = smsession;
+    await clearAuthFailure(this.failureMemoPath());
     await this.cacheBestEffort(smsession);
     this.log("SMSESSION captured via browser auth");
     return smsession;
   }
 
-  /** Build the standard "No valid SMSESSION found" error with the ways to fix it. */
+  /** Where a failed login is remembered: beside the capture lock, one file per product. */
+  private failureMemoPath(): string {
+    return `${this.config.lockPath ?? authLockPath()}.siteminder-failed`;
+  }
+
+  /** Say why a login is not being attempted right now. */
+  private cooldownDetail(recent: { at: number; message: string }): string {
+    const ago = Math.max(0, Math.round((Date.now() - recent.at) / 1000));
+    const wait = Math.max(1, Math.ceil((AUTH_FAILURE_COOLDOWN_MS - (Date.now() - recent.at)) / 1000));
+    return (
+      `A browser login just failed ${ago}s ago (${recent.message}); not opening another for ${wait}s ` +
+      `so queued requests do not each start their own. Run raven-auth --force to retry now.`
+    );
+  }
+
+  /** Build the standard "No valid SMSESSION found" error from a failure's cause. */
   private authFailure(err: unknown): SessionAuthError {
+    return this.failure(describeCaptureFailure(err));
+  }
+
+  /** Build the standard "No valid SMSESSION found" error with the ways to fix it. */
+  private failure(detail: string): SessionAuthError {
     return new SessionAuthError(
-      `No valid SMSESSION found. Browser auth failed: ${describeCaptureFailure(err)}\n\n` +
+      `No valid SMSESSION found. Browser auth failed: ${detail}\n\n` +
         `To fix this, run one of:\n` +
         `  1. "${process.execPath}" "${authCliPath}" (opens browser for IDIR login)\n` +
         `     add --force to re-login even if the cached session looks fresh\n` +
@@ -331,6 +363,9 @@ export class SessionManager {
    */
   async invalidate(failedCookie?: string): Promise<void> {
     this.smsession = null;
+    // With no argument this is an explicit reset (what --force does), so it
+    // also forgets a recent failed login and lets the next attempt through.
+    if (failedCookie === undefined) await clearAuthFailure(this.failureMemoPath());
     const removed =
       failedCookie === undefined
         ? await clearCachedSession(this.config.cachePath)

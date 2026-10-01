@@ -644,7 +644,7 @@ If Basic Auth env vars are not set, RAVEN falls back to SiteMinder cookie authen
 1. Checks for a cached session (`~/.workflow-suite/session.json`); an entry older than 25 minutes is ignored
 2. If expired or missing, checks the `SMSESSION` environment variable
 3. If neither exists, opens a Chromium browser for interactive IDIR login. A cookie is accepted only once the SiteMinder-protected page confirms it works, so a logged-off or expired cookie left in the browser is never cached
-4. The cookie is cached for 25 minutes and shared across Jira/Confluence/Bitbucket. Several MCP servers can hit expiry together: a lock file (`~/.workflow-suite/browser-profile.lock`) lets only one browser login run at a time, and the others adopt its result
+4. The cookie is cached for 25 minutes and shared across Jira/Confluence/Bitbucket. Several MCP servers can hit expiry together: a lock file (`~/.workflow-suite/browser-profile.lock`) lets only one browser login run at a time, and the others adopt its result. If that login fails, the failure is remembered for 30 seconds (`~/.workflow-suite/browser-profile.lock.siteminder-failed`, or `.sharepoint-failed`), so queued requests fail fast with the reason instead of each opening another login window and typing the password again; `raven-auth --force` clears it
 
 The browser uses a persistent profile (`~/.workflow-suite/browser-profile`, mode 0700), so an existing identity-provider session usually signs you in without typing. The profile keeps identity-provider session cookies on disk (with autofill enabled, Entra's "Stay signed in?" prompt is answered Yes so they persist); delete the directory to end those sessions.
 

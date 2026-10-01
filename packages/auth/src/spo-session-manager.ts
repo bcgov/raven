@@ -23,6 +23,12 @@ import {
   resolveAutofillCredentials,
   type CaptureResult,
 } from "./capture-script.js";
+import {
+  AUTH_FAILURE_COOLDOWN_MS,
+  clearAuthFailure,
+  readRecentAuthFailure,
+  recordAuthFailure,
+} from "./auth-failure-memo.js";
 import { withAuthLock } from "./auth-lock.js";
 import type { SpoAuthConfig, SpoCookies } from "./types.js";
 import { BROWSER_USER_AGENT } from "./browser-ua.js";
@@ -133,6 +139,10 @@ export class SpoSessionManager {
             this.log("Adopted the SPO session another process just captured");
             return adopted;
           }
+          // A login that just failed was seen by everyone queued behind it; do
+          // not open another window (and autofill the password again) for each.
+          const recent = await readRecentAuthFailure(this.failureMemoPath(), AUTH_FAILURE_COOLDOWN_MS);
+          if (recent) throw this.failure(this.cooldownDetail(recent));
           return this.captureSession(profileDir);
         },
         {
@@ -190,21 +200,43 @@ export class SpoSessionManager {
       }
       pair = { fedAuth, rtFa };
     } catch (err) {
+      await recordAuthFailure(this.failureMemoPath(), describeCaptureFailure(err));
       throw this.authFailure(err);
     }
 
     // The capture succeeded. Failing to cache it must not turn it into a
     // failed login: keep it for this process and carry on.
     this.cookies = pair;
+    await clearAuthFailure(this.failureMemoPath());
     await this.cacheBestEffort(pair);
     this.log("FedAuth/rtFa captured via browser auth");
     return pair;
   }
 
-  /** Build the standard "No valid SharePoint session found" error with the ways to fix it. */
+  /** Where a failed login is remembered: beside the capture lock, one file per product. */
+  private failureMemoPath(): string {
+    return `${this.config.lockPath ?? authLockPath()}.sharepoint-failed`;
+  }
+
+  /** Say why a login is not being attempted right now. */
+  private cooldownDetail(recent: { at: number; message: string }): string {
+    const ago = Math.max(0, Math.round((Date.now() - recent.at) / 1000));
+    const wait = Math.max(1, Math.ceil((AUTH_FAILURE_COOLDOWN_MS - (Date.now() - recent.at)) / 1000));
+    return (
+      `A browser login just failed ${ago}s ago (${recent.message}); not opening another for ${wait}s ` +
+      `so queued requests do not each start their own. Run raven-auth --sharepoint --force to retry now.`
+    );
+  }
+
+  /** Build the standard "No valid SharePoint session found" error from a failure's cause. */
   private authFailure(err: unknown): SpoAuthError {
+    return this.failure(describeCaptureFailure(err));
+  }
+
+  /** Build the standard "No valid SharePoint session found" error with the ways to fix it. */
+  private failure(detail: string): SpoAuthError {
     return new SpoAuthError(
-      `No valid SharePoint session found. Browser auth failed: ${describeCaptureFailure(err)}\n\n` +
+      `No valid SharePoint session found. Browser auth failed: ${detail}\n\n` +
         `To fix this, run one of:\n` +
         `  1. "${process.execPath}" "${authCliPath}" --sharepoint (opens browser for IDIR/Entra login)\n` +
         `  2. Set SPO_FEDAUTH and SPO_RTFA env vars (paste cookie values from browser DevTools)\n\n` +
@@ -231,6 +263,9 @@ export class SpoSessionManager {
    */
   async invalidate(failedPair?: SpoCookies): Promise<void> {
     this.cookies = null;
+    // With no argument this is an explicit reset (what --force does), so it
+    // also forgets a recent failed login and lets the next attempt through.
+    if (failedPair === undefined) await clearAuthFailure(this.failureMemoPath());
     const removed =
       failedPair === undefined
         ? await clearCachedSpoSession(this.config.cachePath)
