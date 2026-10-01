@@ -1272,6 +1272,14 @@ describe("capture script autofill", () => {
     ["a bare id and a different id", "jdoe", "asmith", false],
     ["a short id and a differently built address", "jdoe", "jane.doe@gov.bc.ca", false],
     ["two addresses on different domains", "jdoe@gov.bc.ca", "jdoe@contractor.example", false],
+    // A bare id only stands for an address on the government domain: on any other
+    // domain the same local part is somebody else's account.
+    ["a bare id and the same id on an unrelated domain", "jdoe", "jdoe@contractor.example", false],
+    ["an unrelated-domain address and the same bare id", "jdoe@contractor.example", "jdoe", false],
+    ["a bare id and a look-alike of the government domain", "jdoe", "jdoe@evilgov.bc.ca", false],
+    ["a bare id and the government domain inside another domain", "jdoe", "jdoe@gov.bc.ca.evil.example", false],
+    ["a DOMAIN\\ prefix and an unrelated-domain address", "idir\\jdoe", "jdoe@contractor.example", false],
+    ["a bare id and the same id on a government subdomain", "jdoe", "jdoe@example.gov.bc.ca", true],
   ])("treats %s as the same account: %s configured, %s shown", async (_what, configured, shown, same) => {
     const events = await autofill(
       { pages: [{ url: IDP, user: { value: shown as string }, pass: {} }] },

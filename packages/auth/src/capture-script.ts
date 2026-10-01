@@ -329,16 +329,20 @@ const AUTOFILL_SNIPPET = `
   // locator.isVisible({ timeout }) ignores its timeout and answers at once, so
   // a form rendered shortly after the load event was never seen. Wait for it.
   const shows = (locator, ms) => locator.waitFor({ state: 'visible', timeout: ms }).then(() => true, () => false);
-  // Whether two spellings name one account: a bare id and an email address with
-  // the same local part ("jdoe" and "jdoe@gov.bc.ca"), or either with a DOMAIN\\
-  // prefix. Two addresses must match in full. (92 is a backslash.)
+  // Whether two spellings name one account: identical after trimming and case, or a
+  // bare id and an address with the same local part ("jdoe" and "jdoe@gov.bc.ca")
+  // when that address is on the government domain, either with a DOMAIN\\ prefix.
+  // On any other domain the same local part is somebody else's account, and two
+  // addresses must match in full. (92 is a backslash.)
   const sameAccount = (a, b) => {
     const norm = (v) => { const t = v.trim().toLowerCase(); const i = t.indexOf(String.fromCharCode(92)); return i === -1 ? t : t.slice(i + 1); };
     const x = norm(a), y = norm(b);
     if (x === y) return true;
     const [xLocal, xDomain] = x.split('@');
     const [yLocal, yDomain] = y.split('@');
-    return (xDomain === undefined) !== (yDomain === undefined) && xLocal === yLocal;
+    if ((xDomain === undefined) === (yDomain === undefined) || xLocal !== yLocal) return false;
+    const domain = xDomain === undefined ? yDomain : xDomain;
+    return domain === 'gov.bc.ca' || domain.endsWith('.gov.bc.ca');
   };
   // The host of an https URL on an identity provider's own domain, else null.
   const vettedHost = (href) => {
