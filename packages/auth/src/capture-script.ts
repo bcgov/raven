@@ -45,7 +45,7 @@ export function authLockPath(): string {
   return join(homedir(), ".workflow-suite", "browser-profile.lock");
 }
 
-/** Spellings that switch an environment flag off, matching how RAVEN_SCRUB_PI is read. */
+/** Spellings that switch a RAVEN_AUTH_* flag off (compared trimmed, in any case). */
 const OFF_VALUES = new Set(["0", "false", "no", "off", "disabled"]);
 
 /**
@@ -91,43 +91,86 @@ export function resolveAutofillCredentials(
  */
 export const CAPTURE_MAX_BUFFER = 16 * 1024 * 1024;
 
+/** How long one cookie probe may take inside the capture script, in milliseconds. */
+export const CAPTURE_PROBE_TIMEOUT_MS = 15_000;
+
+/**
+ * How long the browser may take to start, in milliseconds. This is Playwright's
+ * own default, passed explicitly so the time budget below can count it.
+ */
+export const CAPTURE_LAUNCH_TIMEOUT_MS = 30_000;
+
+/** What the budget allows for the rest: process start-up, one poll sleep and the final browser close. */
+export const CAPTURE_OVERHEAD_MS = 6_000;
+
 /**
  * Time budgets for the two captures, in milliseconds.
  *
- * The script's worst case is its navigation timeout plus its poll budget, plus
- * one cookie probe (15 s) because the budget is only checked at the top of each
- * poll. The process timeout must exceed that so a stalled navigation ends in
- * the script's own "Cookies not captured within Ns" message instead of an
- * opaque ETIMEDOUT from the parent; and it must stay under the 5-minute stale
- * limit of the capture lock, so a live capture is never mistaken for an
- * abandoned one.
+ * The script's worst case is the browser launch ({@link CAPTURE_LAUNCH_TIMEOUT_MS}),
+ * its navigation timeout and its poll budget, plus one cookie probe
+ * ({@link CAPTURE_PROBE_TIMEOUT_MS}) because the budget is only checked at the
+ * top of each poll, plus {@link CAPTURE_OVERHEAD_MS}. The process timeout must
+ * exceed that so a stalled navigation ends in the script's own "Cookies not
+ * captured within Ns" message instead of an opaque ETIMEDOUT from the parent;
+ * and it must stay under the stale limit of the capture lock, so a live capture
+ * is never mistaken for an abandoned one.
  */
 export const CAPTURE_TIMINGS = {
-  siteMinder: { navTimeoutMs: 60_000, pollBudgetMs: 120_000, processTimeoutMs: 210_000 },
-  sharePoint: { navTimeoutMs: 60_000, pollBudgetMs: 180_000, processTimeoutMs: 270_000 },
+  siteMinder: { navTimeoutMs: 60_000, pollBudgetMs: 120_000, processTimeoutMs: 240_000 },
+  sharePoint: { navTimeoutMs: 60_000, pollBudgetMs: 180_000, processTimeoutMs: 300_000 },
 } as const;
+
+/**
+ * The line of a child's stderr that names the error: `Error: ...`,
+ * `TypeError: ...`, `Error [ERR_X]: ...` or V8's `FATAL ERROR: ...`. Node
+ * prints an uncaught exception as a location header (`[eval]:12`), the source
+ * line and a caret, and only then the error itself.
+ */
+const ERROR_SUMMARY_LINE = /^(?:[A-Za-z]*Error(?: \[[A-Za-z0-9_]+\])?|FATAL ERROR): /;
 
 /**
  * A one-line, bounded description of why the capture child failed. What the
  * child wrote to stderr is what actually went wrong (a missing module, no
- * display, Chromium not installed); execFileSync's own message is "Command
- * failed: <node> -e <the whole script>", so only its first line is used, and
- * only when stderr is empty.
+ * display, Chromium not installed): the line that names the error if there is
+ * one, else the first line. execFileSync's own message is "Command failed:
+ * <node> -e <the whole script>", so only its first line is used, and only when
+ * stderr is empty. A capture the parent had to stop for running too long, or
+ * that was killed by a signal without a word on stderr, is named as that.
  */
 export function describeCaptureFailure(err: unknown): string {
+  const { code, signal } = (err ?? {}) as { code?: unknown; signal?: unknown };
+  // The parent stopped it for running too long: execFileSync's own text for that
+  // is "spawnSync <node> ETIMEDOUT", which says nothing about a login.
+  if (code === "ETIMEDOUT") return "The browser login did not finish in time and was stopped";
   const stderr = (err as { stderr?: unknown } | null)?.stderr;
   const stderrText = typeof stderr === "string" ? stderr : Buffer.isBuffer(stderr) ? stderr.toString("utf-8") : "";
-  const stderrLine = stderrText
+  const stderrLines = stderrText
     .split("\n")
     .map((line) => line.trim())
-    .find((line) => line !== "");
+    .filter((line) => line !== "");
+  const stderrLine = stderrLines.find((line) => ERROR_SUMMARY_LINE.test(line)) ?? stderrLines[0];
+  if (stderrLine === undefined && typeof signal === "string" && signal !== "") {
+    return `The browser login process was stopped (${signal})`;
+  }
   const line = stderrLine ?? (err instanceof Error ? err.message : "Unknown authentication error").split("\n")[0];
   return line.slice(0, 300);
 }
 
 /**
+ * What to do about a capture failure that has a known remedy, or null. Only the
+ * first line of Playwright's message survives to the caller, and for a browser
+ * that is not installed the remedy is on a later line, so it is supplied here.
+ */
+export function captureFailureHint(detail: string): string | null {
+  return /Executable doesn't exist/i.test(detail)
+    ? 'The browser is not installed: run "npx playwright install chromium" in the RAVEN folder (README, Prerequisites).'
+    : null;
+}
+
+/**
  * The environment for the capture child: the caller's environment, without
- * Playwright's debug variables, plus the autofill credentials when enabled.
+ * Playwright's debug variables, plus the launcher's pid and the autofill
+ * credentials when enabled.
  *
  * DEBUG=pw:api (or PWDEBUG) makes Playwright log every call with its
  * arguments, which includes the password autofill types, so they must never
@@ -142,6 +185,10 @@ export function captureChildEnv(
     ...env,
     DEBUG: undefined,
     PWDEBUG: undefined,
+    // Who launched the child. If that process dies before the child has even
+    // started, the child's own parent is already init and cannot be told apart
+    // from a live one; this lets it notice.
+    RAVEN_CAPTURE_PARENT_PID: String(process.pid),
     // Ensure Playwright finds its browsers
     PLAYWRIGHT_BROWSERS_PATH: env["PLAYWRIGHT_BROWSERS_PATH"] ?? undefined,
     ...(credentials
@@ -270,6 +317,8 @@ const AUTOFILL_SNIPPET = `
   const PASS_SEL = 'input[type="password"]';
   const SUBMIT_SEL = '#idSIButton9, input[type="submit"], button[type="submit"]';
   const KMSI_SEL = '#idSIButton9';
+  // A field that is not editable fails fast instead of holding the single-flight pass for Playwright's 30 s default.
+  const FILL = { timeout: 3000 };
   let autofillAttempts = 0;
   let passwordSubmits = 0;
   let autofillBusy = false;
@@ -277,42 +326,77 @@ const AUTOFILL_SNIPPET = `
   // locator.isVisible({ timeout }) ignores its timeout and answers at once, so
   // a form rendered shortly after the load event was never seen. Wait for it.
   const shows = (locator, ms) => locator.waitFor({ state: 'visible', timeout: ms }).then(() => true, () => false);
+  // Whether two spellings name one account: a bare id and an email address with
+  // the same local part ("jdoe" and "jdoe@gov.bc.ca"), or either with a DOMAIN\\
+  // prefix. Two addresses must match in full. (92 is a backslash.)
+  const sameAccount = (a, b) => {
+    const norm = (v) => { const t = v.trim().toLowerCase(); const i = t.indexOf(String.fromCharCode(92)); return i === -1 ? t : t.slice(i + 1); };
+    const x = norm(a), y = norm(b);
+    if (x === y) return true;
+    const [xLocal, xDomain] = x.split('@');
+    const [yLocal, yDomain] = y.split('@');
+    return (xDomain === undefined) !== (yDomain === undefined) && xLocal === yLocal;
+  };
+  // The host of an https URL on an identity provider's own domain, else null.
+  const vettedHost = (href) => {
+    let url;
+    try { url = new URL(href); } catch { return null; }
+    const host = url.hostname;
+    return url.protocol === 'https:' && AUTOFILL_HOSTS.some((h) => host === h || host.endsWith('.' + h)) ? host : null;
+  };
   async function autofillOnce() {
     if (autofillAttempts >= AUTOFILL_MAX) return;
     const username = process.env.RAVEN_AUTOFILL_USERNAME;
     const password = process.env.RAVEN_AUTOFILL_PASSWORD;
     if (!username || !password) return;
-    let url;
-    try { url = new URL(page.url()); } catch { return; }
-    const host = url.hostname;
-    if (url.protocol !== 'https:' || !AUTOFILL_HOSTS.some((h) => host === h || host.endsWith('.' + h))) return;
+    const startUrl = page.url();
+    const host = vettedHost(startUrl);
+    if (!host) return;
+    // The pass awaits, and a page can navigate meanwhile (a redirect from the
+    // login page). Locators follow the page, not the document, so a typed value
+    // would land on whatever page is showing by then. Check it is still the page
+    // that was vetted immediately before every keystroke and click. A navigation
+    // that commits after the check but before the browser acts is not covered:
+    // that window is one protocol round trip.
+    const stillHere = () => page.url() === startUrl && vettedHost(page.url()) !== null;
     const userBox = page.locator(USER_SEL).first();
     const passBox = page.locator(PASS_SEL).first();
     const submit = page.locator(SUBMIT_SEL).first();
-    const anyField = page.locator(USER_SEL + ', ' + PASS_SEL).first();
+    // The first VISIBLE match: a hidden input (a password-manager shim, an anti-autofill decoy)
+    // can come first in the page and must not hide the field that is showing.
+    const anyField = page.locator(USER_SEL + ', ' + PASS_SEL).filter({ visible: true }).first();
     if (await shows(anyField, 1500)) {
       const passVisible = await passBox.isVisible().catch(() => false);
       const userVisible = await userBox.isVisible().catch(() => false);
       const prefilled = userVisible ? await userBox.inputValue().catch(() => '') : '';
-      if (prefilled && prefilled.trim().toLowerCase() !== username.trim().toLowerCase()) return;
+      // Only username-like inputs are inspected: an account shown as text is not seen.
+      if (prefilled && !sameAccount(prefilled, username)) return;
       if (passVisible) {
         if (passwordSubmits >= PASSWORD_MAX) return;
-        if (userVisible && !prefilled) await userBox.fill(username);
+        if (!stillHere()) return;
+        if (userVisible && !prefilled) await userBox.fill(username, FILL);
         if (!(await passBox.inputValue().catch(() => ''))) {
+          if (!stillHere()) return;
           autofillAttempts += 1;
+          await passBox.fill(password, FILL);
+          if (!stillHere()) return;
+          // Counted when it is submitted: a pass that gave up before the click
+          // (the page changed) has not used the one attempt.
           passwordSubmits += 1;
-          await passBox.fill(password);
           await submit.click({ timeout: 1000 }).catch(() => {});
         }
       } else if (userVisible && !prefilled) {
+        if (!stillHere()) return;
         autofillAttempts += 1;
-        await userBox.fill(username);
+        await userBox.fill(username, FILL);
+        if (!stillHere()) return;
         await submit.click({ timeout: 1000 }).catch(() => {});
       }
     } else if (host.endsWith('login.microsoftonline.com')) {
-      // "Stay signed in?" — answer Yes so the profile keeps the session.
+      // "Stay signed in?" — answer Yes so the profile keeps the session. Its button
+      // shares an id with Next and Sign in, so it is clicked only when no login form is showing.
       const kmsi = page.locator(KMSI_SEL);
-      if (await shows(kmsi, 1500)) {
+      if (await shows(kmsi, 1500) && stillHere() && !(await anyField.isVisible().catch(() => false))) {
         autofillAttempts += 1;
         await kmsi.click({ timeout: 1000 }).catch(() => {});
       }
@@ -350,32 +434,55 @@ export function buildCaptureScript(opts: CaptureScriptOptions): string {
   const pollIntervalMs = wholeNumber(opts.pollIntervalMs, 1_000, 10);
 
   return `
-const { chromium } = require('playwright');
-
 (async () => {
+  // Inside the async function, so a Playwright that cannot be loaded ends in
+  // the one JSON error line below instead of an uncaught exception.
+  const { chromium } = require('playwright');
   const DEBUG = ${opts.debug === true ? "true" : "false"};
-  const context = await chromium.launchPersistentContext(${JSON.stringify(opts.profileDir)}, {
-    headless: false,
-    args: ['--disable-blink-features=AutomationControlled'],
-    userAgent: ${JSON.stringify(opts.userAgent)},
-    ignoreHTTPSErrors: true,
-    viewport: null,
-  });
 
   // The lock that serialises captures names only the process that launched
   // this one. If that process is killed mid-login, nothing else would ever
   // close this browser, and an orphaned Chromium keeps the persistent profile
-  // locked, so the next login fails. Watch the parent and go down with it.
-  const parentPid = process.ppid;
+  // locked, so the next login fails. Watch the parent from the very start,
+  // while the browser is still launching too, and go down with it. The launcher
+  // passes its own pid: a parent that died before this line has already been
+  // replaced by init, which process.ppid alone cannot tell from a live parent.
+  const parentPid = Number(process.env.RAVEN_CAPTURE_PARENT_PID) || process.ppid;
+  const parentGone = () => {
+    if (process.ppid !== parentPid) return true;
+    try { process.kill(parentPid, 0); return false; } catch (e) { return !(e && e.code === 'EPERM'); }
+  };
+  if (parentGone()) process.exit(1);
+  let context = null;
   const parentWatch = setInterval(() => {
-    let parentAlive = true;
-    try { process.kill(parentPid, 0); } catch (e) { parentAlive = !!e && e.code === 'EPERM'; }
-    if (!parentAlive) {
-      clearInterval(parentWatch);
-      context.close().catch(() => {}).then(() => process.exit(1));
-    }
-  }, 1000);
+    if (!parentGone()) return;
+    clearInterval(parentWatch);
+    // Still launching: exiting takes the browser down with this process.
+    if (!context) process.exit(1);
+    context.close().catch(() => {}).then(() => process.exit(1));
+  }, 250);
   if (parentWatch.unref) parentWatch.unref();
+
+  // A launcher that was killed leaves its browser holding the profile for a
+  // moment, and a login that starts in that moment must not give up at the
+  // first refusal.
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      context = await chromium.launchPersistentContext(${JSON.stringify(opts.profileDir)}, {
+        timeout: ${CAPTURE_LAUNCH_TIMEOUT_MS},
+        headless: false,
+        args: ['--disable-blink-features=AutomationControlled'],
+        userAgent: ${JSON.stringify(opts.userAgent)},
+        ignoreHTTPSErrors: true,
+        viewport: null,
+      });
+      break;
+    } catch (launchErr) {
+      const reason = String(launchErr && launchErr.message ? launchErr.message : launchErr);
+      if (attempt >= 6 || !/ProcessSingleton|profile.*in use|has been closed/i.test(reason)) throw launchErr;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
 
   const page = context.pages()[0] ?? await context.newPage();
   if (DEBUG) {
@@ -455,7 +562,7 @@ ${opts.autofill ? AUTOFILL_SNIPPET : ""}
   // is re-checked rather than treated as either answer.
   async function probe() {
     try {
-      const res = await context.request.get(verifyUrl, { maxRedirects: 0, failOnStatusCode: false, timeout: 15000 });
+      const res = await context.request.get(verifyUrl, { maxRedirects: 0, failOnStatusCode: false, timeout: ${CAPTURE_PROBE_TIMEOUT_MS} });
       const status = res.status();
       const location = (res.headers() || {})['location'] || '';
       if (status === 401 || status === 403) return 'dead';
@@ -470,6 +577,8 @@ ${opts.autofill ? AUTOFILL_SNIPPET : ""}
   let found = {};
   let accepted = false;
   let judged = '';
+  let windowless = 0;
+  let windowClosed = false;
   const startTime = Date.now();
   while (Date.now() - startTime < ${pollBudgetMs}) {
     found = {};
@@ -492,6 +601,17 @@ ${opts.autofill ? AUTOFILL_SNIPPET : ""}
         if (verdict === 'dead') judged = signature;
       }
     }
+    // The person closed the window to give up. The browser can keep running with
+    // no window (it does on macOS), so nothing else would notice; with no page
+    // left there is nothing to log in through, so stop instead of holding the
+    // lock for the rest of the budget. A few polls of grace, so a hop that
+    // replaces the page is not mistaken for it.
+    if (context.pages().length === 0) {
+      windowless += 1;
+      if (windowless >= 3) { windowClosed = true; break; }
+    } else {
+      windowless = 0;
+    }
     await new Promise((r) => setTimeout(r, ${pollIntervalMs}));
   }
 
@@ -500,6 +620,8 @@ ${opts.autofill ? AUTOFILL_SNIPPET : ""}
 
   if (accepted) {
     console.log(JSON.stringify({ status: 'ok', cookies: found }));
+  } else if (windowClosed) {
+    console.log(JSON.stringify({ status: 'error', message: 'The login window was closed before the login finished' }));
   } else {
     // A candidate that was present but rejected leaves nothing "missing";
     // say so rather than print an empty list.

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -69,24 +69,50 @@ describe("writeFileAtomic", () => {
     // sees an empty or partial file. The payload is large so that window is
     // wide enough to be hit reliably if the write is not atomic.
     const payload = (n: number) => JSON.stringify({ n, pad: "x".repeat(6_000_000) });
-    await writeFileAtomic(target, payload(-1));
+    // This test's own path, not the shared variable: if the test times out on a
+    // starved machine the loops below keep running, and must not write into the
+    // next test's directory.
+    const path = target;
+    await writeFileAtomic(path, payload(-1));
 
     let writing = true;
     const torn: string[] = [];
     const reader = (async () => {
       while (writing) {
         try {
-          JSON.parse(await readFile(target, "utf-8"));
+          JSON.parse(await readFile(path, "utf-8"));
         } catch (err) {
           torn.push(String(err).slice(0, 80));
         }
       }
     })();
-    for (let n = 0; n < 15; n += 1) await writeFileAtomic(target, payload(n));
-    writing = false;
+    try {
+      for (let n = 0; n < 15; n += 1) await writeFileAtomic(path, payload(n));
+    } finally {
+      writing = false;
+    }
     await reader;
 
     expect(torn).toEqual([]);
+  });
+
+  it("lets many writers share one destination: each uses its own temporary file", async () => {
+    // Two writers that shared a temporary name would rename it out from under
+    // each other (ENOENT), and the caller would lose a cache write.
+    const writers = Array.from({ length: 25 }, (_, n) => writeFileAtomic(target, JSON.stringify({ n })));
+    // Before the first rename there is no file yet; any other failure, a torn read included, rejects.
+    const readers = Array.from({ length: 50 }, async () => {
+      try {
+        JSON.parse(await readFile(target, "utf-8"));
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
+    });
+
+    await Promise.all([...readers, ...writers]);
+
+    expect(JSON.parse(await readFile(target, "utf-8")).n).toBeGreaterThanOrEqual(0);
+    expect(await readdir(join(dir, "nested"))).toEqual(["data.json"]);
   });
 
   it("keeps the previous file intact and cleans up when the rename fails for good", async () => {
@@ -124,7 +150,6 @@ describe("writeFileAtomic", () => {
   });
 
   it.skipIf(process.platform === "win32")("does not retry EPERM on platforms where it is a real permission error", async () => {
-    await writeFile(join(dir, "marker"), "");
     faults.rename = 1;
 
     await expect(writeFileAtomic(target, "x")).rejects.toThrow(/EPERM/);

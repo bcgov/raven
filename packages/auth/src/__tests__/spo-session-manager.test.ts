@@ -4,7 +4,8 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CAPTURE_TIMINGS } from "../capture-script.js";
+import { BROWSER_USER_AGENT } from "../browser-ua.js";
+import { CAPTURE_TIMINGS, authProfileDir, buildCaptureScript } from "../capture-script.js";
 import { SpoSessionManager } from "../spo-session-manager.js";
 
 const home = vi.hoisted(() => ({ dir: "" }));
@@ -16,6 +17,13 @@ vi.mock("node:os", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:os")>()),
   homedir: () => home.dir,
 }));
+
+// The real builder, wrapped so a test can read the options the manager gave it
+// instead of searching the generated script for them.
+vi.mock("../capture-script.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../capture-script.js")>();
+  return { ...actual, buildCaptureScript: vi.fn(actual.buildCaptureScript) };
+});
 
 // A wrong implementation must fail the test, not open a real browser.
 vi.mock("node:child_process", () => ({
@@ -35,6 +43,7 @@ beforeEach(async () => {
   delete process.env["SPO_FEDAUTH"];
   delete process.env["SPO_RTFA"];
   vi.mocked(execFileSync).mockClear();
+  vi.mocked(buildCaptureScript).mockClear();
 });
 
 afterEach(async () => {
@@ -56,6 +65,16 @@ describe("SpoSessionManager", () => {
     const sm = new SpoSessionManager({ cachePath });
     expect(await sm.getSession()).toEqual({ fedAuth: "env-fa", rtFa: "env-rt" });
     expect(await readCachedSpoSession(cachePath)).toEqual({ fedAuth: "env-fa", rtFa: "env-rt" });
+  });
+
+  it("ignores an env pair whose values are blank, instead of caching and sending it", async () => {
+    process.env["SPO_FEDAUTH"] = "  ";
+    process.env["SPO_RTFA"] = "\t";
+    const sm = new SpoSessionManager({ cachePath, lockPath: join(dir, "browser-profile.lock") });
+
+    // No usable env pair and no cache: it goes on to the (stubbed, failing) browser login.
+    await expect(sm.getSession()).rejects.toThrow(/No valid SharePoint session found/);
+    expect(existsSync(cachePath)).toBe(false);
   });
 
   it("ignores an incomplete env pair (only SPO_FEDAUTH set)", async () => {
@@ -143,16 +162,31 @@ describe("SpoSessionManager", () => {
       expect(execFileSync).toHaveBeenCalledTimes(1);
     });
 
-    const manager = () => new SpoSessionManager({ cachePath, lockPath: join(dir, "browser-profile.lock") });
+    // The target is pinned: left to the environment, a SHAREPOINT_URL exported on the
+    // machine running the tests would change what they expect.
+    const TARGET = "https://example.sharepoint.com";
+    const manager = () =>
+      new SpoSessionManager({ cachePath, lockPath: join(dir, "browser-profile.lock"), targetUrl: TARGET });
 
     it("asks the capture for both SharePoint cookies, only from sharepoint.com, and does not probe", async () => {
       vi.mocked(execFileSync).mockReturnValueOnce(captured);
       await manager().authenticate();
 
-      const script = (vi.mocked(execFileSync).mock.calls[0][1] as string[])[1];
-      expect(script).toContain(`const wanted = ${JSON.stringify(["FedAuth", "rtFa"])}`);
-      expect(script).toContain(`const domainFilter = ${JSON.stringify("sharepoint.com")}`);
-      expect(script).toContain("const verifyUrl = null");
+      const built = vi.mocked(buildCaptureScript).mock.calls[0][0];
+      expect(built.cookieNames).toEqual(["FedAuth", "rtFa"]);
+      expect(built.cookieDomainFilter).toBe("sharepoint.com");
+      expect(built.verifyUrl).toBeUndefined();
+    });
+
+    it("opens the configured tenant, on the shared persistent profile, with the browser identity the HTTP clients use", async () => {
+      vi.mocked(execFileSync).mockReturnValueOnce(captured);
+      await manager().authenticate();
+
+      const built = vi.mocked(buildCaptureScript).mock.calls[0][0];
+      expect(built.targetUrl).toBe(TARGET);
+      expect(built.profileDir).toBe(authProfileDir());
+      expect(built.profileDir).toBe(join(dir, ".workflow-suite", "browser-profile"));
+      expect(built.userAgent).toBe(BROWSER_USER_AGENT);
     });
 
     it("caches a successful capture with the tenant host, so later calls and sibling servers reuse it", async () => {
@@ -167,11 +201,38 @@ describe("SpoSessionManager", () => {
       ["FedAuth is missing", { status: "ok", cookies: { rtFa: "rt" } }],
       ["rtFa is missing", { status: "ok", cookies: { FedAuth: "fa" } }],
       ["a cookie is empty", { status: "ok", cookies: { FedAuth: "fa", rtFa: "" } }],
+      ["a cookie is blank", { status: "ok", cookies: { FedAuth: "  ", rtFa: "rt" } }],
+      ["a cookie is not a string", { status: "ok", cookies: { FedAuth: 123, rtFa: "rt" } }],
     ])("rejects a capture result where %s, and caches nothing", async (_name, result) => {
       vi.mocked(execFileSync).mockReturnValueOnce(JSON.stringify(result));
 
       await expect(manager().authenticate()).rejects.toThrow(/No valid SharePoint session found/);
       expect(existsSync(cachePath)).toBe(false);
+    });
+
+    it("fails an interactive login that cannot be cached: the command exists to leave a session for the other tools", async () => {
+      const blocker = join(dir, "not-a-directory");
+      await writeFile(blocker, "");
+      const sm = new SpoSessionManager({
+        cachePath: join(blocker, "spo-session.json"),
+        lockPath: join(dir, "browser-profile.lock"),
+      });
+      vi.mocked(execFileSync).mockReturnValueOnce(captured);
+
+      await expect(sm.authenticate({ interactive: true })).rejects.toThrow(
+        /No valid SharePoint session found\. Browser auth failed: The login succeeded but the session could not be saved/
+      );
+    });
+
+    it("tells the person how to install the browser when it is missing, which Playwright's one-line summary does not", async () => {
+      vi.mocked(execFileSync).mockReturnValueOnce(
+        JSON.stringify({
+          status: "error",
+          message: "Capture failed: browserType.launchPersistentContext: Executable doesn't exist at /x/chromium/chrome",
+        })
+      );
+
+      await expect(manager().authenticate()).rejects.toThrow(/Executable doesn't exist[\s\S]*run "npx playwright install chromium"/);
     });
 
     it("passes the capture script's own error message through", async () => {
@@ -192,10 +253,21 @@ describe("SpoSessionManager", () => {
         failCapture();
         await expect(manager().authenticate()).rejects.toThrow(/window closed/);
 
-        await expect(manager().authenticate()).rejects.toThrow(
+        const second = manager().authenticate();
+
+        await expect(second).rejects.toThrow(
           /No valid SharePoint session found\. Browser auth failed: A browser login just failed .*window closed/
         );
+        await expect(second).rejects.toThrow(/The login command below ignores this wait/);
         expect(execFileSync).toHaveBeenCalledTimes(1);
+      });
+
+      it("tells the user, in the standard fix list, that --force re-logs in even when the cache looks fresh", async () => {
+        failCapture();
+
+        await expect(manager().authenticate()).rejects.toThrow(
+          /--sharepoint \(opens browser for IDIR\/Entra login\)\n\s+add --force to re-login even if the cached session looks fresh/
+        );
       });
 
       it("lets one of N concurrent callers open the login and fails the rest fast", async () => {
@@ -215,15 +287,26 @@ describe("SpoSessionManager", () => {
         expect(existsSync(memoFile())).toBe(false);
       });
 
-      it("is cleared by invalidate() with no argument but not by invalidate(pair)", async () => {
+      it("does not stop an interactive login: the person running the command is the retry", async () => {
+        failCapture();
+        await expect(manager().authenticate()).rejects.toThrow(/window closed/);
+        vi.mocked(execFileSync).mockReset();
+        vi.mocked(execFileSync).mockReturnValue(captured);
+
+        await expect(manager().authenticate({ interactive: true })).resolves.toEqual({ fedAuth: "fa", rtFa: "rt" });
+
+        expect(execFileSync).toHaveBeenCalledTimes(1);
+        expect(existsSync(memoFile())).toBe(false);
+      });
+
+      it("is left alone by invalidate(): that is about the cached session, not about a failed login", async () => {
         failCapture();
         await expect(manager().authenticate()).rejects.toThrow();
 
-        await manager().invalidate({ fedAuth: "x", rtFa: "y" });
-        expect(existsSync(memoFile())).toBe(true);
-
         await manager().invalidate();
-        expect(existsSync(memoFile())).toBe(false);
+        await manager().invalidate({ fedAuth: "x", rtFa: "y" });
+
+        expect(existsSync(memoFile())).toBe(true);
       });
 
       it("does not let a failed SiteMinder login block a SharePoint one", async () => {
@@ -252,17 +335,18 @@ describe("SpoSessionManager", () => {
       vi.mocked(execFileSync).mockReturnValueOnce(captured);
       await new SpoSessionManager({ cachePath, lockPath: join(dir, "browser-profile.lock") }).authenticate();
 
-      const [, args, options] = vi.mocked(execFileSync).mock.calls[0];
+      const [, , options] = vi.mocked(execFileSync).mock.calls[0];
+      const built = vi.mocked(buildCaptureScript).mock.calls[0][0];
       const timings = CAPTURE_TIMINGS.sharePoint;
       expect((options as unknown as { timeout: number }).timeout).toBe(timings.processTimeoutMs);
-      expect((args as string[])[1]).toContain(`timeout: ${timings.navTimeoutMs} }`);
-      expect((args as string[])[1]).toContain(`within ${timings.pollBudgetMs / 1000}s`);
+      expect(built.navTimeoutMs).toBe(timings.navTimeoutMs);
+      expect(built.pollBudgetMs).toBe(timings.pollBudgetMs);
     });
 
     it("surfaces what the capture child actually wrote to stderr, not the command line that embeds the script", async () => {
       vi.mocked(execFileSync).mockImplementationOnce(() => {
         throw Object.assign(new Error("Command failed: /usr/bin/node -e \nSCRIPT-BODY"), {
-          stderr: "Error: Cannot find module 'playwright'\n    at x",
+          stderr: "node:internal/modules/cjs/loader:1478\n  throw err;\n  ^\n\nError: Cannot find module 'playwright'\n    at x",
         });
       });
 
@@ -308,6 +392,102 @@ describe("SpoSessionManager", () => {
         }
       }
     });
+  });
+
+  describe("the capture child's login settings", () => {
+    const captured = JSON.stringify({ status: "ok", cookies: { FedAuth: "fa", rtFa: "rt" } });
+    const saved: Record<string, string | undefined> = {};
+    const setEnv = (values: Record<string, string | undefined>) => {
+      for (const [key, value] of Object.entries(values)) {
+        if (!(key in saved)) saved[key] = process.env[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    };
+    const capture = async () => {
+      // A login that follows another in the same test must not adopt the first one's cache.
+      await rm(cachePath, { force: true });
+      vi.mocked(execFileSync).mockReturnValueOnce(captured);
+      await new SpoSessionManager({
+        cachePath,
+        lockPath: join(dir, "browser-profile.lock"),
+        targetUrl: "https://example.sharepoint.com",
+      }).authenticate();
+      const [, args, options] = vi.mocked(execFileSync).mock.calls[0];
+      return {
+        args: args as string[],
+        built: vi.mocked(buildCaptureScript).mock.calls[0][0],
+        options: options as { env: Record<string, string | undefined>; stdio: unknown[] },
+      };
+    };
+
+    afterEach(() => {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    });
+
+    it("hands autofill credentials to the child only through its environment", async () => {
+      setEnv({ IDIR_USERNAME: "jdoe-test-user", IDIR_PASSWORD: "s3cret-test-password", RAVEN_AUTH_AUTOFILL: undefined });
+      const { args, built, options } = await capture();
+
+      expect(built.autofill).toBe(true);
+      expect(options.env["RAVEN_AUTOFILL_USERNAME"]).toBe("jdoe-test-user");
+      expect(options.env["RAVEN_AUTOFILL_PASSWORD"]).toBe("s3cret-test-password");
+      expect(JSON.stringify(args)).not.toContain("s3cret-test-password");
+    });
+
+    it("types nothing when RAVEN_AUTH_AUTOFILL is off, or when there are no credentials", async () => {
+      setEnv({ IDIR_USERNAME: "jdoe-test-user", IDIR_PASSWORD: "s3cret-test-password", RAVEN_AUTH_AUTOFILL: "off" });
+      const off = await capture();
+      expect(off.built.autofill).toBe(false);
+      expect(off.options.env["RAVEN_AUTOFILL_PASSWORD"]).toBeUndefined();
+
+      vi.mocked(buildCaptureScript).mockClear();
+      vi.mocked(execFileSync).mockClear();
+      setEnv({ IDIR_USERNAME: undefined, IDIR_PASSWORD: undefined, ATLASSIAN_EMAIL: undefined, ATLASSIAN_PASSWORD: undefined, RAVEN_AUTH_AUTOFILL: undefined });
+      expect((await capture()).built.autofill).toBe(false);
+    });
+
+    it("treats RAVEN_AUTH_DEBUG=0 as off and any other value as on, as the SiteMinder login does", async () => {
+      setEnv({ RAVEN_AUTH_DEBUG: "0" });
+      const off = await capture();
+      expect(off.options.stdio[2]).toBe("pipe");
+      expect(off.built.debug).toBe(false);
+
+      vi.mocked(buildCaptureScript).mockClear();
+      vi.mocked(execFileSync).mockClear();
+      setEnv({ RAVEN_AUTH_DEBUG: "1" });
+      const on = await capture();
+      expect(on.options.stdio[2]).toBe("inherit");
+      expect(on.built.debug).toBe(true);
+    });
+  });
+
+  it("says so, once, when it has to wait for another login to finish", async () => {
+    const lockPath = join(dir, "browser-profile.lock");
+    await writeFile(lockPath, JSON.stringify({ pid: process.pid, at: Date.now(), token: "sibling" }));
+    const written: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    try {
+      const sibling = new Promise<void>((resolve) =>
+        setTimeout(async () => {
+          await writeCachedSpoSession(cachePath, { fedAuth: "sibling-fa", rtFa: "sibling-rt" }, "example.sharepoint.com");
+          await unlink(lockPath);
+          resolve();
+        }, 400)
+      );
+      await new SpoSessionManager({ cachePath, lockPath }).authenticate();
+      await sibling;
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(written.filter((line) => line.includes("Another RAVEN login is in progress"))).toHaveLength(1);
   });
 
   it("exposes targetUrl and a browser user agent", () => {

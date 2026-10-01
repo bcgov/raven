@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 import {
+  isUsableSpoPair,
   readCachedSpoSession,
   writeCachedSpoSession,
   clearCachedSpoSession,
@@ -17,6 +18,7 @@ import {
   authProfileDir,
   buildCaptureScript,
   captureChildEnv,
+  captureFailureHint,
   describeCaptureFailure,
   ensureProfileDir,
   isEnvFlagOn,
@@ -30,7 +32,7 @@ import {
   recordAuthFailure,
 } from "./auth-failure-memo.js";
 import { withAuthLock } from "./auth-lock.js";
-import type { SpoAuthConfig, SpoCookies } from "./types.js";
+import type { AuthenticateOptions, SpoAuthConfig, SpoCookies } from "./types.js";
 import { BROWSER_USER_AGENT } from "./browser-ua.js";
 import { authCliPath } from "./auth-cli-path.js";
 
@@ -92,12 +94,11 @@ export class SpoSessionManager {
       return cached;
     }
 
-    const envFedAuth = process.env["SPO_FEDAUTH"];
-    const envRtFa = process.env["SPO_RTFA"];
-    if (envFedAuth && envRtFa) {
-      const pair: SpoCookies = { fedAuth: envFedAuth, rtFa: envRtFa };
+    const envPair = { fedAuth: process.env["SPO_FEDAUTH"], rtFa: process.env["SPO_RTFA"] };
+    if (isUsableSpoPair(envPair)) {
+      const pair: SpoCookies = envPair;
       this.cookies = pair;
-      await this.cacheBestEffort(pair);
+      await this.cacheSession(pair, false);
       this.log("Loaded SPO session from environment variables");
       return pair;
     }
@@ -121,8 +122,11 @@ export class SpoSessionManager {
    *
    * Every failure, including not getting the lock in time, is reported as a
    * "No valid SharePoint session found" error (see {@link SpoAuthError}).
+   *
+   * @param options - `interactive` marks an explicit request from a person (see
+   *   {@link AuthenticateOptions}); unattended callers leave it unset.
    */
-  async authenticate(): Promise<SpoCookies> {
+  async authenticate(options: AuthenticateOptions = {}): Promise<SpoCookies> {
     try {
       const profileDir = authProfileDir();
       await ensureProfileDir(profileDir);
@@ -141,9 +145,12 @@ export class SpoSessionManager {
           }
           // A login that just failed was seen by everyone queued behind it; do
           // not open another window (and autofill the password again) for each.
-          const recent = await readRecentAuthFailure(this.failureMemoPath(), AUTH_FAILURE_COOLDOWN_MS);
-          if (recent) throw this.failure(this.cooldownDetail(recent));
-          return this.captureSession(profileDir);
+          // A person who runs the login command is the retry, so it is exempt.
+          if (!options.interactive) {
+            const recent = await readRecentAuthFailure(this.failureMemoPath(), AUTH_FAILURE_COOLDOWN_MS);
+            if (recent) throw this.failure(this.cooldownDetail(recent));
+          }
+          return this.captureSession(profileDir, options);
         },
         {
           onWait: () => this.log("Another RAVEN login is in progress; waiting for it to finish..."),
@@ -156,7 +163,7 @@ export class SpoSessionManager {
   }
 
   /** Run the browser capture and cache the result. Callers hold the auth lock. */
-  private async captureSession(profileDir: string): Promise<SpoCookies> {
+  private async captureSession(profileDir: string, options: AuthenticateOptions): Promise<SpoCookies> {
     this.log("Starting SPO browser authentication flow...");
 
     const credentials = resolveAutofillCredentials(process.env);
@@ -190,25 +197,24 @@ export class SpoSessionManager {
       });
 
       const parsed: CaptureResult = JSON.parse(result.trim());
-      const fedAuth = parsed.cookies?.["FedAuth"];
-      const rtFa = parsed.cookies?.["rtFa"];
+      const captured = { fedAuth: parsed.cookies?.["FedAuth"], rtFa: parsed.cookies?.["rtFa"] };
 
-      if (parsed.status !== "ok" || !fedAuth || !rtFa) {
+      if (parsed.status !== "ok" || !isUsableSpoPair(captured)) {
         throw new Error(
           parsed.message ?? "Authentication failed: cookies not captured",
         );
       }
-      pair = { fedAuth, rtFa };
+      pair = captured;
     } catch (err) {
       await recordAuthFailure(this.failureMemoPath(), describeCaptureFailure(err));
       throw this.authFailure(err);
     }
 
-    // The capture succeeded. Failing to cache it must not turn it into a
-    // failed login: keep it for this process and carry on.
+    // The capture succeeded. For an unattended caller, failing to cache it
+    // must not turn it into a failed login: keep it for this process and carry on.
     this.cookies = pair;
     await clearAuthFailure(this.failureMemoPath());
-    await this.cacheBestEffort(pair);
+    await this.cacheSession(pair, options.interactive === true);
     this.log("FedAuth/rtFa captured via browser auth");
     return pair;
   }
@@ -224,7 +230,7 @@ export class SpoSessionManager {
     const wait = Math.max(1, Math.ceil((AUTH_FAILURE_COOLDOWN_MS - (Date.now() - recent.at)) / 1000));
     return (
       `A browser login just failed ${ago}s ago (${recent.message}); not opening another for ${wait}s ` +
-      `so queued requests do not each start their own. Run raven-auth --sharepoint --force to retry now.`
+      `so queued requests do not each start their own. The login command below ignores this wait.`
     );
   }
 
@@ -235,21 +241,31 @@ export class SpoSessionManager {
 
   /** Build the standard "No valid SharePoint session found" error with the ways to fix it. */
   private failure(detail: string): SpoAuthError {
+    const hint = captureFailureHint(detail);
     return new SpoAuthError(
-      `No valid SharePoint session found. Browser auth failed: ${detail}\n\n` +
+      `No valid SharePoint session found. Browser auth failed: ${detail}\n` +
+        (hint ? `${hint}\n` : "") +
+        `\n` +
         `To fix this, run one of:\n` +
         `  1. "${process.execPath}" "${authCliPath}" --sharepoint (opens browser for IDIR/Entra login)\n` +
+        `     add --force to re-login even if the cached session looks fresh\n` +
         `  2. Set SPO_FEDAUTH and SPO_RTFA env vars (paste cookie values from browser DevTools)\n\n` +
         `The session caches to ~/.workflow-suite/spo-session.json for 8 hours.`,
     );
   }
 
-  /** Cache a pair, logging instead of throwing: a missing cache costs a login, not the session in hand. */
-  private async cacheBestEffort(pair: SpoCookies): Promise<void> {
+  /**
+   * Cache a pair. A failure is logged, not thrown, unless `required`: for an
+   * unattended caller a missing cache costs a later login, not the session in
+   * hand, but the login command's whole purpose is to leave one in the cache.
+   */
+  private async cacheSession(pair: SpoCookies, required: boolean): Promise<void> {
     try {
       await writeCachedSpoSession(this.config.cachePath, pair, this.host());
     } catch (err) {
-      this.log(`Could not cache the SPO session (${describeCaptureFailure(err)}); using it for this process only`);
+      const reason = describeCaptureFailure(err);
+      if (required) throw new Error(`The login succeeded but the session could not be saved: ${reason}`);
+      this.log(`Could not cache the SPO session (${reason}); using it for this process only`);
     }
   }
 
@@ -260,12 +276,14 @@ export class SpoSessionManager {
    * still holds that pair. Long-lived MCP servers keep their pair in memory,
    * so a login another process cached since would otherwise be deleted here
    * and the next call would launch another browser instead of adopting it.
+   *
+   * @returns true when the cache is gone afterwards (removed, or there was
+   *   none); false when it was left in place: a newer login replaced the pair
+   *   that failed, or the file could not be read or removed. With no argument the
+   *   cache is removed whatever it holds, so false means it could not be removed.
    */
-  async invalidate(failedPair?: SpoCookies): Promise<void> {
+  async invalidate(failedPair?: SpoCookies): Promise<boolean> {
     this.cookies = null;
-    // With no argument this is an explicit reset (what --force does), so it
-    // also forgets a recent failed login and lets the next attempt through.
-    if (failedPair === undefined) await clearAuthFailure(this.failureMemoPath());
     const removed =
       failedPair === undefined
         ? await clearCachedSpoSession(this.config.cachePath)
@@ -276,6 +294,7 @@ export class SpoSessionManager {
         : "SPO session invalidated in memory; the cache was left as it is " +
             "(a newer login, or a file that could not be read or removed)",
     );
+    return removed;
   }
 
   /** User agent string for HTTP requests (matches the Playwright browser). */

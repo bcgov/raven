@@ -79,6 +79,7 @@ export type {
   SessionData,
   AuthConfig,
   AuthenticatedFetch,
+  AuthenticateOptions,
   BasicAuthConfig,
 } from "./types.js";
 export {
@@ -111,6 +112,7 @@ export type { AuthLockOptions } from "./auth-lock.js";
 export { createSpoFetch, isSpoSessionExpired } from "./spo-http-client.js";
 export { spoLimiterOpts } from "./rate-limit.js";
 export {
+  isUsableSpoPair,
   readCachedSpoSession,
   writeCachedSpoSession,
   clearCachedSpoSession,

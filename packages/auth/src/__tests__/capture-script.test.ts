@@ -1,14 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { execFile, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir, homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { Script } from "node:vm";
+import { DEFAULT_STALE_MS } from "../auth-lock.js";
 import {
+  CAPTURE_LAUNCH_TIMEOUT_MS,
+  CAPTURE_OVERHEAD_MS,
+  CAPTURE_PROBE_TIMEOUT_MS,
   CAPTURE_TIMINGS,
   authLockPath,
+  captureChildEnv,
+  captureFailureHint,
   authProfileDir,
   buildCaptureScript,
   describeCaptureFailure,
@@ -243,27 +249,109 @@ describe("authLockPath", () => {
 });
 
 describe("CAPTURE_TIMINGS", () => {
-  const PROBE_OVERRUN_MS = 15_000; // the budget is checked only at the top of each poll, so one probe can overrun it
-  const DEFAULT_LOCK_STALE_MS = 300_000;
-
   it.each(Object.entries(CAPTURE_TIMINGS))(
     "%s: the script's worst case fits inside the process timeout, which stays under the lock's stale limit",
     (_name, timings) => {
-      // The script's worst case is navigation plus polling. If the process
-      // timeout were shorter, a stalled navigation would end in an opaque
-      // ETIMEDOUT instead of the script's own message.
-      expect(timings.navTimeoutMs + timings.pollBudgetMs + PROBE_OVERRUN_MS).toBeLessThan(timings.processTimeoutMs);
-      expect(timings.processTimeoutMs).toBeLessThan(DEFAULT_LOCK_STALE_MS);
+      // The script's worst case is navigation plus polling, plus one probe
+      // because the budget is checked only at the top of each poll. If the
+      // process timeout were shorter, a stalled navigation would end in an
+      // opaque ETIMEDOUT instead of the script's own message. And if the lock's
+      // stale limit were shorter than the process timeout, a waiter would take
+      // a live capture's lock and start a second browser on the same profile.
+      const worstCase =
+        CAPTURE_LAUNCH_TIMEOUT_MS + timings.navTimeoutMs + timings.pollBudgetMs + CAPTURE_PROBE_TIMEOUT_MS + CAPTURE_OVERHEAD_MS;
+      expect(worstCase).toBeLessThan(timings.processTimeoutMs);
+      expect(timings.processTimeoutMs).toBeLessThan(DEFAULT_STALE_MS);
     }
   );
+
+  it("passes the browser launch the timeout the budget counts, instead of relying on Playwright's default", () => {
+    expect(buildCaptureScript({ ...baseOpts })).toContain(`timeout: ${CAPTURE_LAUNCH_TIMEOUT_MS},`);
+  });
+
+  it("gives the probe inside the script exactly the timeout the budget arithmetic assumes", () => {
+    const script = buildCaptureScript({ ...baseOpts, verifyUrl: "https://apps.example.gov.bc.ca/int/confluence/index.action" });
+    expect(script).toContain(`timeout: ${CAPTURE_PROBE_TIMEOUT_MS} }`);
+  });
 });
 
 describe("describeCaptureFailure", () => {
-  it("prefers the first line the child wrote to stderr, which is what actually went wrong", () => {
+  it("prefers what the child wrote to stderr, which is what actually went wrong", () => {
     const err = Object.assign(new Error("Command failed: /usr/bin/node -e \nconst { chromium } = require('playwright');"), {
       stderr: "\nError: Cannot find module 'playwright'\n    at Module._resolveFilename (node:internal)\n",
     });
     expect(describeCaptureFailure(err)).toBe("Error: Cannot find module 'playwright'");
+  });
+
+  // Node prints an uncaught exception as a location header, the offending
+  // source line and a caret, and only then the error. These are the shapes it
+  // really prints (checked on Node 25); reading the first line gave the header.
+  it.each([
+    [
+      "a missing module",
+      "node:internal/modules/cjs/loader:1478\n  throw err;\n  ^\n\nError: Cannot find module 'playwright'\nRequire stack:\n- /repo/[eval]\n",
+      "Error: Cannot find module 'playwright'",
+    ],
+    [
+      "a syntax error",
+      "[eval]:1\nconst {{\n       ^\n\nSyntaxError: Unexpected token '{'\n    at makeContextifyScript (node:internal/vm:194:14)\n",
+      "SyntaxError: Unexpected token '{'",
+    ],
+    [
+      "an error with a code",
+      "node:internal/modules/esm/resolve:873\n    throw new ERR_MODULE_NOT_FOUND(packageName, fileURLToPath(base), null);\n          ^\n\nError [ERR_MODULE_NOT_FOUND]: Cannot find package 'playwright' imported from /repo/[eval]\n",
+      "Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'playwright' imported from /repo/[eval]",
+    ],
+    [
+      "a thrown TypeError",
+      "[eval]:1\nthrow new TypeError('boom')\n^\n\nTypeError: boom\n    at [eval]:1:7\n",
+      "TypeError: boom",
+    ],
+    [
+      "the engine running out of memory",
+      "<--- Last few GCs --->\n[1:0x1] 1000 ms: Mark-Compact 4000.0 (4100.0) -> 4000.0 (4100.0) MB\n\nFATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\n",
+      "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory",
+    ],
+  ])("names the error, not Node's location header, for %s", (_what, stderr, expected) => {
+    expect(describeCaptureFailure(Object.assign(new Error("Command failed"), { stderr }))).toBe(expected);
+  });
+
+  it("says the login ran out of time when the parent had to stop it, rather than 'spawnSync node ETIMEDOUT'", () => {
+    const err = Object.assign(new Error("spawnSync /usr/local/bin/node ETIMEDOUT"), { code: "ETIMEDOUT", signal: "SIGTERM", stderr: "" });
+    expect(describeCaptureFailure(err)).toBe("The browser login did not finish in time and was stopped");
+  });
+
+  it("says so when the capture process was killed by a signal and wrote nothing", () => {
+    const err = Object.assign(new Error("Command failed: /usr/local/bin/node -e \nSCRIPT"), { signal: "SIGKILL", stderr: "" });
+    expect(describeCaptureFailure(err)).toBe("The browser login process was stopped (SIGKILL)");
+  });
+
+  it("falls back to the first line when stderr names no error", () => {
+    const err = Object.assign(new Error("Command failed"), {
+      stderr: "\n[pid=123][err] gpu process exited unexpectedly\nsecond line\n",
+    });
+    expect(describeCaptureFailure(err)).toBe("[pid=123][err] gpu process exited unexpectedly");
+  });
+
+  it("is not fooled by source text in the excerpt that merely starts with the word Error", () => {
+    const err = Object.assign(new Error("Command failed"), {
+      stderr: "[eval]:1\nError.captureStackTrace(x)\n^\n\nTypeError: x is not defined\n",
+    });
+    expect(describeCaptureFailure(err)).toBe("TypeError: x is not defined");
+  });
+
+  it("reports a real child crash by its cause (the format Node prints today)", () => {
+    let thrown: unknown;
+    try {
+      execFileSync(process.execPath, ["-e", "require('playwright-is-not-installed-here')"], {
+        stdio: ["ignore", "pipe", "pipe"],
+        encoding: "utf-8",
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeDefined();
+    expect(describeCaptureFailure(thrown)).toMatch(/^Error: Cannot find module 'playwright-is-not-installed-here'/);
   });
 
   it("accepts stderr as a Buffer", () => {
@@ -283,6 +371,36 @@ describe("describeCaptureFailure", () => {
 
   it("truncates a very long line", () => {
     expect(describeCaptureFailure(Object.assign(new Error("x"), { stderr: "e".repeat(5_000) })).length).toBeLessThanOrEqual(300);
+  });
+});
+
+describe("captureFailureHint", () => {
+  it("tells the person how to install the browser when Playwright cannot find it", () => {
+    // Only the first line of Playwright's multi-line message survives to the
+    // caller, and the remedy is on a later line, so it is added back here.
+    const detail = "Capture failed: browserType.launchPersistentContext: Executable doesn't exist at /Users/x/Library/Caches/ms-playwright/chromium-1243/chrome";
+    expect(captureFailureHint(detail)).toBe(
+      'The browser is not installed: run "npx playwright install chromium" in the RAVEN folder (README, Prerequisites).'
+    );
+  });
+
+  it.each([
+    "Cookies not captured within 120s: SMSESSION",
+    "The login window was closed before the login finished",
+    "Capture failed: Cannot find module 'playwright'",
+    "",
+  ])("has nothing to add to %j", (detail) => {
+    expect(captureFailureHint(detail)).toBeNull();
+  });
+});
+
+describe("captureChildEnv", () => {
+  it("tells the child which process launched it, so it can notice if that process dies before it has started", () => {
+    expect(captureChildEnv({}, null)["RAVEN_CAPTURE_PARENT_PID"]).toBe(String(process.pid));
+  });
+
+  it("does not let an inherited value stand in for the launcher's own pid", () => {
+    expect(captureChildEnv({ RAVEN_CAPTURE_PARENT_PID: "1" }, null)["RAVEN_CAPTURE_PARENT_PID"]).toBe(String(process.pid));
   });
 });
 
@@ -379,11 +497,16 @@ describe("capture script cookie acceptance", () => {
     cookiesThrow?: boolean;
     /** Full cookie jars per poll (last repeats); when set it replaces the SMSESSION-only jar. */
     rawJar?: { name: string; domain: string; value: string }[][];
+    /** The first `count` browser launches reject with `message`. */
+    launchFailures?: { count: number; message: string };
+    /** From this many milliseconds on, the browser reports no open page (the person closed the window). */
+    pagesGoneAfterMs?: number;
   }
 
   const STUB = `
     const cfg = JSON.parse(process.env.STUB_CONFIG);
-    let polls = 0, probeCalls = 0, current = null;
+    let polls = 0, probeCalls = 0, launches = 0, current = null;
+    const startedAt = Date.now();
     const frame = { url: () => cfg.navUrl || 'about:blank' };
     const navHandlers = [];
     const dialogHandlers = [];
@@ -400,7 +523,7 @@ describe("capture script cookie acceptance", () => {
       mainFrame() { return frame; },
     };
     const context = {
-      pages: () => [page],
+      pages: () => (cfg.pagesGoneAfterMs !== undefined && Date.now() - startedAt >= cfg.pagesGoneAfterMs ? [] : [page]),
       newPage: async () => page,
       close: async () => { process.stderr.write('STUB_CLOSE\\n'); },
       cookies: async (urls) => {
@@ -421,7 +544,9 @@ describe("capture script cookie acceptance", () => {
       } },
     };
     module.exports = { chromium: { launchPersistentContext: async (profile, options) => {
+      launches += 1;
       process.stderr.write('STUB_LAUNCH ' + JSON.stringify({ profile, options }) + '\\n');
+      if (cfg.launchFailures && launches <= cfg.launchFailures.count) throw new Error(cfg.launchFailures.message);
       return context;
     } } };
   `;
@@ -608,6 +733,92 @@ describe("capture script cookie acceptance", () => {
     expect(result.message).toBe("Capture failed: Target page, context or browser has been closed");
   });
 
+  describe("the probe's verdicts", () => {
+    const probesOf = (stderr: string) => stubEvent(stderr, "STUB_PROBE") as { opts: Record<string, unknown> }[];
+
+    it.each([401, 403])("a %i answer means the cookie is dead: it is never accepted and is asked about once", async (status) => {
+      const { result, stderr } = await runCapture(
+        { jar: ["stale-cookie"], probes: { "stale-cookie": { status } } },
+        { verify: true, pollBudgetMs: 400 }
+      );
+
+      expect(result.status).toBe("error");
+      expect(probesOf(stderr)).toHaveLength(1);
+    });
+
+    it.each([404, 500, 502, 503])(
+      "a %i answer is no answer: the cookie is never accepted on it, and it is asked about again",
+      async (status) => {
+        // Accepting here would cache an unverified cookie whenever the gateway is unwell.
+        const { result, stderr } = await runCapture(
+          { jar: ["unverified-cookie"], probes: { "unverified-cookie": { status } } },
+          { verify: true, pollBudgetMs: 400 }
+        );
+
+        expect(result.status).toBe("error");
+        expect(probesOf(stderr).length).toBeGreaterThan(1);
+      }
+    );
+
+    it("bounds every probe with the timeout the time budget counts", async () => {
+      const { stderr } = await runCapture({ jar: ["c"] }, { verify: true });
+
+      expect(probesOf(stderr)[0].opts).toMatchObject({ timeout: CAPTURE_PROBE_TIMEOUT_MS });
+    });
+  });
+
+  describe("starting the browser", () => {
+    const BUSY = "browserType.launchPersistentContext: Failed to create a ProcessSingleton for your profile directory. This usually means that the profile is already in use by another instance of Chromium.";
+    const launchesOf = (stderr: string) => stubEvent(stderr, "STUB_LAUNCH").length;
+
+    it("tries again when the profile is still held by a browser that is shutting down, then logs in", async () => {
+      // A launcher that was killed leaves its browser holding the profile for
+      // a moment; a login that starts then used to fail, and the failure was
+      // remembered for everyone for 30 seconds.
+      const { result, stderr } = await runCapture({ jar: ["c"], launchFailures: { count: 2, message: BUSY } });
+
+      expect(result).toEqual({ status: "ok", cookies: { SMSESSION: "c" } });
+      expect(launchesOf(stderr)).toBe(3);
+    });
+
+    it("gives up, with the real reason, if the profile stays busy", async () => {
+      const { result, stderr } = await runCapture({ jar: ["c"], launchFailures: { count: 100, message: BUSY } });
+
+      expect(result.status).toBe("error");
+      expect(result.message).toMatch(/^Capture failed: browserType\.launchPersistentContext: Failed to create a ProcessSingleton/);
+      expect(launchesOf(stderr)).toBe(6);
+    }, 15_000);
+
+    it("does not retry a failure that waiting cannot fix, such as a browser that is not installed", async () => {
+      const { result, stderr } = await runCapture({
+        jar: ["c"],
+        launchFailures: { count: 100, message: "browserType.launchPersistentContext: Executable doesn't exist at /x/chrome" },
+      });
+
+      expect(result.message).toBe("Capture failed: browserType.launchPersistentContext: Executable doesn't exist at /x/chrome");
+      expect(launchesOf(stderr)).toBe(1);
+    });
+  });
+
+  describe("when the person closes the login window", () => {
+    it("ends the capture with a message saying so, instead of holding the lock for the rest of the budget", async () => {
+      // On macOS the browser keeps running with no window, so nothing else
+      // notices; the poll used to run its whole 2 to 3 minutes.
+      const started = Date.now();
+      const { result, stderr } = await runCapture({ jar: [null], pagesGoneAfterMs: 50 }, { pollBudgetMs: 30_000 });
+
+      expect(result).toEqual({ status: "error", message: "The login window was closed before the login finished" });
+      expect(Date.now() - started).toBeLessThan(10_000);
+      expect(stderr.split("\n").filter((line) => line === "STUB_CLOSE")).toHaveLength(1);
+    });
+
+    it("still takes a session that was already live when the window closed", async () => {
+      const result = await capture({ jar: ["live-cookie"], pagesGoneAfterMs: 0 });
+
+      expect(result).toEqual({ status: "ok", cookies: { SMSESSION: "live-cookie" } });
+    });
+  });
+
   it("logs navigation URLs without their query string or fragment when debugging", async () => {
     // SiteMinder/SAML hops carry tokens and targets in the query string.
     const { stderr } = await runCapture(
@@ -742,6 +953,8 @@ describe("capture script autofill", () => {
     user?: Field;
     pass?: Field;
     kmsi?: Field;
+    /** A hidden input matches the login selectors before the visible one, as a password-manager shim or decoy would. */
+    hiddenFirst?: boolean;
   }
   interface Scenario {
     pages: PageState[];
@@ -753,12 +966,18 @@ describe("capture script autofill", () => {
     rejectPassword?: boolean;
     /** How long the stub waits after the last load event before the capture may finish. Default 400 ms. */
     settleMs?: number;
+    /**
+     * Navigate to the second page this many milliseconds after the first one loads, as a
+     * page-initiated redirect would: the first page is the only one that loads on its own.
+     */
+    navigateAfterMs?: number;
   }
   interface AutofillEvent {
     type: "fill" | "click";
     field?: string;
     value?: string;
     target?: string;
+    timeout?: number;
   }
 
   const STUB = `
@@ -775,7 +994,11 @@ describe("capture script autofill", () => {
     const current = () => cfg.pages[Math.min(pageIndex, cfg.pages.length - 1)];
     const shown = (f) => !!f && Date.now() - loadedAt >= (f.visibleAfterMs || 0);
 
-    function locator(sel) {
+    // Playwright calls are round trips to the browser, so each one yields: a pass
+    // really is interleaved with load events that arrive while it runs.
+    const roundTrip = () => sleep(3);
+
+    function locator(sel, visibleOnly) {
       const kind = sel === USER_SEL ? 'user'
         : sel === PASS_SEL ? 'pass'
         : sel === SUBMIT_SEL ? 'submit'
@@ -784,6 +1007,8 @@ describe("capture script autofill", () => {
         : 'unknown:' + sel;
       const isShown = () => {
         const p = current();
+        // Unfiltered, a union locator's first match is the hidden element.
+        if (kind === 'any' && p.hiddenFirst && !visibleOnly) return false;
         if (kind === 'user') return shown(p.user);
         if (kind === 'pass') return shown(p.pass);
         if (kind === 'any' || kind === 'submit') return shown(p.user) || shown(p.pass);
@@ -792,15 +1017,22 @@ describe("capture script autofill", () => {
       };
       const self = {
         first: () => self,
-        isVisible: async () => isShown(),
+        filter: (o) => locator(sel, !!(o && o.visible)),
+        isVisible: async () => { await roundTrip(); return isShown(); },
         waitFor: async (o) => {
           const end = Date.now() + ((o && o.timeout) || 30000);
           while (Date.now() < end) { if (isShown()) return; await sleep(10); }
           throw new Error('Timeout waiting for ' + kind);
         },
-        inputValue: async () => { const f = current()[kind]; return (f && f.value) || ''; },
-        fill: async (v) => { const f = current()[kind]; events.push({ type: 'fill', field: kind, value: v }); if (f) f.value = v; },
+        inputValue: async () => { await roundTrip(); const f = current()[kind]; return (f && f.value) || ''; },
+        fill: async (v, o) => {
+          await roundTrip();
+          const f = current()[kind];
+          events.push({ type: 'fill', field: kind, value: v, timeout: o && o.timeout });
+          if (f) f.value = v;
+        },
         click: async () => {
+          await roundTrip();
           events.push({ type: 'click', target: kind });
           if (kind === 'submit' && cfg.rejectPassword && current().pass) current().pass.value = '';
         },
@@ -815,12 +1047,20 @@ describe("capture script autofill", () => {
       mainFrame() { return frame; },
       locator,
       goto: async () => {
-        const loads = cfg.loads || cfg.pages.length;
+        const redirects = cfg.navigateAfterMs !== undefined;
+        const loads = redirects ? 1 : cfg.loads || cfg.pages.length;
         for (let i = 0; i < loads; i += 1) {
           pageIndex = i;
           loadedAt = Date.now();
           handlers.load.forEach((cb) => cb());
           await sleep(cfg.gapMs === undefined ? 20 : cfg.gapMs);
+        }
+        if (redirects) {
+          // The page navigates itself while an autofill pass is still waiting for a field.
+          await sleep(cfg.navigateAfterMs);
+          pageIndex = 1;
+          loadedAt = Date.now();
+          handlers.load.forEach((cb) => cb());
         }
         await sleep(cfg.settleMs || 400);
       },
@@ -974,9 +1214,147 @@ describe("capture script autofill", () => {
     );
     expect(events).toEqual([]);
   });
+
+  it("fills a form whose visible field comes after a hidden one that matches the same selectors", async () => {
+    // Waiting on the first match in the page, visible or not, timed out here
+    // and typed nothing (and on Entra then clicked Sign in with the field empty).
+    const events = await autofill({ pages: [{ url: IDP, pass: {}, hiddenFirst: true }] });
+
+    expect(fills(events, "pass").map((e) => e.value)).toEqual([PASSWORD]);
+    expect(clicks(events)).toHaveLength(1);
+  });
+
+  it("gives every fill a short timeout, so a field that cannot be edited does not hold the pass for 30 seconds", async () => {
+    const events = await autofill({ pages: [{ url: IDP, user: {}, pass: {} }] });
+
+    expect(events.filter((e) => e.type === "fill").map((e) => e.timeout)).toEqual([3000, 3000]);
+  });
+
+  it("does not click the Stay signed in button while a login form is showing: it is the same button as Next and Sign in", async () => {
+    // The form renders after the first wait gives up, so the pass looks for the
+    // prompt and finds the form's own button.
+    const events = await autofill({
+      pages: [{ url: "https://login.microsoftonline.com/common/login", user: { visibleAfterMs: 1700 }, kmsi: { visibleAfterMs: 1700 } }],
+      settleMs: 4000,
+    });
+
+    expect(clicks(events)).toEqual([]);
+  });
+
+  it.each([
+    ["a bare id and the same id as an address", "jdoe", "jdoe@gov.bc.ca", true],
+    ["an address and the same id with a DOMAIN\\ prefix", "jdoe@gov.bc.ca", "IDIR\\JDOE", true],
+    ["a DOMAIN\\ prefix and a bare id", "idir\\jdoe", "JDOE", true],
+    ["the same address in another case", "JDoe@Gov.BC.ca", "jdoe@gov.bc.ca", true],
+    ["a bare id and a different id", "jdoe", "asmith", false],
+    ["a short id and a differently built address", "jdoe", "jane.doe@gov.bc.ca", false],
+    ["two addresses on different domains", "jdoe@gov.bc.ca", "jdoe@contractor.example", false],
+  ])("treats %s as the same account: %s configured, %s shown", async (_what, configured, shown, same) => {
+    const events = await autofill(
+      { pages: [{ url: IDP, user: { value: shown as string }, pass: {} }] },
+      { RAVEN_AUTOFILL_USERNAME: configured as string, RAVEN_AUTOFILL_PASSWORD: PASSWORD }
+    );
+
+    expect(fills(events, "pass")).toHaveLength(same ? 1 : 0);
+    expect(fills(events, "user")).toHaveLength(0); // already filled in, never overwritten
+  });
+
+  describe("when the page navigates while a pass is waiting for a field", () => {
+    // The host is vetted when a pass starts, but the pass then waits, and
+    // locators follow the page rather than the document: a redirect during the
+    // wait would otherwise have the credentials typed into the new page.
+    const STILL_LOADING = { visibleAfterMs: 60_000 };
+
+    it("does not type into a page on a host that is not allowed", async () => {
+      const events = await autofill({
+        pages: [
+          { url: IDP, user: STILL_LOADING },
+          { url: "https://other-site.example/login", user: {}, pass: {} },
+        ],
+        navigateAfterMs: 120,
+        settleMs: 800,
+      });
+
+      expect(events).toEqual([]);
+    });
+
+    it("does not type into a page that is not https", async () => {
+      const events = await autofill({
+        pages: [
+          { url: IDP, user: STILL_LOADING },
+          { url: "http://logon7.gov.bc.ca/clp-cgi/logon.cgi", user: {}, pass: {} },
+        ],
+        navigateAfterMs: 120,
+        settleMs: 800,
+      });
+
+      expect(events).toEqual([]);
+    });
+
+    it("leaves the Stay signed in prompt of a page that is not allowed unanswered", async () => {
+      const events = await autofill({
+        pages: [
+          { url: "https://login.microsoftonline.com/common/login" },
+          { url: "https://other-site.example/kmsi", kmsi: {} },
+        ],
+        navigateAfterMs: 120,
+        settleMs: 3000,
+      });
+
+      expect(events).toEqual([]);
+    });
+
+    it("hands over to the pass for the new page when that page is an allowed one, and fills it exactly once", async () => {
+      const events = await autofill({
+        pages: [
+          { url: "https://login.microsoftonline.com/common/login", user: STILL_LOADING },
+          { url: "https://login.microsoftonline.com/common/password", pass: {} },
+        ],
+        navigateAfterMs: 120,
+        settleMs: 1200,
+      });
+
+      expect(fills(events, "user")).toHaveLength(0);
+      expect(fills(events, "pass").map((e) => e.value)).toEqual([PASSWORD]);
+      expect(clicks(events)).toHaveLength(1);
+    });
+  });
+});
+
+describe("capture script when Playwright cannot be loaded", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "capture-noplaywright-"));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("still prints its one JSON error line and exits 0, naming the missing module", async () => {
+    // The require() used to sit outside the script's catch-all, so a broken
+    // install ended in an uncaught exception and a stack trace on stderr.
+    const script = buildCaptureScript({ ...baseOpts, profileDir: join(dir, "profile"), autofill: false });
+
+    const { stdout, stderr } = await execFileAsync(process.execPath, ["-e", script], {
+      cwd: dir,
+      env: { ...process.env, NODE_PATH: "" },
+    });
+
+    const lines = stdout.trim().split("\n");
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0])).toEqual({
+      status: "error",
+      message: expect.stringMatching(/^Capture failed: Cannot find module 'playwright'/),
+    });
+    expect(stderr).toBe("");
+  });
 });
 
 describe("capture script parent watchdog", () => {
+  // A stub Playwright that records the capture child's pid when the launch
+  // starts, optionally takes a long time to launch, and records a clean close.
   const STUB = `
     const fs = require('node:fs');
     const context = {
@@ -988,70 +1366,116 @@ describe("capture script parent watchdog", () => {
     };
     module.exports = { chromium: { launchPersistentContext: async () => {
       fs.writeFileSync(process.env.PID_FILE, String(process.pid));
+      if (process.env.LAUNCH_MS) await new Promise((r) => setTimeout(r, Number(process.env.LAUNCH_MS)));
       return context;
     } } };
   `;
 
-  it("exits when the process that launched it dies, so an orphan cannot keep the browser profile", async () => {
+  let dir: string;
+  let pidFile: string;
+  let closedFile: string;
+  let childPid = 0;
+  let parent: ReturnType<typeof spawn> | undefined;
+
+  const until = async (predicate: () => boolean, ms: number) => {
+    const end = Date.now() + ms;
+    while (!predicate() && Date.now() < end) await new Promise((r) => setTimeout(r, 50));
+    return predicate();
+  };
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "capture-watchdog-"));
+    pidFile = join(dir, "child.pid");
+    closedFile = join(dir, "closed");
+    childPid = 0;
+    await mkdir(join(dir, "node_modules", "playwright"), { recursive: true });
+    await writeFile(join(dir, "node_modules", "playwright", "index.js"), STUB);
+  });
+
+  afterEach(async () => {
+    parent?.kill("SIGKILL");
+    if (childPid && alive(childPid)) process.kill(childPid, "SIGKILL");
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const script = () =>
+    buildCaptureScript({ ...baseOpts, profileDir: join(dir, "profile"), navTimeoutMs: 1000, pollBudgetMs: 60_000, pollIntervalMs: 50 });
+
+  /**
+   * Run the capture the way SessionManager does (a Node process that execFileSync's
+   * the script), wait for the child to reach the browser launch, and return its pid.
+   */
+  async function startLauncher(opts: { launchMs?: number; announceParent: boolean }): Promise<number> {
+    await writeFile(
+      join(dir, "parent.mjs"),
+      `import { execFileSync } from "node:child_process";\n` +
+        `const env = { ...process.env${opts.announceParent ? ", RAVEN_CAPTURE_PARENT_PID: String(process.pid)" : ""} };\n` +
+        `execFileSync(process.execPath, ["-e", ${JSON.stringify(script())}], { cwd: ${JSON.stringify(dir)}, stdio: "ignore", env });\n`
+    );
+    parent = spawn(process.execPath, [join(dir, "parent.mjs")], {
+      env: {
+        ...process.env,
+        PID_FILE: pidFile,
+        CLOSED_FILE: closedFile,
+        ...(opts.launchMs ? { LAUNCH_MS: String(opts.launchMs) } : {}),
+      },
+      stdio: "ignore",
+    });
+    expect(await until(() => existsSync(pidFile), 10_000)).toBe(true);
+    childPid = Number((await import("node:fs")).readFileSync(pidFile, "utf-8"));
+    return childPid;
+  }
+
+  it.each([
+    ["the launcher announces its pid, as SessionManager does", true],
+    ["it only has its parent process to go by", false],
+  ])("exits when the process that launched it dies, so an orphan cannot keep the browser profile: %s", async (_how, announceParent) => {
     // The lock names only the Node process that called execFileSync. If that
     // process is killed mid-capture the capture child survives it and keeps
     // the Chromium profile, so the next owner's launch fails on the profile
     // lock. The child therefore watches its parent and shuts down with it.
-    const dir = await mkdtemp(join(tmpdir(), "capture-watchdog-"));
-    const pidFile = join(dir, "child.pid");
-    const closedFile = join(dir, "closed");
-    let childPid = 0;
-    let parent: ReturnType<typeof spawn> | undefined;
-    try {
-      await mkdir(join(dir, "node_modules", "playwright"), { recursive: true });
-      await writeFile(join(dir, "node_modules", "playwright", "index.js"), STUB);
-      const script = buildCaptureScript({
-        ...baseOpts,
-        profileDir: join(dir, "profile"),
-        navTimeoutMs: 1000,
-        pollBudgetMs: 60_000,
-        pollIntervalMs: 50,
-      });
-      await writeFile(
-        join(dir, "parent.mjs"),
-        `import { execFileSync } from "node:child_process";\n` +
-          `execFileSync(process.execPath, ["-e", ${JSON.stringify(script)}], { cwd: ${JSON.stringify(dir)}, stdio: "ignore" });\n`
-      );
+    await startLauncher({ announceParent });
 
-      parent = spawn(process.execPath, [join(dir, "parent.mjs")], {
-        env: { ...process.env, PID_FILE: pidFile, CLOSED_FILE: closedFile },
+    parent?.kill("SIGKILL");
+
+    expect(await until(() => !alive(childPid), 8_000)).toBe(true);
+    expect(existsSync(closedFile)).toBe(true); // it closed the browser context on the way out
+  }, 30_000);
+
+  it("exits when the launcher dies while the browser is still starting, not only after the launch has finished", async () => {
+    // A launch can take 20 seconds or more on a loaded machine. The watchdog
+    // used to be armed only once it had finished, so a launcher killed in that
+    // window left a capture that ran on for minutes, holding the profile.
+    await startLauncher({ launchMs: 60_000, announceParent: true });
+
+    parent?.kill("SIGKILL");
+
+    expect(await until(() => !alive(childPid), 8_000)).toBe(true);
+  }, 30_000);
+
+  it("does not start at all when its launcher is already gone", async () => {
+    // The launcher can die between spawning the child and the child's first
+    // line; by then the child has been adopted by init and has no parent to watch.
+    const gone = spawnSync(process.execPath, ["-e", ""]).pid;
+
+    const { code } = await new Promise<{ code: number | null }>((resolve) => {
+      const child = spawn(process.execPath, ["-e", script()], {
+        cwd: dir,
+        env: { ...process.env, PID_FILE: pidFile, CLOSED_FILE: closedFile, RAVEN_CAPTURE_PARENT_PID: String(gone) },
         stdio: "ignore",
       });
-      const until = async (predicate: () => boolean, ms: number) => {
-        const end = Date.now() + ms;
-        while (!predicate() && Date.now() < end) await new Promise((r) => setTimeout(r, 50));
-        return predicate();
-      };
-      expect(await until(() => existsSync(pidFile), 10_000)).toBe(true);
-      childPid = Number((await import("node:fs")).readFileSync(pidFile, "utf-8"));
+      child.on("exit", (exitCode) => resolve({ code: exitCode }));
+    });
 
-      parent.kill("SIGKILL");
-
-      const alive = () => {
-        try {
-          process.kill(childPid, 0);
-          return true;
-        } catch {
-          return false;
-        }
-      };
-      expect(await until(() => !alive(), 8_000)).toBe(true);
-      expect(existsSync(closedFile)).toBe(true); // it closed the browser context on the way out
-    } finally {
-      parent?.kill("SIGKILL");
-      if (childPid) {
-        try {
-          process.kill(childPid, "SIGKILL");
-        } catch {
-          // already gone
-        }
-      }
-      await rm(dir, { recursive: true, force: true });
-    }
-  }, 30_000);
+    expect(code).toBe(1);
+    expect(existsSync(pidFile)).toBe(false); // it never reached the browser launch
+  }, 20_000);
 });

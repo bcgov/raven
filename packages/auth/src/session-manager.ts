@@ -18,6 +18,7 @@ import {
   authProfileDir,
   buildCaptureScript,
   captureChildEnv,
+  captureFailureHint,
   describeCaptureFailure,
   ensureProfileDir,
   isEnvFlagOn,
@@ -34,7 +35,7 @@ import {
   recordAuthFailure,
 } from "./auth-failure-memo.js";
 import { withAuthLock } from "./auth-lock.js";
-import type { AuthConfig } from "./types.js";
+import type { AuthConfig, AuthenticateOptions } from "./types.js";
 import { BROWSER_USER_AGENT } from "./browser-ua.js";
 import { authCliPath } from "./auth-cli-path.js";
 
@@ -153,7 +154,7 @@ export class SessionManager {
     const envCookie = process.env["SMSESSION"];
     if (isUsableSmsession(envCookie)) {
       this.smsession = envCookie;
-      await this.cacheBestEffort(envCookie);
+      await this.cacheSession(envCookie, false);
       this.log("Loaded SMSESSION from environment variable");
       return envCookie;
     }
@@ -166,7 +167,7 @@ export class SessionManager {
     );
     if (legacyCached) {
       this.smsession = legacyCached;
-      await this.cacheBestEffort(legacyCached);
+      await this.cacheSession(legacyCached, false);
       this.log("Loaded SMSESSION from legacy confluence-mcp cache");
       return legacyCached;
     }
@@ -196,8 +197,11 @@ export class SessionManager {
    *
    * Every failure, including not getting the lock in time, is reported as a
    * "No valid SMSESSION found" error (see {@link SessionAuthError}).
+   *
+   * @param options - `interactive` marks an explicit request from a person (see
+   *   {@link AuthenticateOptions}); unattended callers leave it unset.
    */
-  async authenticate(): Promise<string> {
+  async authenticate(options: AuthenticateOptions = {}): Promise<string> {
     try {
       const profileDir = authProfileDir();
       await ensureProfileDir(profileDir);
@@ -216,9 +220,12 @@ export class SessionManager {
           }
           // A login that just failed was seen by everyone queued behind it; do
           // not open another window (and autofill the password again) for each.
-          const recent = await readRecentAuthFailure(this.failureMemoPath(), AUTH_FAILURE_COOLDOWN_MS);
-          if (recent) throw this.failure(this.cooldownDetail(recent));
-          return this.captureSession(profileDir);
+          // A person who runs the login command is the retry, so it is exempt.
+          if (!options.interactive) {
+            const recent = await readRecentAuthFailure(this.failureMemoPath(), AUTH_FAILURE_COOLDOWN_MS);
+            if (recent) throw this.failure(this.cooldownDetail(recent));
+          }
+          return this.captureSession(profileDir, options);
         },
         {
           onWait: () => this.log("Another RAVEN login is in progress; waiting for it to finish..."),
@@ -231,7 +238,7 @@ export class SessionManager {
   }
 
   /** Run the browser capture and cache the result. Callers hold the auth lock. */
-  private async captureSession(profileDir: string): Promise<string> {
+  private async captureSession(profileDir: string, options: AuthenticateOptions): Promise<string> {
     this.log("Starting browser authentication flow...");
 
     const credentials = resolveAutofillCredentials(process.env);
@@ -281,11 +288,11 @@ export class SessionManager {
       throw this.authFailure(err);
     }
 
-    // The login is verified. Failing to cache it must not turn it into a
-    // failed login: keep it for this process and carry on.
+    // The login is verified. For an unattended caller, failing to cache it
+    // must not turn it into a failed login: keep it for this process and carry on.
     this.smsession = smsession;
     await clearAuthFailure(this.failureMemoPath());
-    await this.cacheBestEffort(smsession);
+    await this.cacheSession(smsession, options.interactive === true);
     this.log("SMSESSION captured via browser auth");
     return smsession;
   }
@@ -301,7 +308,7 @@ export class SessionManager {
     const wait = Math.max(1, Math.ceil((AUTH_FAILURE_COOLDOWN_MS - (Date.now() - recent.at)) / 1000));
     return (
       `A browser login just failed ${ago}s ago (${recent.message}); not opening another for ${wait}s ` +
-      `so queued requests do not each start their own. Run raven-auth --force to retry now.`
+      `so queued requests do not each start their own. The login command below ignores this wait.`
     );
   }
 
@@ -312,8 +319,11 @@ export class SessionManager {
 
   /** Build the standard "No valid SMSESSION found" error with the ways to fix it. */
   private failure(detail: string): SessionAuthError {
+    const hint = captureFailureHint(detail);
     return new SessionAuthError(
-      `No valid SMSESSION found. Browser auth failed: ${detail}\n\n` +
+      `No valid SMSESSION found. Browser auth failed: ${detail}\n` +
+        (hint ? `${hint}\n` : "") +
+        `\n` +
         `To fix this, run one of:\n` +
         `  1. "${process.execPath}" "${authCliPath}" (opens browser for IDIR login)\n` +
         `     add --force to re-login even if the cached session looks fresh\n` +
@@ -322,12 +332,18 @@ export class SessionManager {
     );
   }
 
-  /** Cache a session, logging instead of throwing: a missing cache costs a login, not the session in hand. */
-  private async cacheBestEffort(cookie: string): Promise<void> {
+  /**
+   * Cache a session. A failure is logged, not thrown, unless `required`: for an
+   * unattended caller a missing cache costs a later login, not the session in
+   * hand, but the login command's whole purpose is to leave one in the cache.
+   */
+  private async cacheSession(cookie: string, required: boolean): Promise<void> {
     try {
       await writeCachedSession(this.config.cachePath, cookie);
     } catch (err) {
-      this.log(`Could not cache the session (${describeCaptureFailure(err)}); using it for this process only`);
+      const reason = describeCaptureFailure(err);
+      if (required) throw new Error(`The login succeeded but the session could not be saved: ${reason}`);
+      this.log(`Could not cache the session (${reason}); using it for this process only`);
     }
   }
 
@@ -360,12 +376,14 @@ export class SessionManager {
    * memory, so a re-login done elsewhere (the CLI, a sibling server) would
    * otherwise be deleted here and the next call would launch another browser
    * instead of adopting it.
+   *
+   * @returns true when the cache is gone afterwards (removed, or there was
+   *   none); false when it was left in place: a newer login replaced the cookie
+   *   that failed, or the file could not be read or removed. With no argument the
+   *   cache is removed whatever it holds, so false means it could not be removed.
    */
-  async invalidate(failedCookie?: string): Promise<void> {
+  async invalidate(failedCookie?: string): Promise<boolean> {
     this.smsession = null;
-    // With no argument this is an explicit reset (what --force does), so it
-    // also forgets a recent failed login and lets the next attempt through.
-    if (failedCookie === undefined) await clearAuthFailure(this.failureMemoPath());
     const removed =
       failedCookie === undefined
         ? await clearCachedSession(this.config.cachePath)
@@ -376,6 +394,7 @@ export class SessionManager {
         : "Session invalidated in memory; the cache was left as it is " +
             "(a newer login, or a file that could not be read or removed)"
     );
+    return removed;
   }
 
   /** User agent string for HTTP requests (matches Playwright browser) */

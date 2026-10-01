@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { existsSync } from "node:fs";
 import { chmod, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeFileAtomic } from "../atomic-file.js";
 import {
   clearCachedSession,
   clearCachedSessionIf,
@@ -10,6 +11,13 @@ import {
   readCachedSession,
   writeCachedSession,
 } from "../cookie-cache.js";
+
+// Wrap the atomic writer (still the real one) so a test can see that this
+// module writes through it. A plain writeFile would pass every other test here.
+vi.mock("../atomic-file.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../atomic-file.js")>();
+  return { ...actual, writeFileAtomic: vi.fn(actual.writeFileAtomic) };
+});
 
 // Permission bits cannot be used to force a delete failure on Windows, or for root.
 const cannotForceDeleteFailure = process.platform === "win32" || process.getuid?.() === 0;
@@ -99,6 +107,33 @@ describe("SMSESSION cache", () => {
       expect(await readCachedSession(cachePath, 1500)).toBeNull();
     });
 
+    describe("the Python Confluence MCP's cache, which getSession() falls back to", () => {
+      // That server stamps `cached_at` in epoch SECONDS, not `cachedAt` in
+      // milliseconds (confluence_mcp.py: json.dumps({"smsession": ..., "cached_at": time.time()})).
+      const legacy = (cookie: string, ageSeconds: number) =>
+        writeFile(cachePath, JSON.stringify({ smsession: cookie, cached_at: Date.now() / 1000 - ageSeconds }));
+
+      it("is read, with the seconds stamp converted", async () => {
+        await legacy("legacy-cookie", 10);
+        expect(await readCachedSession(cachePath, 1500)).toBe("legacy-cookie");
+      });
+
+      it("still expires by age", async () => {
+        await legacy("legacy-cookie", 1501);
+        expect(await readCachedSession(cachePath, 1500)).toBeNull();
+      });
+
+      it("is not trusted when it is stamped in the future", async () => {
+        await legacy("legacy-cookie", -3600);
+        expect(await readCachedSession(cachePath, 1500)).toBeNull();
+      });
+
+      it("never serves a LOGGEDOFF marker either", async () => {
+        await legacy("LOGGEDOFF", 10);
+        expect(await readCachedSession(cachePath, 1500)).toBeNull();
+      });
+    });
+
     it("tolerates a few seconds of clock skew", async () => {
       await seed("real-cookie", -5);
       expect(await readCachedSession(cachePath, 1500)).toBe("real-cookie");
@@ -137,6 +172,8 @@ describe("SMSESSION cache", () => {
       // atomic-file.test.ts; this checks the cache goes through that helper.
       await writeCachedSession(cachePath, "cookie-1", "apps.example.gov.bc.ca");
       await writeCachedSession(cachePath, "cookie-2", "apps.example.gov.bc.ca");
+
+      expect(writeFileAtomic).toHaveBeenCalledWith(cachePath, expect.stringContaining("cookie-2"));
 
       expect(await readdir(dir)).toEqual(["session.json"]);
       expect(JSON.parse(await readFile(cachePath, "utf-8")).smsession).toBe("cookie-2");
@@ -184,8 +221,8 @@ describe("SMSESSION cache", () => {
       expect(await clearCachedSessionIf(cachePath, "dead-cookie")).toBe(true);
     });
 
-    it("is a no-op when there is no cache file", async () => {
-      expect(await clearCachedSessionIf(cachePath, "dead-cookie")).toBe(false);
+    it("reports a missing cache file as gone, like clearCachedSession does, so nobody is told it was 'left as it is'", async () => {
+      expect(await clearCachedSessionIf(cachePath, "dead-cookie")).toBe(true);
     });
 
     it("leaves an unparseable file alone: readers already ignore it and the next atomic write replaces it", async () => {

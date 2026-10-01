@@ -10,9 +10,10 @@ const MAX_CLOCK_SKEW_SECONDS = 60;
 
 /**
  * The host recorded beside a cached cookie (informational only; never read
- * back): the configured Atlassian host, or "unknown" when that is blank or not
- * a URL. Computed here, not in a default parameter, so a bad environment value
- * can never make a cache write throw after a successful login.
+ * back): the host of ATLASSIAN_BASE_URL, the placeholder host when that is
+ * unset or empty, or "unknown" when it is not a URL. Computed here, not in a
+ * default parameter, so a bad environment value can never make a cache write
+ * throw after a successful login.
  */
 function defaultCapturedFor(): string {
   try {
@@ -50,12 +51,16 @@ export async function readCachedSession(
     if (!existsSync(cachePath)) return null;
 
     const raw = await readFile(cachePath, "utf-8");
-    const data: SessionData = JSON.parse(raw);
+    const data: SessionData & { cached_at?: unknown } = JSON.parse(raw);
 
     if (!isUsableSmsession(data.smsession)) return null;
-    if (!Number.isFinite(data.cachedAt)) return null;
 
-    const ageSeconds = (Date.now() - data.cachedAt) / 1000;
+    // The Python Confluence MCP's cache (read as a fallback by getSession) stamps
+    // `cached_at` in epoch seconds instead of `cachedAt` in milliseconds.
+    const cachedAt = data.cachedAt ?? (typeof data.cached_at === "number" ? data.cached_at * 1000 : NaN);
+    if (!Number.isFinite(cachedAt)) return null;
+
+    const ageSeconds = (Date.now() - cachedAt) / 1000;
     if (ageSeconds < -MAX_CLOCK_SKEW_SECONDS || ageSeconds >= ttlSeconds) {
       return null;
     }
@@ -111,8 +116,8 @@ export async function clearCachedSession(cachePath: string): Promise<boolean> {
  * new login away. A file that cannot be read or parsed is left alone: writes
  * are atomic, so it is not a sibling's half-finished write, and readers
  * already ignore it until the next write replaces it. Returns true only when
- * the file is gone afterwards; false when it was left alone or could not be
- * removed.
+ * the file is gone afterwards (removed, or it was not there); false when it was
+ * left alone or could not be removed.
  *
  * The read and the unlink are two steps, so a sibling could still cache a new
  * cookie between them. That window is well under a millisecond and the worst
@@ -125,8 +130,9 @@ export async function clearCachedSessionIf(
   let data: unknown;
   try {
     data = JSON.parse(await readFile(cachePath, "utf-8"));
-  } catch {
-    return false;
+  } catch (err) {
+    // A missing file is already gone; any other failure leaves it as it was.
+    return (err as NodeJS.ErrnoException).code === "ENOENT";
   }
   const cached = (data as Partial<SessionData> | null)?.smsession;
   if (isUsableSmsession(cached) && cached !== failedCookie) return false;

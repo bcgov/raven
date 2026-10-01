@@ -81,7 +81,7 @@ export async function createSpoFetch(
     if (isSpoSessionExpired(retryResponse)) {
       throw new Error(
         "SharePoint session expired and re-authentication failed. " +
-          `Run: "${process.execPath}" "${authCliPath}" --sharepoint`,
+          `Run: "${process.execPath}" "${authCliPath}" --sharepoint --force`,
       );
     }
 

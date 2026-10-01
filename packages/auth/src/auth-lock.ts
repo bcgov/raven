@@ -3,16 +3,19 @@ import { open, readFile, stat, unlink } from "node:fs/promises";
 
 /** Tuning for {@link withAuthLock}; the defaults suit an interactive browser login. */
 export interface AuthLockOptions {
-  /** A lock older than this is treated as abandoned (default 5 min, above the longest capture's 4.5 min process timeout). */
+  /** A lock older than this is treated as abandoned (default 6 min, above the longest capture's 5 min process timeout). */
   readonly staleMs?: number;
-  /** How long to wait for another owner before giving up (default 5 min). */
+  /** How long to wait for another owner before giving up (default 6 min, so a waiter outlasts the longest capture). */
   readonly waitMs?: number;
   /** Delay between attempts while waiting (default 250 ms). */
   readonly pollMs?: number;
   /**
-   * Called once, the first time the lock turns out to be held by a live owner
-   * and the caller has to wait. A login can take minutes, so without a notice
-   * the waiter looks hung. Not called when the lock is free or reclaimed.
+   * Called once, the first time the lock turns out to be held and the caller
+   * has to wait, which normally means another login is in progress. A login can
+   * take minutes, so without a notice the waiter looks hung. Not called when the
+   * lock is free or is reclaimed at once; it can still be called briefly while
+   * several waiters race to reclaim a dead owner's lock. If it returns a
+   * promise, a rejection is ignored.
    */
   readonly onWait?: () => void;
 }
@@ -29,8 +32,9 @@ type LockState =
   | { readonly kind: "unreadable" }
   | { readonly kind: "held"; readonly record: LockRecord };
 
-const DEFAULT_STALE_MS = 300_000;
-const DEFAULT_WAIT_MS = 300_000;
+/** The default for {@link AuthLockOptions.staleMs}; exported so the capture time budgets can be checked against it. */
+export const DEFAULT_STALE_MS = 360_000;
+const DEFAULT_WAIT_MS = 360_000;
 const DEFAULT_POLL_MS = 250;
 const REAP_STALE_MS = 10_000;
 const RELEASE_ATTEMPTS = 5;
@@ -39,14 +43,23 @@ const RELEASE_RETRY_MS = 20;
 /** errno values Windows reports, instead of EEXIST, while another process has the file open or pending delete. */
 const WINDOWS_BUSY_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
 
+/**
+ * How many consecutive attempts may fail with a Windows busy code before it is
+ * taken for the real error it is. A lock file that is being deleted is free again
+ * within moments; a permission problem on the directory reports the same codes
+ * and never clears, and would otherwise be waited out for the whole timeout and
+ * then blamed on another RAVEN process.
+ */
+const WINDOWS_BUSY_GRACE_ATTEMPTS = 20;
+
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 const errnoCode = (err: unknown): string | undefined => (err as NodeJS.ErrnoException).code;
 
-/** Whether an exclusive create failed because somebody else holds the file (so: wait), not because something is wrong. */
-function isBusy(err: unknown): boolean {
+/** Whether an exclusive create failed with a code Windows uses for a file that is momentarily unavailable. */
+function isWindowsBusy(err: unknown): boolean {
   const code = errnoCode(err);
-  return code === "EEXIST" || (process.platform === "win32" && code !== undefined && WINDOWS_BUSY_CODES.has(code));
+  return process.platform === "win32" && code !== undefined && WINDOWS_BUSY_CODES.has(code);
 }
 
 function pidAlive(pid: number): boolean {
@@ -208,27 +221,34 @@ export async function withAuthLock<T>(
   const token = randomUUID();
   const deadline = Date.now() + waitMs;
   let announcedWait = false;
+  let busyStreak = 0;
 
   for (;;) {
     let handle;
     try {
       handle = await open(lockPath, "wx", 0o600);
     } catch (err) {
-      if (!isBusy(err)) throw err;
+      // EEXIST: somebody holds the lock, so wait. A Windows busy code is waited
+      // out too, but only briefly (see WINDOWS_BUSY_GRACE_ATTEMPTS); anything
+      // else is a real error.
+      const held = errnoCode(err) === "EEXIST";
+      if (held) busyStreak = 0;
+      else if (!isWindowsBusy(err) || (busyStreak += 1) > WINDOWS_BUSY_GRACE_ATTEMPTS) throw err;
       // A reclaimed lock means the next open can win straight away; anything
       // else falls through to the deadline check and a sleep, so a lock that
       // cannot be removed never becomes a busy loop.
-      if ((await clearIfStale(lockPath, staleMs)) && Date.now() < deadline) continue;
+      if (held && (await clearIfStale(lockPath, staleMs)) && Date.now() < deadline) continue;
       if (Date.now() >= deadline) {
         throw new Error(
           "Timed out waiting for another RAVEN process to finish logging in. " +
             `If none is running, delete ${lockPath} and try again.`
         );
       }
-      if (!announcedWait) {
+      if (held && !announcedWait) {
         announcedWait = true;
         try {
-          options.onWait?.();
+          // The callback may be async: its rejection must not escape unhandled.
+          void Promise.resolve(options.onWait?.()).catch(() => {});
         } catch {
           // A failing notice must never break the wait.
         }

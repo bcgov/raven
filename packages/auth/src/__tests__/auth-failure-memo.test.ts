@@ -1,14 +1,22 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeFileAtomic } from "../atomic-file.js";
 import {
   AUTH_FAILURE_COOLDOWN_MS,
   clearAuthFailure,
   readRecentAuthFailure,
   recordAuthFailure,
 } from "../auth-failure-memo.js";
+
+// Wrap the atomic writer (still the real one) so a test can see that this
+// module writes through it. A plain writeFile would pass every other test here.
+vi.mock("../atomic-file.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../atomic-file.js")>();
+  return { ...actual, writeFileAtomic: vi.fn(actual.writeFileAtomic) };
+});
 
 describe("auth failure memo", () => {
   let dir: string;
@@ -21,6 +29,20 @@ describe("auth failure memo", () => {
 
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it("lasts the 30 seconds the documentation promises", async () => {
+    expect(AUTH_FAILURE_COOLDOWN_MS).toBe(30_000);
+    await writeFile(memoPath, JSON.stringify({ at: Date.now() - 29_000, message: "just inside" }));
+    expect(await readRecentAuthFailure(memoPath, AUTH_FAILURE_COOLDOWN_MS)).not.toBeNull();
+    await writeFile(memoPath, JSON.stringify({ at: Date.now() - 31_000, message: "just outside" }));
+    expect(await readRecentAuthFailure(memoPath, AUTH_FAILURE_COOLDOWN_MS)).toBeNull();
+  });
+
+  it("writes the memo atomically, so a sibling reading it never sees a partial file", async () => {
+    await recordAuthFailure(memoPath, "window closed");
+
+    expect(writeFileAtomic).toHaveBeenCalledWith(memoPath, expect.stringContaining("window closed"));
   });
 
   it("returns what was recorded while it is recent", async () => {

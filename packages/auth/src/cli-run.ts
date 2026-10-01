@@ -1,17 +1,17 @@
 import type { CacheCheck } from "./session-manager.js";
-import type { SpoCookies } from "./types.js";
+import type { AuthenticateOptions, SpoCookies } from "./types.js";
 
 /** What the CLI needs from the SiteMinder session manager; `SessionManager` satisfies it. */
 export interface CliSessionManager {
   checkCache(): Promise<CacheCheck>;
-  invalidate(failedCookie?: string): Promise<void>;
-  authenticate(): Promise<string>;
+  invalidate(failedCookie?: string): Promise<boolean>;
+  authenticate(options?: AuthenticateOptions): Promise<string>;
 }
 
 /** What the CLI needs from the SharePoint session manager; `SpoSessionManager` satisfies it. */
 export interface CliSpoSessionManager {
-  invalidate(failedPair?: SpoCookies): Promise<void>;
-  authenticate(): Promise<SpoCookies>;
+  invalidate(failedPair?: SpoCookies): Promise<boolean>;
+  authenticate(options?: AuthenticateOptions): Promise<SpoCookies>;
 }
 
 /** Everything {@link runCli} touches outside itself, so it can run without a browser, a network or a home directory. */
@@ -54,7 +54,15 @@ async function siteMinderLogin(deps: CliDeps, force: boolean): Promise<number> {
 
   if (force) {
     deps.log("--force: ignoring any cached session.\n");
-    await sm.invalidate();
+    // Left in place, the cookie would be adopted again by the login below and
+    // the command would report success without logging in.
+    if (!(await sm.invalidate())) {
+      deps.error(
+        "Could not remove the cached session, so it would be used again.\n" +
+          "Close anything that has ~/.workflow-suite/session.json open, or delete it, and run again."
+      );
+      return 1;
+    }
   } else {
     // A cookie's age says nothing about whether the server still honours it,
     // so ask the server before declaring the cache good.
@@ -73,6 +81,8 @@ async function siteMinderLogin(deps: CliDeps, force: boolean): Promise<number> {
     if (check.state === "dead") {
       deps.log("The cached SMSESSION was rejected by the server (expired or logged off).");
       deps.log("Discarding it and logging in again...\n");
+      // Not checked: it also reports false when a newer login replaced the
+      // cookie, and that login is then adopted below.
       await sm.invalidate(check.cookie);
     }
   }
@@ -85,7 +95,9 @@ async function siteMinderLogin(deps: CliDeps, force: boolean): Promise<number> {
   deps.log("    automatically; refresh the page manually if it lingers\n");
 
   try {
-    await sm.authenticate();
+    // An explicit request: not held back by a login that just failed, and not
+    // a success unless the session reached the cache the other tools read.
+    await sm.authenticate({ interactive: true });
   } catch (err) {
     deps.error(`\nAuthentication failed: ${describe(err)}`);
     return 1;
@@ -105,7 +117,13 @@ async function sharePointLogin(deps: CliDeps, force: boolean): Promise<number> {
 
   if (force) {
     deps.log("--force: ignoring any cached SharePoint session.\n");
-    await sm.invalidate();
+    if (!(await sm.invalidate())) {
+      deps.error(
+        "Could not remove the cached SharePoint session, so it would be used again.\n" +
+          "Close anything that has ~/.workflow-suite/spo-session.json open, or delete it, and run again."
+      );
+      return 1;
+    }
   } else if (await deps.readCachedSpoSession()) {
     deps.log("Valid SharePoint session found in cache.");
     deps.log("  Cache:  ~/.workflow-suite/spo-session.json");
@@ -121,7 +139,7 @@ async function sharePointLogin(deps: CliDeps, force: boolean): Promise<number> {
   deps.log("    automatically; refresh the page manually if it lingers\n");
 
   try {
-    await sm.authenticate();
+    await sm.authenticate({ interactive: true });
   } catch (err) {
     deps.error(`\nAuthentication failed: ${describe(err)}`);
     return 1;

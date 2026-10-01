@@ -21,6 +21,19 @@ export interface AuthConfig {
   lockOptions?: AuthLockOptions;
 }
 
+/** Options for a manager's `authenticate()`. */
+export interface AuthenticateOptions {
+  /**
+   * True for an explicit request from a person (the `raven-auth` command):
+   * a login that failed in the last 30 seconds does not stop it, and a login
+   * that cannot be cached is an error, because leaving a session in the cache
+   * for the other tools is the point of the command. Unattended callers
+   * (`getSession()`) leave it unset: they honour the cooldown, and keep a
+   * login they could not cache for their own process.
+   */
+  readonly interactive?: boolean;
+}
+
 /** A fetch-like function with authentication attached */
 export type AuthenticatedFetch = (
   url: string,

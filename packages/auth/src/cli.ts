@@ -16,6 +16,9 @@
  *
  * The behaviour lives in `cli-run.ts` so it can be tested; this file only
  * wires it to the real managers, the environment and the process exit code.
+ * The credentials (a keychain read on macOS, PowerShell on Windows) are loaded
+ * only once a login is under way, so `--help` and a mistyped option never
+ * touch them.
  */
 
 import { join } from "node:path";
@@ -28,12 +31,22 @@ import { SpoSessionManager } from "./spo-session-manager.js";
 
 const spoCachePath = join(homedir(), ".workflow-suite", "spo-session.json");
 
-loadEnv();
+let envLoaded = false;
+
+/** Run `use` after the environment has been loaded (once). The managers and the cache TTL read it. */
+function withEnv<T>(use: () => T): T {
+  if (!envLoaded) {
+    loadEnv();
+    envLoaded = true;
+  }
+  return use();
+}
+
 runCli(process.argv.slice(2), {
-  sessionManager: () => new SessionManager(),
-  spoSessionManager: () => new SpoSessionManager(),
+  sessionManager: () => withEnv(() => new SessionManager()),
+  spoSessionManager: () => withEnv(() => new SpoSessionManager()),
   readCachedSpoSession: () =>
-    readCachedSpoSession(spoCachePath, Number(process.env["SHAREPOINT_SESSION_TTL"]) || undefined),
+    withEnv(() => readCachedSpoSession(spoCachePath, Number(process.env["SHAREPOINT_SESSION_TTL"]) || undefined)),
   log: (line) => console.log(line),
   error: (line) => console.error(line),
 }).then(

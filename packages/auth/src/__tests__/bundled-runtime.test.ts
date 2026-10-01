@@ -1,5 +1,4 @@
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -35,9 +34,10 @@ describe("browser authentication subprocess runtime", () => {
       JSON.stringify({ status: "ok", cookies: { SMSESSION: "test-session" } }),
     );
     const manager = new SessionManager({
-      cachePath: join(tmpdir(), `raven-auth-${randomUUID()}.json`),
+      // Inside the throwaway home, which is removed afterwards, so nothing is left in the temp directory.
+      cachePath: join(home.dir, "session.json"),
       // Never contend with a real login holding the user's profile lock.
-      lockPath: join(tmpdir(), `raven-auth-${randomUUID()}.lock`),
+      lockPath: join(home.dir, "browser-profile.lock"),
     });
 
     await manager.authenticate();
@@ -57,8 +57,8 @@ describe("browser authentication subprocess runtime", () => {
       }),
     );
     const manager = new SpoSessionManager({
-      cachePath: join(tmpdir(), `raven-spo-auth-${randomUUID()}.json`),
-      lockPath: join(tmpdir(), `raven-spo-auth-${randomUUID()}.lock`),
+      cachePath: join(home.dir, "spo-session.json"),
+      lockPath: join(home.dir, "browser-profile.lock"),
     });
 
     await manager.authenticate();

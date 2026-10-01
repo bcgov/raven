@@ -8,11 +8,11 @@ function harness(overrides: Partial<CliDeps> = {}) {
   const err: string[] = [];
   const sm = {
     checkCache: vi.fn<() => Promise<CacheCheck>>().mockResolvedValue({ state: "none" }),
-    invalidate: vi.fn().mockResolvedValue(undefined),
+    invalidate: vi.fn().mockResolvedValue(true),
     authenticate: vi.fn().mockResolvedValue("real-cookie"),
   };
   const spo = {
-    invalidate: vi.fn().mockResolvedValue(undefined),
+    invalidate: vi.fn().mockResolvedValue(true),
     authenticate: vi.fn().mockResolvedValue({ fedAuth: "fa", rtFa: "rt" }),
   };
   const sessionManager = vi.fn(() => sm);
@@ -63,6 +63,14 @@ describe("runCli: SiteMinder login", () => {
     expect(h.out()).toContain("rejected by the server");
   });
 
+  it("logs in as an explicit request: a login that just failed elsewhere must not stop it, and an unsaved session is an error", async () => {
+    const h = harness();
+
+    await runCli([], h.deps);
+
+    expect(h.sm.authenticate).toHaveBeenCalledWith({ interactive: true });
+  });
+
   it("logs in when nothing usable is cached", async () => {
     const h = harness();
 
@@ -82,6 +90,21 @@ describe("runCli: SiteMinder login", () => {
     expect(h.sm.checkCache).not.toHaveBeenCalled();
     expect(h.sm.invalidate).toHaveBeenCalledWith();
     expect(h.sm.authenticate).toHaveBeenCalledTimes(1);
+    expect(h.sm.authenticate).toHaveBeenCalledWith({ interactive: true });
+  });
+
+  it("with --force stops, rather than reporting success, when the cached session cannot be removed", async () => {
+    // Left in place, the cookie would be adopted again by the login below and
+    // the command would print "Authentication successful" without logging in.
+    const h = harness();
+    h.sm.invalidate.mockResolvedValue(false);
+
+    expect(await runCli(["--force"], h.deps)).toBe(1);
+
+    expect(h.sm.authenticate).not.toHaveBeenCalled();
+    expect(h.err()).toContain("Could not remove the cached session");
+    expect(h.err()).toContain("~/.workflow-suite/session.json");
+    expect(h.out()).not.toContain("Authentication successful");
   });
 
   it("prints the failure and exits 1 when the login fails", async () => {
@@ -118,6 +141,7 @@ describe("runCli: SharePoint login", () => {
     expect(await runCli(["--sharepoint"], h.deps)).toBe(0);
 
     expect(h.spo.authenticate).toHaveBeenCalledTimes(1);
+    expect(h.spo.authenticate).toHaveBeenCalledWith({ interactive: true });
     expect(h.out()).toContain("Authentication successful");
   });
 
@@ -136,6 +160,17 @@ describe("runCli: SharePoint login", () => {
       expect(h.spo.authenticate).toHaveBeenCalledTimes(1);
     }
   );
+
+  it("with --force stops, rather than reporting success, when the cached pair cannot be removed", async () => {
+    const h = harness();
+    h.spo.invalidate.mockResolvedValue(false);
+
+    expect(await runCli(["--sharepoint", "--force"], h.deps)).toBe(1);
+
+    expect(h.spo.authenticate).not.toHaveBeenCalled();
+    expect(h.err()).toContain("Could not remove the cached SharePoint session");
+    expect(h.err()).toContain("~/.workflow-suite/spo-session.json");
+  });
 
   it("prints the failure and exits 1 when the login fails", async () => {
     const h = harness();

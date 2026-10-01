@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,9 +11,16 @@ vi.mock("node:os", async (importOriginal) => ({
   homedir: () => home.dir,
 }));
 vi.mock("node:child_process", () => ({ execFileSync: vi.fn() }));
+// The real builder, wrapped so a test can read the options the manager gave it
+// instead of searching the generated script for them.
+vi.mock("../capture-script.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../capture-script.js")>();
+  return { ...actual, buildCaptureScript: vi.fn(actual.buildCaptureScript) };
+});
 
 import { execFileSync } from "node:child_process";
-import { CAPTURE_TIMINGS } from "../capture-script.js";
+import { BROWSER_USER_AGENT } from "../browser-ua.js";
+import { CAPTURE_TIMINGS, authProfileDir, buildCaptureScript } from "../capture-script.js";
 import { SessionManager, probeSession } from "../session-manager.js";
 
 const TARGET = "https://apps.example.gov.bc.ca/int/confluence";
@@ -45,6 +52,7 @@ describe("SessionManager", () => {
     savedEnvCookie = process.env["SMSESSION"];
     delete process.env["SMSESSION"];
     vi.mocked(execFileSync).mockReset();
+    vi.mocked(buildCaptureScript).mockClear();
   });
 
   afterEach(async () => {
@@ -86,6 +94,29 @@ describe("SessionManager", () => {
       expect(execFileSync).toHaveBeenCalledTimes(1);
     });
 
+    it("fails an interactive login that cannot be cached: the command exists to leave a session for the other tools", async () => {
+      const blocker = join(home.dir, "not-a-directory");
+      await writeFile(blocker, "");
+      const sm = new SessionManager({
+        targetUrl: TARGET,
+        cachePath: join(blocker, "session.json"),
+        lockPath,
+        sessionTtlSeconds: 1500,
+      });
+      vi.mocked(execFileSync).mockReturnValue(captureOutput("real-cookie"));
+
+      await expect(sm.authenticate({ interactive: true })).rejects.toThrow(
+        /No valid SMSESSION found\. Browser auth failed: The login succeeded but the session could not be saved/
+      );
+    });
+
+    it("still caches an interactive login normally", async () => {
+      vi.mocked(execFileSync).mockReturnValue(captureOutput("real-cookie"));
+
+      await expect(manager().authenticate({ interactive: true })).resolves.toBe("real-cookie");
+      expect(JSON.parse(await readFile(cachePath, "utf-8")).smsession).toBe("real-cookie");
+    });
+
     describe("after a failed browser login", () => {
       // Several MCP servers can queue behind one login. If it fails (the user
       // ignores the window, the browser is missing), each waiter used to open
@@ -103,7 +134,7 @@ describe("SessionManager", () => {
         const second = manager().authenticate();
 
         await expect(second).rejects.toThrow(/No valid SMSESSION found\. Browser auth failed: A browser login just failed .*Cookies not captured within 120s/);
-        await expect(second).rejects.toThrow(/--force/);
+        await expect(second).rejects.toThrow(/The login command below ignores this wait/);
         expect(execFileSync).toHaveBeenCalledTimes(1);
       });
 
@@ -140,16 +171,47 @@ describe("SessionManager", () => {
         await expect(manager().authenticate()).resolves.toBe("cookie-from-sibling");
       });
 
-      it("is cleared by invalidate() with no argument (an explicit reset, as --force does) but not by invalidate(cookie)", async () => {
+      it("does not stop an interactive login: the person running the command is the retry", async () => {
+        // An MCP server's login fails, its error tells the user to run the
+        // command, and they do so a few seconds later.
+        failCapture("Cookies not captured within 120s: SMSESSION");
+        await expect(manager().authenticate()).rejects.toThrow(/Cookies not captured/);
+        vi.mocked(execFileSync).mockReset();
+        vi.mocked(execFileSync).mockReturnValue(captureOutput("real-cookie"));
+
+        await expect(manager().authenticate({ interactive: true })).resolves.toBe("real-cookie");
+
+        expect(execFileSync).toHaveBeenCalledTimes(1);
+        expect(existsSync(memoFile())).toBe(false);
+      });
+
+      it("does not stop an interactive login that waited for the lock while the login it queued behind failed", async () => {
+        // Clearing the memo before queuing would not help: the owner's failure
+        // writes a new one, and the memo is read only once the lock is won.
+        await writeFile(lockPath, JSON.stringify({ pid: process.pid, at: Date.now(), token: "owner" }));
+        const owner = new Promise<void>((resolve) =>
+          setTimeout(async () => {
+            await writeFile(memoFile(), JSON.stringify({ at: Date.now(), message: "the owner's login failed" }));
+            await unlink(lockPath);
+            resolve();
+          }, 150)
+        );
+        vi.mocked(execFileSync).mockReturnValue(captureOutput("real-cookie"));
+
+        await expect(manager().authenticate({ interactive: true })).resolves.toBe("real-cookie");
+        await owner;
+
+        expect(execFileSync).toHaveBeenCalledTimes(1);
+      });
+
+      it("is left alone by invalidate(): that is about the cached session, not about a failed login", async () => {
         failCapture();
         await expect(manager().authenticate()).rejects.toThrow();
-        expect(existsSync(memoFile())).toBe(true);
-
-        await manager().invalidate("some-expired-cookie");
-        expect(existsSync(memoFile())).toBe(true);
 
         await manager().invalidate();
-        expect(existsSync(memoFile())).toBe(false);
+        await manager().invalidate("some-expired-cookie");
+
+        expect(existsSync(memoFile())).toBe(true);
       });
 
       it("does not record a failure to get the lock as a failed login", async () => {
@@ -197,7 +259,8 @@ describe("SessionManager", () => {
       // or Chromium looked like.
       vi.mocked(execFileSync).mockImplementation(() => {
         throw Object.assign(new Error("Command failed: /usr/bin/node -e \nconst { chromium } = require('playwright'); SCRIPT-BODY"), {
-          stderr: "Error: Cannot find module 'playwright'\n    at Module._resolveFilename",
+          stderr:
+            "node:internal/modules/cjs/loader:1478\n  throw err;\n  ^\n\nError: Cannot find module 'playwright'\n    at Module._resolveFilename",
         });
       });
 
@@ -208,6 +271,29 @@ describe("SessionManager", () => {
 
       expect(failure?.message).toMatch(/No valid SMSESSION found\. Browser auth failed: Error: Cannot find module 'playwright'/);
       expect(failure?.message).not.toContain("SCRIPT-BODY");
+    });
+
+    it("tells the person how to install the browser when it is missing, which Playwright's one-line summary does not", async () => {
+      vi.mocked(execFileSync).mockReturnValue(
+        JSON.stringify({
+          status: "error",
+          message: "Capture failed: browserType.launchPersistentContext: Executable doesn't exist at /x/chromium/chrome",
+        })
+      );
+
+      const failure = await manager().authenticate().then(
+        () => undefined,
+        (err: Error) => err
+      );
+
+      expect(failure?.message).toMatch(/^No valid SMSESSION found\. Browser auth failed: Capture failed: .*Executable doesn't exist/);
+      expect(failure?.message).toContain('run "npx playwright install chromium"');
+    });
+
+    it("adds no installation advice to a failure that is not about the browser", async () => {
+      vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ status: "error", message: "window closed" }));
+
+      await expect(manager().authenticate()).rejects.not.toThrow(/playwright install/);
     });
 
     it("says so, once, when it has to wait for another login to finish", async () => {
@@ -263,7 +349,11 @@ describe("SessionManager", () => {
         vi.mocked(execFileSync).mockReturnValue(captureOutput("real-cookie"));
         await manager().authenticate();
         const [, args, options] = vi.mocked(execFileSync).mock.calls[0];
-        return { args: args as string[], options: options as { env: Record<string, string | undefined>; stdio: unknown[]; maxBuffer: number } };
+        return {
+          args: args as string[],
+          built: vi.mocked(buildCaptureScript).mock.calls[0][0],
+          options: options as { env: Record<string, string | undefined>; stdio: unknown[]; maxBuffer: number },
+        };
       };
 
       afterEach(() => {
@@ -286,24 +376,31 @@ describe("SessionManager", () => {
       it("navigates to the protected dashboard, not an anonymously readable REST endpoint", async () => {
         // The REST endpoints answer anonymous requests, so SiteMinder never
         // challenges there and no SMSESSION is ever minted.
-        const { args } = await capture();
-        expect(args[1]).toContain(`page.goto(${JSON.stringify(PROBE)},`);
-        expect(args[1]).not.toContain("/rest/api");
+        const { built } = await capture();
+        expect(built.targetUrl).toBe(PROBE);
+        expect(built.targetUrl).not.toContain("/rest/api");
       });
 
       it("asks the capture for SMSESSION only, and verifies it against the dashboard", async () => {
-        const { args } = await capture();
-        expect(args[1]).toContain(`const wanted = ${JSON.stringify(["SMSESSION"])}`);
-        expect(args[1]).toContain(`const verifyUrl = ${JSON.stringify(PROBE)}`);
+        const { built } = await capture();
+        expect(built.cookieNames).toEqual(["SMSESSION"]);
+        expect(built.verifyUrl).toBe(PROBE);
+      });
+
+      it("runs the capture on the shared persistent profile, with the browser identity the HTTP clients use", async () => {
+        const { built } = await capture();
+        expect(built.profileDir).toBe(authProfileDir());
+        expect(built.profileDir).toBe(join(home.dir, ".workflow-suite", "browser-profile"));
+        expect(built.userAgent).toBe(BROWSER_USER_AGENT);
       });
 
       it("uses the shared capture timings, so the script's own budgets always end before the process is killed", async () => {
-        const { args, options } = await capture();
+        const { built, options } = await capture();
         const timings = CAPTURE_TIMINGS.siteMinder;
 
         expect((options as unknown as { timeout: number }).timeout).toBe(timings.processTimeoutMs);
-        expect(args[1]).toContain(`timeout: ${timings.navTimeoutMs} }`);
-        expect(args[1]).toContain(`within ${timings.pollBudgetMs / 1000}s`);
+        expect(built.navTimeoutMs).toBe(timings.navTimeoutMs);
+        expect(built.pollBudgetMs).toBe(timings.pollBudgetMs);
       });
 
       it("gives the child an output buffer large enough that a chatty browser cannot kill it mid-login", async () => {
@@ -313,35 +410,43 @@ describe("SessionManager", () => {
 
       it("hands autofill credentials to the child only through its environment", async () => {
         setEnv({ IDIR_USERNAME: "jdoe-test-user", IDIR_PASSWORD: "s3cret-test-password", RAVEN_AUTH_AUTOFILL: undefined });
-        const { args, options } = await capture();
+        const { args, built, options } = await capture();
 
+        expect(built.autofill).toBe(true); // the script contains the autofill routine only when there is something to type
         expect(options.env["RAVEN_AUTOFILL_USERNAME"]).toBe("jdoe-test-user");
         expect(options.env["RAVEN_AUTOFILL_PASSWORD"]).toBe("s3cret-test-password");
         expect(JSON.stringify(args)).not.toContain("s3cret-test-password");
         expect(JSON.stringify(args)).not.toContain("jdoe-test-user");
       });
 
-      it("passes no autofill credentials when autofill is switched off, in any spelling", async () => {
-        setEnv({ IDIR_USERNAME: "jdoe-test-user", IDIR_PASSWORD: "s3cret-test-password", RAVEN_AUTH_AUTOFILL: "FALSE" });
-        const { options } = await capture();
+      it.each(["off", "FALSE", "0", "no", "disabled"])(
+        "adds no RAVEN_AUTOFILL_* variables and no autofill code when RAVEN_AUTH_AUTOFILL=%s",
+        async (spelling) => {
+          // Only the copies made for typing are withheld. The child still inherits the
+          // whole environment, IDIR_PASSWORD included (see captureChildEnv).
+          setEnv({ IDIR_USERNAME: "jdoe-test-user", IDIR_PASSWORD: "s3cret-test-password", RAVEN_AUTH_AUTOFILL: spelling });
+          const { built, options } = await capture();
 
-        expect(options.env["RAVEN_AUTOFILL_PASSWORD"]).toBeUndefined();
-      });
+          expect(options.env["RAVEN_AUTOFILL_USERNAME"]).toBeUndefined();
+          expect(options.env["RAVEN_AUTOFILL_PASSWORD"]).toBeUndefined();
+          expect(built.autofill).toBe(false);
+        }
+      );
 
       it("treats RAVEN_AUTH_DEBUG=0 as off: the child's stderr stays piped and the script does not log", async () => {
         setEnv({ RAVEN_AUTH_DEBUG: "0" });
-        const { args, options } = await capture();
+        const { built, options } = await capture();
 
         expect(options.stdio[2]).toBe("pipe");
-        expect(args[1]).toContain("const DEBUG = false");
+        expect(built.debug).toBe(false);
       });
 
       it("inherits the child's stderr and logs when RAVEN_AUTH_DEBUG is on", async () => {
         setEnv({ RAVEN_AUTH_DEBUG: "1" });
-        const { args, options } = await capture();
+        const { built, options } = await capture();
 
         expect(options.stdio[2]).toBe("inherit");
-        expect(args[1]).toContain("const DEBUG = true");
+        expect(built.debug).toBe(true);
       });
     });
 
@@ -391,8 +496,7 @@ describe("SessionManager", () => {
 
       await manager().authenticate();
 
-      const script = vi.mocked(execFileSync).mock.calls[0][1]?.[1] as string;
-      expect(script).toContain(`const verifyUrl = ${JSON.stringify(PROBE)}`);
+      expect(vi.mocked(buildCaptureScript).mock.calls[0][0].verifyUrl).toBe(PROBE);
     });
   });
 
@@ -409,6 +513,19 @@ describe("SessionManager", () => {
       vi.mocked(execFileSync).mockReturnValue(captureOutput("real-cookie"));
 
       await expect(manager().getSession()).resolves.toBe("real-cookie");
+    });
+
+    it("falls back to the Python Confluence MCP's cache, without opening a browser", async () => {
+      // `cached_at` is epoch seconds there; the cache reader's validation once made this step unreachable.
+      await mkdir(join(home.dir, ".confluence-mcp"));
+      await writeFile(
+        join(home.dir, ".confluence-mcp", "session.json"),
+        JSON.stringify({ smsession: "legacy-cookie", cached_at: Date.now() / 1000 - 30 })
+      );
+
+      await expect(manager().getSession()).resolves.toBe("legacy-cookie");
+      expect(execFileSync).not.toHaveBeenCalled();
+      expect(JSON.parse(await readFile(cachePath, "utf-8")).smsession).toBe("legacy-cookie");
     });
 
     it("still serves an env-var cookie when the cache cannot be written, instead of failing the first call", async () => {

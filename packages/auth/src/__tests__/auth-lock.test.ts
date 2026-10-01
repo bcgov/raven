@@ -18,6 +18,8 @@ const faults = vi.hoisted(() => ({
   unlink: 0, // fail the next N unlinks of the lock file
   unlinkCode: "EBUSY",
   openBusy: [] as string[], // error codes thrown by the next exclusive opens of the lock path
+  opens: 0, // exclusive opens of the lock path attempted
+  afterLockRead: null as null | (() => Promise<void>), // run once, right after the next read of the lock file
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -28,6 +30,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     open: (async (...args: Parameters<typeof actual.open>) => {
       const [path, flags] = args;
       const target = String(path);
+      if (flags === "wx" && target.endsWith(".lock")) faults.opens += 1;
       if (flags === "wx" && target.endsWith(".lock") && faults.openBusy.length) {
         throw injected(faults.openBusy.shift() as string);
       }
@@ -49,7 +52,13 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         faults.readLock -= 1;
         throw injected("EMFILE");
       }
-      return actual.readFile(...args);
+      const contents = await actual.readFile(...args);
+      if (faults.afterLockRead && String(args[0]).endsWith(".lock")) {
+        const hook = faults.afterLockRead;
+        faults.afterLockRead = null;
+        await hook();
+      }
+      return contents;
     }) as typeof actual.readFile,
     unlink: (async (...args: Parameters<typeof actual.unlink>) => {
       if (faults.unlink > 0 && String(args[0]).endsWith(".lock")) {
@@ -84,6 +93,8 @@ describe("withAuthLock", () => {
     faults.unlink = 0;
     faults.unlinkCode = "EBUSY";
     faults.openBusy = [];
+    faults.opens = 0;
+    faults.afterLockRead = null;
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -260,6 +271,49 @@ describe("withAuthLock", () => {
       }
     });
 
+    describe("when the Windows busy codes never clear", () => {
+      // A delete-pending lock file clears within moments. A permission problem
+      // on the directory reports the same codes and never clears: waiting out
+      // the whole timeout and then saying "another RAVEN process" would hide it.
+      const onWindows = async (run: () => Promise<void>) => {
+        const platform = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+        Object.defineProperty(process, "platform", { value: "win32" });
+        try {
+          await run();
+        } finally {
+          Object.defineProperty(process, "platform", platform);
+        }
+      };
+
+      it.each(["EPERM", "EACCES", "EBUSY"])("gives up with the real %s error soon after, not after the full wait", async (code) => {
+        faults.openBusy = Array.from({ length: 10_000 }, () => code);
+        const onWait = vi.fn();
+
+        await onWindows(async () => {
+          const started = Date.now();
+          await expect(
+            withAuthLock(lockPath, async () => "never", { ...FAST, waitMs: 20_000, onWait })
+          ).rejects.toThrow(new RegExp(code));
+          expect(Date.now() - started).toBeLessThan(5_000);
+        });
+
+        // Nobody is logging in, so nobody is told to wait for them.
+        expect(onWait).not.toHaveBeenCalled();
+      });
+
+      it("counts only consecutive failures: a lock that is held, then briefly delete-pending, is still waited for", async () => {
+        await holdLock({ pid: process.pid, at: Date.now() });
+        const release = sleep(150).then(() => unlink(lockPath));
+        // Two busy codes first, then the genuine EEXIST waits for the owner as usual.
+        faults.openBusy = ["EPERM", "EPERM"];
+
+        await onWindows(async () => {
+          await expect(withAuthLock(lockPath, async () => "ran", FAST)).resolves.toBe("ran");
+        });
+        await release;
+      });
+    });
+
     it.skipIf(process.platform === "win32")(
       "still treats the same error as fatal on platforms where EEXIST is the only busy signal",
       async () => {
@@ -369,6 +423,72 @@ describe("withAuthLock", () => {
     await release;
 
     expect(onWait).toHaveBeenCalledTimes(1);
+  });
+
+  it("pauses between attempts while it waits, instead of hammering the lock file", async () => {
+    // Without the pause a waiting process creates and removes the reclaim lease
+    // thousands of times a second for as long as the other login takes.
+    await holdLock({ pid: process.pid, at: Date.now() });
+
+    await expect(withAuthLock(lockPath, async () => "never", { pollMs: 50, waitMs: 300, staleMs: 60_000 })).rejects.toThrow(
+      /another RAVEN process/i
+    );
+
+    expect(faults.opens).toBeGreaterThan(2);
+    expect(faults.opens).toBeLessThan(15); // about 300 ms / 50 ms, with room for a slow machine
+  });
+
+  it("does not remove a lock that changed hands between the check and the removal", async () => {
+    // A reclaimer judges the old owner's lock stale from one read, then reads it
+    // again just before unlinking; if somebody took the lock in between, theirs
+    // must survive.
+    await holdLock({ pid: spawnSync(process.execPath, ["-e", ""]).pid, at: Date.now() }); // a dead owner's lock
+    const successor = JSON.stringify({ pid: process.pid, at: Date.now(), token: "successor" });
+    faults.afterLockRead = async () => {
+      await writeFile(lockPath, successor); // the lock is taken over right after the stale one was read
+    };
+
+    await expect(withAuthLock(lockPath, async () => "never", { ...FAST, waitMs: 200 })).rejects.toThrow(/another RAVEN process/i);
+
+    expect(await readFile(lockPath, "utf-8")).toBe(successor);
+  });
+
+  it("does not let a notice that throws break the wait", async () => {
+    await holdLock({ pid: process.pid, at: Date.now() });
+    const release = sleep(120).then(() => unlink(lockPath));
+
+    await expect(
+      withAuthLock(lockPath, async () => "ran", {
+        ...FAST,
+        onWait: () => {
+          throw new Error("the notice failed");
+        },
+      })
+    ).resolves.toBe("ran");
+    await release;
+  });
+
+  it("survives a notice that returns a rejected promise instead of crashing the process", async () => {
+    // onWait is typed to return void, which also accepts an async function.
+    await holdLock({ pid: process.pid, at: Date.now() });
+    const unhandled: unknown[] = [];
+    const record = (reason: unknown) => void unhandled.push(reason);
+    process.on("unhandledRejection", record);
+    const release = sleep(120).then(() => unlink(lockPath));
+    try {
+      await withAuthLock(lockPath, async () => "ran", {
+        ...FAST,
+        onWait: (async () => {
+          throw new Error("notice sink failed");
+        }) as () => void,
+      });
+      await release;
+      await sleep(50); // an unhandled rejection is reported on a later tick
+    } finally {
+      process.off("unhandledRejection", record);
+    }
+
+    expect(unhandled).toEqual([]);
   });
 
   it("does not call onWait when the lock is free", async () => {

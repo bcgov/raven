@@ -5,9 +5,28 @@ import type { SpoCookies, SpoSessionData } from "./types.js";
 
 const DEFAULT_TTL_SECONDS = 28800; // 8 hours — SPO cookies far outlive SMSESSION
 
+/** How far in the future a cached timestamp may be before it is distrusted (clock skew allowance). */
+const MAX_CLOCK_SKEW_SECONDS = 60;
+
+/**
+ * Whether a value is a usable SharePoint cookie pair: `fedAuth` and `rtFa` are
+ * both non-blank strings. Accepts `unknown` because it is applied to values
+ * parsed from a cache file that anything may have written, and to what the
+ * capture child reported.
+ */
+export function isUsableSpoPair(value: unknown): value is SpoCookies {
+  const pair = value as Partial<Record<keyof SpoCookies, unknown>> | null | undefined;
+  const nonBlank = (cookie: unknown): boolean => typeof cookie === "string" && cookie.trim() !== "";
+  return nonBlank(pair?.fedAuth) && nonBlank(pair?.rtFa);
+}
+
 /**
  * Read a cached SharePoint Online cookie pair from disk.
- * Returns the pair if present and not past the TTL, null otherwise.
+ * Returns the pair if present and not past the TTL, null otherwise. An entry
+ * whose cookies are not non-blank strings, or whose timestamp is missing,
+ * non-numeric or far in the future, is rejected: the age of such an entry is
+ * NaN or negative, which would otherwise compare as "younger than the TTL" and
+ * be served long after it should have expired.
  */
 export async function readCachedSpoSession(
   cachePath: string,
@@ -19,14 +38,14 @@ export async function readCachedSpoSession(
     const raw = await readFile(cachePath, "utf-8");
     const data: SpoSessionData = JSON.parse(raw);
 
-    if (!data.fedAuth || !data.rtFa) return null;
+    if (!isUsableSpoPair(data)) return null;
 
     // A missing/garbage cachedAt makes the age NaN, which would bypass the
     // TTL comparison and never expire — reject the entry instead.
     if (!Number.isFinite(data.cachedAt)) return null;
 
     const ageSeconds = (Date.now() - data.cachedAt) / 1000;
-    if (ageSeconds >= ttlSeconds) return null;
+    if (ageSeconds < -MAX_CLOCK_SKEW_SECONDS || ageSeconds >= ttlSeconds) return null;
 
     return { fedAuth: data.fedAuth, rtFa: data.rtFa };
   } catch {
@@ -74,7 +93,7 @@ export async function clearCachedSpoSession(cachePath: string): Promise<boolean>
  * would throw the new login away. The SharePoint twin of
  * `clearCachedSessionIf`: a file that cannot be read or parsed is left alone,
  * and valid JSON that is not a usable record is removed. Returns true only
- * when the file is gone afterwards.
+ * when the file is gone afterwards (removed, or it was not there).
  */
 export async function clearCachedSpoSessionIf(
   cachePath: string,
@@ -83,12 +102,11 @@ export async function clearCachedSpoSessionIf(
   let data: unknown;
   try {
     data = JSON.parse(await readFile(cachePath, "utf-8"));
-  } catch {
-    return false;
+  } catch (err) {
+    // A missing file is already gone; any other failure leaves it as it was.
+    return (err as NodeJS.ErrnoException).code === "ENOENT";
   }
-  const cached = data as Partial<SpoSessionData> | null;
-  const usable = !!cached?.fedAuth && !!cached?.rtFa;
-  if (usable && (cached?.fedAuth !== failedPair.fedAuth || cached?.rtFa !== failedPair.rtFa)) {
+  if (isUsableSpoPair(data) && (data.fedAuth !== failedPair.fedAuth || data.rtFa !== failedPair.rtFa)) {
     return false;
   }
 
