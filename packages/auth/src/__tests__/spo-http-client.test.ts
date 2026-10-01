@@ -94,6 +94,23 @@ describe("createSpoFetch", () => {
     expect(calls[1]).toContain("FedAuth=fa2");
   });
 
+  it("tells invalidate which pair failed so a fresher cached login is not discarded", async () => {
+    const sm = fakeSessionManager({
+      getSession: vi
+        .fn()
+        .mockResolvedValueOnce({ fedAuth: "fa1", rtFa: "rt1" }) // eager validation in factory
+        .mockResolvedValueOnce({ fedAuth: "dead-fa", rtFa: "dead-rt" }) // first request
+        .mockResolvedValueOnce({ fedAuth: "fa2", rtFa: "rt2" }), // after invalidate
+    });
+    let n = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => (++n === 1 ? expiredResponse() : okResponse())));
+
+    const spoFetch = await createSpoFetch(sm);
+    await spoFetch("https://example.sharepoint.com/_api/web");
+
+    expect(sm.invalidate).toHaveBeenCalledWith({ fedAuth: "dead-fa", rtFa: "dead-rt" });
+  });
+
   it("throws when the retry also comes back expired", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => expiredResponse()));
     const spoFetch = await createSpoFetch(fakeSessionManager());

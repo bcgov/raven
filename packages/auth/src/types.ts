@@ -1,3 +1,5 @@
+import type { AuthLockOptions } from "./auth-lock.js";
+
 /** Cached session data persisted to ~/.workflow-suite/session.json */
 export interface SessionData {
   smsession: string;
@@ -13,13 +15,23 @@ export interface AuthConfig {
   cachePath: string;
   /** Session TTL in seconds (default: 1500 = 25 minutes) */
   sessionTtlSeconds: number;
+  /** Cross-process lock serialising captures on the shared browser profile (default: beside the profile) */
+  lockPath?: string;
+  /** Tuning for that lock: stale limit, how long to wait for another login, poll interval */
+  lockOptions?: AuthLockOptions;
 }
 
-/** Result from the Playwright auth subprocess */
-export interface AuthResult {
-  status: "ok" | "error";
-  smsession?: string;
-  message?: string;
+/** Options for a manager's `authenticate()`. */
+export interface AuthenticateOptions {
+  /**
+   * True for an explicit request from a person (the `raven-auth` command):
+   * a login that failed in the last 30 seconds does not stop it, and a login
+   * that cannot be cached is an error, because leaving a session in the cache
+   * for the other tools is the point of the command. Unattended callers
+   * (`getSession()`) leave it unset: they honour the cooldown, and keep a
+   * login they could not cache for their own process.
+   */
+  readonly interactive?: boolean;
 }
 
 /** A fetch-like function with authentication attached */
@@ -56,12 +68,8 @@ export interface SpoAuthConfig {
   cachePath: string;
   /** Session TTL in seconds (default: 28800 = 8 hours) */
   sessionTtlSeconds: number;
-}
-
-/** Result from the SPO Playwright auth subprocess */
-export interface SpoAuthResult {
-  status: "ok" | "error";
-  fedAuth?: string;
-  rtFa?: string;
-  message?: string;
+  /** Cross-process lock serialising captures on the shared browser profile (default: beside the profile) */
+  lockPath?: string;
+  /** Tuning for that lock: stale limit, how long to wait for another login, poll interval */
+  lockOptions?: AuthLockOptions;
 }

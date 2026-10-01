@@ -5,11 +5,34 @@ import { homedir } from "node:os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 import {
+  isUsableSpoPair,
   readCachedSpoSession,
   writeCachedSpoSession,
   clearCachedSpoSession,
+  clearCachedSpoSessionIf,
 } from "./spo-cookie-cache.js";
-import type { SpoAuthConfig, SpoAuthResult, SpoCookies } from "./types.js";
+import {
+  CAPTURE_MAX_BUFFER,
+  CAPTURE_TIMINGS,
+  authLockPath,
+  authProfileDir,
+  buildCaptureScript,
+  captureChildEnv,
+  captureFailureHint,
+  describeCaptureFailure,
+  ensureProfileDir,
+  isEnvFlagOn,
+  resolveAutofillCredentials,
+  type CaptureResult,
+} from "./capture-script.js";
+import {
+  AUTH_FAILURE_COOLDOWN_MS,
+  clearAuthFailure,
+  readRecentAuthFailure,
+  recordAuthFailure,
+} from "./auth-failure-memo.js";
+import { withAuthLock } from "./auth-lock.js";
+import type { AuthenticateOptions, SpoAuthConfig, SpoCookies } from "./types.js";
 import { BROWSER_USER_AGENT } from "./browser-ua.js";
 import { authCliPath } from "./auth-cli-path.js";
 
@@ -19,6 +42,14 @@ const DEFAULT_CACHE_PATH = join(
   "spo-session.json",
 );
 const DEFAULT_TTL = 28800; // 8 hours
+
+/**
+ * The standard "no valid SharePoint session" failure. The MCP tool
+ * instructions key on its first words, so every way a login can fail,
+ * including not getting the browser-login lock in time, is reported in this
+ * one form.
+ */
+class SpoAuthError extends Error {}
 
 /**
  * Manages the SharePoint Online FedAuth/rtFa cookie pair: cache, refresh,
@@ -41,6 +72,8 @@ export class SpoSessionManager {
       sessionTtlSeconds:
         config?.sessionTtlSeconds ??
         (Number(process.env["SHAREPOINT_SESSION_TTL"]) || DEFAULT_TTL),
+      lockPath: config?.lockPath,
+      lockOptions: config?.lockOptions,
     };
   }
 
@@ -61,12 +94,11 @@ export class SpoSessionManager {
       return cached;
     }
 
-    const envFedAuth = process.env["SPO_FEDAUTH"];
-    const envRtFa = process.env["SPO_RTFA"];
-    if (envFedAuth && envRtFa) {
-      const pair: SpoCookies = { fedAuth: envFedAuth, rtFa: envRtFa };
+    const envPair = { fedAuth: process.env["SPO_FEDAUTH"], rtFa: process.env["SPO_RTFA"] };
+    if (isUsableSpoPair(envPair)) {
+      const pair: SpoCookies = envPair;
       this.cookies = pair;
-      await writeCachedSpoSession(this.config.cachePath, pair, this.host());
+      await this.cacheSession(pair, false);
       this.log("Loaded SPO session from environment variables");
       return pair;
     }
@@ -78,132 +110,201 @@ export class SpoSessionManager {
    * Open a browser window for Entra/IDIR authentication against SharePoint
    * Online and capture the FedAuth + rtFa cookies. Runs Playwright in a
    * subprocess to avoid conflicts with the MCP server's stdio transport.
+   *
+   * The capture runs on the shared persistent profile, so an existing Entra
+   * session usually completes the flow with no typing; when a full login is
+   * needed, credentials autofill from the environment and only the MFA
+   * prompt is left to the human.
+   *
+   * Shares the profile (and so the cross-process lock) with the SiteMinder
+   * capture; after winning the lock it adopts a session another process just
+   * cached instead of opening a second browser.
+   *
+   * Every failure, including not getting the lock in time, is reported as a
+   * "No valid SharePoint session found" error (see {@link SpoAuthError}).
+   *
+   * @param options - `interactive` marks an explicit request from a person (see
+   *   {@link AuthenticateOptions}); unattended callers leave it unset.
    */
-  async authenticate(): Promise<SpoCookies> {
+  async authenticate(options: AuthenticateOptions = {}): Promise<SpoCookies> {
+    try {
+      const profileDir = authProfileDir();
+      await ensureProfileDir(profileDir);
+
+      return await withAuthLock(
+        this.config.lockPath ?? authLockPath(),
+        async () => {
+          const adopted = await readCachedSpoSession(
+            this.config.cachePath,
+            this.config.sessionTtlSeconds,
+          );
+          if (adopted) {
+            this.cookies = adopted;
+            this.log("Adopted the SPO session another process just captured");
+            return adopted;
+          }
+          // A login that just failed was seen by everyone queued behind it; do
+          // not open another window (and autofill the password again) for each.
+          // A person who runs the login command is the retry, so it is exempt.
+          if (!options.interactive) {
+            const recent = await readRecentAuthFailure(this.failureMemoPath(), AUTH_FAILURE_COOLDOWN_MS);
+            if (recent) throw this.failure(this.cooldownDetail(recent));
+          }
+          return this.captureSession(profileDir, options);
+        },
+        {
+          onWait: () => this.log("Another RAVEN login is in progress; waiting for it to finish..."),
+          ...this.config.lockOptions,
+        },
+      );
+    } catch (err) {
+      throw err instanceof SpoAuthError ? err : this.authFailure(err);
+    }
+  }
+
+  /** Run the browser capture and cache the result. Callers hold the auth lock. */
+  private async captureSession(profileDir: string, options: AuthenticateOptions): Promise<SpoCookies> {
     this.log("Starting SPO browser authentication flow...");
 
-    const targetUrl = this.config.targetUrl;
+    const credentials = resolveAutofillCredentials(process.env);
+    const debug = isEnvFlagOn(process.env["RAVEN_AUTH_DEBUG"]);
+    const timings = CAPTURE_TIMINGS.sharePoint;
 
-    const script = `
-const { chromium } = require('playwright');
+    const script = buildCaptureScript({
+      targetUrl: this.config.targetUrl,
+      cookieNames: ["FedAuth", "rtFa"],
+      cookieDomainFilter: "sharepoint.com",
+      profileDir,
+      userAgent: BROWSER_USER_AGENT,
+      navTimeoutMs: timings.navTimeoutMs,
+      pollBudgetMs: timings.pollBudgetMs,
+      debug,
+      autofill: credentials !== null,
+    });
 
-(async () => {
-  const browser = await chromium.launch({
-    headless: false,
-    args: ['--disable-blink-features=AutomationControlled'],
-  });
-
-  const context = await browser.newContext({
-    userAgent: ${JSON.stringify(BROWSER_USER_AGENT)},
-    ignoreHTTPSErrors: true,
-  });
-
-  const page = await context.newPage();
-
-  // Entra's device-auth hop (device.login.microsoftonline.com) intermittently
-  // drops the first connection in automated Chromium with
-  // net::ERR_SOCKET_NOT_CONNECTED; a plain reload succeeds. Auto-retry failed
-  // main-frame navigations so the user never has to refresh the error page.
-  let navRetries = 0;
-  page.on('requestfailed', (request) => {
-    try {
-      if (!request.isNavigationRequest()) return;
-      if (request.frame() !== page.mainFrame()) return;
-      const failure = request.failure();
-      if (failure && failure.errorText === 'net::ERR_ABORTED') return;
-      if (navRetries >= 3) return;
-      navRetries += 1;
-      setTimeout(() => { page.reload().catch(() => {}); }, 750);
-    } catch {}
-  });
-
-  try {
-    await page.goto(${JSON.stringify(targetUrl)}, { waitUntil: 'networkidle', timeout: 120000 });
-  } catch (navErr) {
-    const navMsg = navErr && navErr.message ? String(navErr.message) : String(navErr);
-    const isTransientNet = navMsg.indexOf('net::ERR_') !== -1;
-    const isTimeout = navErr && navErr.name === 'TimeoutError';
-    if (!isTransientNet && !isTimeout) {
-      await browser.close().catch(() => {});
-      console.log(JSON.stringify({ status: 'error', message: 'Navigation failed: ' + navMsg.split('\\n')[0] }));
-      return;
-    }
-    // net::ERR_* drops are reloaded by the requestfailed handler above, and a
-    // goto timeout can coexist with a login the user already completed — the
-    // cookie poll below is the authoritative success signal for both.
-  }
-
-  let fedAuth = null;
-  let rtFa = null;
-  const startTime = Date.now();
-  while (Date.now() - startTime < 180000) {
-    const cookies = await context.cookies();
-    for (const cookie of cookies) {
-      if (!cookie.domain || cookie.domain.indexOf('sharepoint.com') === -1) continue;
-      if (cookie.name === 'FedAuth') fedAuth = cookie.value;
-      if (cookie.name === 'rtFa') rtFa = cookie.value;
-    }
-    if (fedAuth && rtFa) break;
-    await new Promise(r => setTimeout(r, 1000));
-  }
-
-  await browser.close();
-
-  if (fedAuth && rtFa) {
-    console.log(JSON.stringify({ status: 'ok', fedAuth, rtFa }));
-  } else {
-    console.log(JSON.stringify({ status: 'error', message: 'FedAuth/rtFa cookies not captured within 180s' }));
-  }
-})();
-`;
-
+    let pair: SpoCookies;
     try {
       // Run from the monorepo root so require('playwright') resolves
       // from the hoisted node_modules regardless of the caller's cwd.
       const monorepoRoot = join(__dirname, "..", "..", "..");
       const result = execFileSync(process.execPath, ["-e", script], {
         encoding: "utf-8",
-        timeout: 240_000,
+        timeout: timings.processTimeoutMs,
+        maxBuffer: CAPTURE_MAX_BUFFER,
         cwd: monorepoRoot,
-        stdio: ["ignore", "pipe", "pipe"],
-        env: {
-          ...process.env,
-          PLAYWRIGHT_BROWSERS_PATH:
-            process.env["PLAYWRIGHT_BROWSERS_PATH"] ?? undefined,
-        },
+        stdio: ["ignore", "pipe", debug ? "inherit" : "pipe"],
+        env: captureChildEnv(process.env, credentials),
       });
 
-      const parsed: SpoAuthResult = JSON.parse(result.trim());
+      const parsed: CaptureResult = JSON.parse(result.trim());
+      const captured = { fedAuth: parsed.cookies?.["FedAuth"], rtFa: parsed.cookies?.["rtFa"] };
 
-      if (parsed.status !== "ok" || !parsed.fedAuth || !parsed.rtFa) {
+      if (parsed.status !== "ok" || !isUsableSpoPair(captured)) {
         throw new Error(
           parsed.message ?? "Authentication failed: cookies not captured",
         );
       }
-
-      const pair: SpoCookies = { fedAuth: parsed.fedAuth, rtFa: parsed.rtFa };
-      this.cookies = pair;
-      await writeCachedSpoSession(this.config.cachePath, pair, this.host());
-      this.log("FedAuth/rtFa captured via browser auth");
-      return pair;
+      pair = captured;
     } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Unknown authentication error";
-      throw new Error(
-        `No valid SharePoint session found. Browser auth failed: ${msg}\n\n` +
-          `To fix this, run one of:\n` +
-          `  1. "${process.execPath}" "${authCliPath}" --sharepoint (opens browser for IDIR/Entra login)\n` +
-          `  2. Set SPO_FEDAUTH and SPO_RTFA env vars (paste cookie values from browser DevTools)\n\n` +
-          `The session caches to ~/.workflow-suite/spo-session.json for 8 hours.`,
-      );
+      await recordAuthFailure(this.failureMemoPath(), describeCaptureFailure(err));
+      throw this.authFailure(err);
+    }
+
+    // The capture succeeded. For an unattended caller, failing to cache it
+    // must not turn it into a failed login: keep it for this process and carry on.
+    this.cookies = pair;
+    await clearAuthFailure(this.failureMemoPath());
+    await this.cacheSession(pair, options.interactive === true);
+    this.log("FedAuth/rtFa captured via browser auth");
+    return pair;
+  }
+
+  /** Where a failed login is remembered: beside the capture lock, one file per product. */
+  private failureMemoPath(): string {
+    return `${this.config.lockPath ?? authLockPath()}.sharepoint-failed`;
+  }
+
+  /** Say why a login is not being attempted right now. */
+  private cooldownDetail(recent: { at: number; message: string }): string {
+    const ago = Math.max(0, Math.round((Date.now() - recent.at) / 1000));
+    const wait = Math.max(1, Math.ceil((AUTH_FAILURE_COOLDOWN_MS - (Date.now() - recent.at)) / 1000));
+    return (
+      `A browser login just failed ${ago}s ago (${recent.message}); not opening another for ${wait}s ` +
+      `so queued requests do not each start their own. The login command below ignores this wait.`
+    );
+  }
+
+  /** Build the standard "No valid SharePoint session found" error from a failure's cause. */
+  private authFailure(err: unknown): SpoAuthError {
+    return this.failure(describeCaptureFailure(err));
+  }
+
+  /** Build the standard "No valid SharePoint session found" error with the ways to fix it. */
+  private failure(detail: string): SpoAuthError {
+    const hint = captureFailureHint(detail);
+    return new SpoAuthError(
+      `No valid SharePoint session found. Browser auth failed: ${detail}\n` +
+        (hint ? `${hint}\n` : "") +
+        `\n` +
+        `To fix this, run one of:\n` +
+        `  1. "${process.execPath}" "${authCliPath}" --sharepoint (opens browser for IDIR/Entra login)\n` +
+        `     add --force to re-login even if the cached session looks fresh\n` +
+        `  2. Set SPO_FEDAUTH and SPO_RTFA env vars (paste cookie values from browser DevTools)\n\n` +
+        `The session caches to ~/.workflow-suite/spo-session.json for 8 hours.`,
+    );
+  }
+
+  /**
+   * Cache a pair. A failure is logged, not thrown, unless `required`: for an
+   * unattended caller a missing cache costs a later login, not the session in
+   * hand, but the login command's whole purpose is to leave one in the cache.
+   */
+  private async cacheSession(pair: SpoCookies, required: boolean): Promise<void> {
+    try {
+      await writeCachedSpoSession(this.config.cachePath, pair, this.host());
+    } catch (err) {
+      const reason = describeCaptureFailure(err);
+      if (required) throw new Error(`The login succeeded but the session could not be saved: ${reason}`);
+      this.log(`Could not cache the SPO session (${reason}); using it for this process only`);
     }
   }
 
-  /** Invalidate the current session (e.g., on expiry detection). */
-  async invalidate(): Promise<void> {
+  /**
+   * Invalidate the current session (e.g., on expiry detection).
+   *
+   * Pass the pair that just failed: the disk cache is then removed only if it
+   * still holds that pair. Long-lived MCP servers keep their pair in memory,
+   * so a login another process cached since would otherwise be deleted here
+   * and the next call would launch another browser instead of adopting it.
+   *
+   * @returns true when the cache will no longer hand out the pair that failed: it
+   *   was removed, there was none, or a newer login replaced it (which is kept).
+   *   false when the cache still holds that pair and could not be updated, so the
+   *   next login would adopt it again. With no argument the cache is removed
+   *   whatever it holds, so false means it could not be removed.
+   */
+  async invalidate(failedPair?: SpoCookies): Promise<boolean> {
     this.cookies = null;
-    await clearCachedSpoSession(this.config.cachePath);
-    this.log("SPO session invalidated");
+    if (failedPair === undefined) {
+      const removed = await clearCachedSpoSession(this.config.cachePath);
+      this.log(removed ? "SPO session invalidated" : "SPO session invalidated in memory; the cache could not be removed");
+      return removed;
+    }
+
+    if (await clearCachedSpoSessionIf(this.config.cachePath, failedPair)) {
+      this.log("SPO session invalidated");
+      return true;
+    }
+    // Left alone: a newer login replaced the pair (fine, it is adopted next), or the
+    // cache still holds the pair that failed and could not be removed.
+    const cached = await readCachedSpoSession(this.config.cachePath, this.config.sessionTtlSeconds);
+    const stillCached = cached !== null && cached.fedAuth === failedPair.fedAuth && cached.rtFa === failedPair.rtFa;
+    this.log(
+      stillCached
+        ? "SPO session invalidated in memory; the cache still holds it and could not be updated"
+        : "SPO session invalidated in memory; the cache holds a newer login (or nothing usable) and was left as it is",
+    );
+    return !stillCached;
   }
 
   /** User agent string for HTTP requests (matches the Playwright browser). */

@@ -67,7 +67,9 @@ export async function createSpoFetch(
 
     if (!isSpoSessionExpired(response)) return response;
 
-    await sessionManager.invalidate();
+    // Name the pair that failed so a fresher login cached by another process
+    // is adopted, not deleted.
+    await sessionManager.invalidate(cookies);
     const fresh = await sessionManager.getSession();
 
     const retryResponse = await limitedFetch(url, {
@@ -79,7 +81,7 @@ export async function createSpoFetch(
     if (isSpoSessionExpired(retryResponse)) {
       throw new Error(
         "SharePoint session expired and re-authentication failed. " +
-          `Run: "${process.execPath}" "${authCliPath}" --sharepoint`,
+          `Run: "${process.execPath}" "${authCliPath}" --sharepoint --force`,
       );
     }
 

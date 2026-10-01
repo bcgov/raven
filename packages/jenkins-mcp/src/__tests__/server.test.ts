@@ -4,7 +4,8 @@ import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { createBasicAuthFetch, type AuthenticatedFetch } from "@nrs/auth";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JenkinsClient } from "../jenkins-client.js";
 import {
   configuredBasicAuthCredentials,
@@ -98,6 +99,291 @@ describe("Jenkins MCP server", () => {
     expect(sessionFetch).not.toHaveBeenCalled();
     expect(basicFetch).toHaveBeenCalledTimes(1);
     expect(basicFetch.mock.calls[0][1]?.redirect).toBe("manual");
+  });
+
+  describe("Basic credentials sent to a SiteMinder-protected host", () => {
+    const BASE = "https://apps.example.gov.bc.ca/int/jenkins";
+    const SITEMINDER_REDIRECT = () =>
+      new Response("<title>302 Found</title>", {
+        status: 302,
+        headers: { Location: "https://logon7.gov.bc.ca/clp-cgi/dirSelect.cgi?partner=fed67" },
+      });
+    const factoriesFor = (basicFetch: AuthenticatedFetch, sessionFetch: AuthenticatedFetch) => ({
+      createBasicFetch: () => basicFetch,
+      createSessionFetch: vi.fn().mockResolvedValue(sessionFetch),
+    });
+
+    // The switch prints a notice to stderr; capture it instead of letting it
+    // spill into the test output, and so it can be asserted on.
+    let stderrWrites: string[];
+    beforeEach(() => {
+      stderrWrites = [];
+      vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+        stderrWrites.push(String(chunk));
+        return true;
+      }) as typeof process.stderr.write);
+    });
+    afterEach(() => {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    });
+
+    it("never forwards the Basic Authorization header to the session transport after the switch", async () => {
+      // The security-critical negative: the credentials go to the SiteMinder
+      // host once, are refused, and must not follow the request to the session.
+      const wire = vi.fn().mockResolvedValue(SITEMINDER_REDIRECT());
+      vi.stubGlobal("fetch", wire);
+      const sessionFetch = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      const fetch = await createJenkinsFetch(
+        BASE,
+        { user: "jenkins-bot", password: "api-token-value" },
+        { createBasicFetch: createBasicAuthFetch, createSessionFetch: vi.fn().mockResolvedValue(sessionFetch) },
+      );
+
+      await fetch(`${BASE}/api/json`, { headers: { Accept: "application/json" } });
+
+      expect(new Headers(wire.mock.calls[0][1]?.headers).get("Authorization")).toMatch(/^Basic /);
+      const replayed = sessionFetch.mock.calls[0][1] as RequestInit | undefined;
+      expect(new Headers(replayed?.headers).get("Authorization")).toBeNull();
+      expect(new Headers(replayed?.headers).get("Accept")).toBe("application/json");
+    });
+
+    it("forwards the caller's method, body and headers to the Basic attempt, the replay and every later call", async () => {
+      // The call counts alone cannot tell a faithful replay from one that lost
+      // the request on the way.
+      const basicFetch = vi.fn().mockImplementation(async () => SITEMINDER_REDIRECT());
+      const sessionFetch = vi.fn().mockImplementation(async () => new Response(null, { status: 201 }));
+      const fetch = await createJenkinsFetch(
+        BASE,
+        { user: "jenkins-bot", password: "api-token" },
+        factoriesFor(basicFetch, sessionFetch),
+      );
+      const init = { method: "POST", body: "a=1", headers: { "X-Test": "1", "Content-Type": "application/x-www-form-urlencoded" } };
+
+      await fetch(`${BASE}/job/A/build`, init);
+      await fetch(`${BASE}/job/B/build`, init);
+
+      const [basicInit] = [basicFetch.mock.calls[0][1] as RequestInit];
+      expect(basicInit).toMatchObject({ method: "POST", body: "a=1", redirect: "manual" });
+      expect(new Headers(basicInit.headers).get("X-Test")).toBe("1");
+      for (const call of sessionFetch.mock.calls) {
+        const replay = call[1] as RequestInit;
+        expect(replay).toMatchObject({ method: "POST", body: "a=1" });
+        expect(new Headers(replay.headers).get("X-Test")).toBe("1");
+      }
+      expect(sessionFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("prints one notice per switch, and it never contains the credentials", async () => {
+      const basicFetch = vi.fn().mockImplementation(async () => SITEMINDER_REDIRECT());
+      const sessionFetch = vi.fn().mockImplementation(async () => new Response("{}", { status: 200 }));
+      const fetch = await createJenkinsFetch(
+        BASE,
+        { user: "jenkins-bot", password: "api-token-value" },
+        factoriesFor(basicFetch, sessionFetch),
+      );
+
+      await fetch(`${BASE}/api/json`);
+      await fetch(`${BASE}/job/A/api/json`);
+
+      const notices = stderrWrites.filter((line) => line.includes("[raven-jenkins]"));
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).not.toContain("api-token-value");
+      expect(notices[0]).not.toContain("jenkins-bot");
+    });
+
+    it.each([
+      [301, "https://logon7.gov.bc.ca/clp-cgi/dirSelect.cgi"],
+      [303, "https://logon7.gov.bc.ca/clp-cgi/dirSelect.cgi"],
+      [307, "https://logon7.gov.bc.ca/clp-cgi/dirSelect.cgi"],
+      [308, "https://logon7.gov.bc.ca/clp-cgi/dirSelect.cgi"],
+      [302, "/siteminderagent/forms/login.fcc"],
+      [302, "https://apps.example.gov.bc.ca/fedLaunch?target=jenkins"],
+    ])("switches for a %i redirect to %s", async (status, location) => {
+      const basicFetch = vi.fn().mockResolvedValue(new Response(null, { status, headers: { Location: location } }));
+      const sessionFetch = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      const fetch = await createJenkinsFetch(
+        BASE,
+        { user: "jenkins-bot", password: "api-token" },
+        factoriesFor(basicFetch, sessionFetch),
+      );
+
+      expect((await fetch(`${BASE}/api/json`)).status).toBe(200);
+      expect(sessionFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not switch for a redirect that carries no Location", async () => {
+      const basicFetch = vi.fn().mockResolvedValue(new Response(null, { status: 302 }));
+      const factories = factoriesFor(basicFetch, vi.fn());
+      const fetch = await createJenkinsFetch(BASE, { user: "jenkins-bot", password: "api-token" }, factories);
+
+      expect((await fetch(`${BASE}/api/json`)).status).toBe(302);
+      expect(factories.createSessionFetch).not.toHaveBeenCalled();
+    });
+
+    it("returns the session transport's own login redirect as-is rather than looping (a dead cached cookie)", async () => {
+      const basicFetch = vi.fn().mockImplementation(async () => SITEMINDER_REDIRECT());
+      const sessionFetch = vi.fn().mockImplementation(async () => SITEMINDER_REDIRECT());
+      const fetch = await createJenkinsFetch(
+        BASE,
+        { user: "jenkins-bot", password: "api-token" },
+        factoriesFor(basicFetch, sessionFetch),
+      );
+
+      const response = await fetch(`${BASE}/api/json`);
+
+      expect(response.status).toBe(302);
+      expect(basicFetch).toHaveBeenCalledTimes(1);
+      expect(sessionFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("uses the session transport directly, never creating a Basic one, when no Basic credentials are configured", async () => {
+      const sessionFetch = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      const createBasicFetch = vi.fn();
+      const fetch = await createJenkinsFetch(BASE, null, {
+        createBasicFetch,
+        createSessionFetch: vi.fn().mockResolvedValue(sessionFetch),
+      });
+
+      expect((await fetch(`${BASE}/api/json`)).status).toBe(200);
+      expect(createBasicFetch).not.toHaveBeenCalled();
+      expect(stderrWrites.filter((line) => line.includes("[raven-jenkins]"))).toEqual([]);
+    });
+
+    it("falls back to the SiteMinder session when Basic auth is redirected to the login page", async () => {
+      // SiteMinder intercepts before Jenkins can look at the Authorization header,
+      // so Basic credentials can never succeed on that host: every call used to
+      // fail with "Jenkins request failed (302)".
+      const basicFetch = vi.fn().mockResolvedValue(SITEMINDER_REDIRECT());
+      const sessionFetch = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      const factories = factoriesFor(basicFetch, sessionFetch);
+      const fetch = await createJenkinsFetch(BASE, { user: "jenkins-bot", password: "api-token" }, factories);
+
+      const response = await fetch(`${BASE}/api/json`);
+
+      expect(response.status).toBe(200);
+      expect(factories.createSessionFetch).toHaveBeenCalledTimes(1);
+      expect(sessionFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("stays on the session after the first redirect instead of retrying Basic on every call", async () => {
+      const basicFetch = vi.fn().mockResolvedValue(SITEMINDER_REDIRECT());
+      const sessionFetch = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      const factories = factoriesFor(basicFetch, sessionFetch);
+      const fetch = await createJenkinsFetch(BASE, { user: "jenkins-bot", password: "api-token" }, factories);
+
+      await fetch(`${BASE}/api/json`);
+      await fetch(`${BASE}/job/A/api/json`);
+      await fetch(`${BASE}/job/B/api/json`);
+
+      expect(basicFetch).toHaveBeenCalledTimes(1);
+      expect(sessionFetch).toHaveBeenCalledTimes(3);
+      expect(factories.createSessionFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("replays a POST body through the session after the redirect", async () => {
+      const basicFetch = vi.fn().mockResolvedValue(SITEMINDER_REDIRECT());
+      const sessionFetch = vi.fn().mockResolvedValue(new Response(null, { status: 201 }));
+      const fetch = await createJenkinsFetch(
+        BASE,
+        { user: "jenkins-bot", password: "api-token" },
+        factoriesFor(basicFetch, sessionFetch),
+      );
+
+      await fetch(`${BASE}/job/A/build`, { method: "POST", body: "a=1" });
+
+      const init = sessionFetch.mock.calls[0][1] as RequestInit;
+      expect(init.method).toBe("POST");
+      expect(init.body).toBe("a=1");
+    });
+
+    it("creates the session once when calls race on the first redirect", async () => {
+      const basicFetch = vi.fn().mockImplementation(async () => SITEMINDER_REDIRECT());
+      const sessionFetch = vi.fn().mockImplementation(async () => new Response("{}", { status: 200 }));
+      const factories = factoriesFor(basicFetch, sessionFetch);
+      const fetch = await createJenkinsFetch(BASE, { user: "jenkins-bot", password: "api-token" }, factories);
+
+      await Promise.all([fetch(`${BASE}/api/json`), fetch(`${BASE}/job/A/api/json`)]);
+
+      expect(factories.createSessionFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("retries session creation on the next call if it failed (e.g. login window closed)", async () => {
+      const basicFetch = vi.fn().mockImplementation(async () => SITEMINDER_REDIRECT());
+      const sessionFetch = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      const createSessionFetch = vi.fn()
+        .mockRejectedValueOnce(new Error("Browser auth failed"))
+        .mockResolvedValue(sessionFetch);
+      const fetch = await createJenkinsFetch(
+        BASE,
+        { user: "jenkins-bot", password: "api-token" },
+        { createBasicFetch: () => basicFetch, createSessionFetch },
+      );
+
+      await expect(fetch(`${BASE}/api/json`)).rejects.toThrow("Browser auth failed");
+      const response = await fetch(`${BASE}/api/json`);
+
+      expect(response.status).toBe(200);
+      expect(createSessionFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not go back to the doomed Basic attempt, or repeat the notice, after session creation failed", async () => {
+      // The host is already known to be SiteMinder-protected. A failed login
+      // only means the session is retried; it is not a reason to send the
+      // Basic credentials to that host again.
+      const basicFetch = vi.fn().mockImplementation(async () => SITEMINDER_REDIRECT());
+      const sessionFetch = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      const createSessionFetch = vi.fn()
+        .mockRejectedValueOnce(new Error("Browser auth failed"))
+        .mockResolvedValue(sessionFetch);
+      const fetch = await createJenkinsFetch(
+        BASE,
+        { user: "jenkins-bot", password: "api-token" },
+        { createBasicFetch: () => basicFetch, createSessionFetch },
+      );
+
+      await expect(fetch(`${BASE}/api/json`)).rejects.toThrow("Browser auth failed");
+      await fetch(`${BASE}/api/json`);
+      await fetch(`${BASE}/api/json`);
+
+      expect(basicFetch).toHaveBeenCalledTimes(1);
+      expect(stderrWrites.filter((line) => line.includes("[raven-jenkins]"))).toHaveLength(1);
+    });
+
+    it.each([
+      [401, "Unauthorized"],
+      [403, "Forbidden"],
+    ])("does not fall back on a %i from the controller itself", async (status, body) => {
+      const basicFetch = vi.fn().mockResolvedValue(new Response(body, { status }));
+      const sessionFetch = vi.fn();
+      const factories = factoriesFor(basicFetch, sessionFetch);
+      const fetch = await createJenkinsFetch(BASE, { user: "jenkins-bot", password: "api-token" }, factories);
+
+      const response = await fetch(`${BASE}/api/json`);
+
+      expect(response.status).toBe(status);
+      expect(factories.createSessionFetch).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      `${BASE}/job/A/`,
+      `${BASE}/job/login-service/`,
+      `${BASE}/job/logon-audit/lastBuild/`,
+      "/int/jenkins/job/signin-tests/",
+    ])("does not fall back on an ordinary redirect inside Jenkins: %s", async (location) => {
+      // A job named login-service must not flip the whole process off valid
+      // Basic credentials and into interactive authentication.
+      const basicFetch = vi.fn().mockResolvedValue(
+        new Response(null, { status: 302, headers: { Location: location } }),
+      );
+      const factories = factoriesFor(basicFetch, vi.fn());
+      const fetch = await createJenkinsFetch(BASE, { user: "jenkins-bot", password: "api-token" }, factories);
+
+      const response = await fetch(`${BASE}/job/A`);
+
+      expect(response.status).toBe(302);
+      expect(factories.createSessionFetch).not.toHaveBeenCalled();
+    });
   });
 
   it("does not reuse Atlassian credentials", () => {
