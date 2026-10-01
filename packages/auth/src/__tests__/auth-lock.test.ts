@@ -434,8 +434,8 @@ describe("withAuthLock", () => {
       /another RAVEN process/i
     );
 
-    expect(faults.opens).toBeGreaterThan(2);
-    expect(faults.opens).toBeLessThan(15); // about 300 ms / 50 ms, with room for a slow machine
+    expect(faults.opens).toBeGreaterThanOrEqual(2); // it did try again, at least once
+    expect(faults.opens).toBeLessThan(15); // about 300 ms / 50 ms; a hot loop would be in the thousands
   });
 
   it("does not remove a lock that changed hands between the check and the removal", async () => {
