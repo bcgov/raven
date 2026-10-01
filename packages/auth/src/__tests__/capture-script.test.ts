@@ -265,8 +265,8 @@ describe("CAPTURE_TIMINGS", () => {
     }
   );
 
-  it("passes the browser launch the timeout the budget counts, instead of relying on Playwright's default", () => {
-    expect(buildCaptureScript({ ...baseOpts })).toContain(`timeout: ${CAPTURE_LAUNCH_TIMEOUT_MS},`);
+  it("gives the browser launch the one deadline the budget counts, retries included", () => {
+    expect(buildCaptureScript({ ...baseOpts })).toContain(`const launchDeadline = Date.now() + ${CAPTURE_LAUNCH_TIMEOUT_MS};`);
   });
 
   it("gives the probe inside the script exactly the timeout the budget arithmetic assumes", () => {
@@ -781,6 +781,29 @@ describe("capture script cookie acceptance", () => {
       expect(launchesOf(stderr)).toBe(3);
     });
 
+    it("shares one launch deadline across the attempts instead of giving each the full timeout", async () => {
+      // Six attempts of 30 s each would be 180 s before the login even starts,
+      // while the process time budget counts a single launch.
+      const { stderr } = await runCapture({ jar: ["c"], launchFailures: { count: 3, message: BUSY } });
+
+      const timeouts = (stubEvent(stderr, "STUB_LAUNCH") as { options: { timeout: number } }[]).map((launch) => launch.options.timeout);
+      expect(timeouts).toHaveLength(4);
+      expect(timeouts[0]).toBeGreaterThan(CAPTURE_LAUNCH_TIMEOUT_MS - 2_000);
+      expect(timeouts[0]).toBeLessThanOrEqual(CAPTURE_LAUNCH_TIMEOUT_MS);
+      for (let i = 1; i < timeouts.length; i += 1) expect(timeouts[i]).toBeLessThan(timeouts[i - 1] - 400); // each retry has less time left
+    }, 15_000);
+
+    it("stops retrying once the launch deadline has passed, even with attempts left", async () => {
+      const { result, stderr } = await runCapture(
+        { jar: ["c"], launchFailures: { count: 100, message: BUSY } },
+        { scriptOpts: { launchTimeoutMs: 1_200 } }
+      );
+
+      expect(result.status).toBe("error");
+      expect(launchesOf(stderr)).toBeLessThan(6);
+      expect(launchesOf(stderr)).toBeGreaterThanOrEqual(2);
+    }, 15_000);
+
     it("gives up, with the real reason, if the profile stays busy", async () => {
       const { result, stderr } = await runCapture({ jar: ["c"], launchFailures: { count: 100, message: BUSY } });
 
@@ -953,7 +976,7 @@ describe("capture script autofill", () => {
     user?: Field;
     pass?: Field;
     kmsi?: Field;
-    /** A hidden input matches the login selectors before the visible one, as a password-manager shim or decoy would. */
+    /** A hidden element matches each login selector before the visible one, as a password-manager shim or decoy would: only a locator filtered to visible elements finds the real field. */
     hiddenFirst?: boolean;
   }
   interface Scenario {
@@ -1008,7 +1031,7 @@ describe("capture script autofill", () => {
       const isShown = () => {
         const p = current();
         // Unfiltered, a union locator's first match is the hidden element.
-        if (kind === 'any' && p.hiddenFirst && !visibleOnly) return false;
+        if (p.hiddenFirst && !visibleOnly && (kind === 'any' || kind === 'user' || kind === 'pass' || kind === 'submit')) return false;
         if (kind === 'user') return shown(p.user);
         if (kind === 'pass') return shown(p.pass);
         if (kind === 'any' || kind === 'submit') return shown(p.user) || shown(p.pass);

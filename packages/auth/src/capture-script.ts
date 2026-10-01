@@ -95,8 +95,9 @@ export const CAPTURE_MAX_BUFFER = 16 * 1024 * 1024;
 export const CAPTURE_PROBE_TIMEOUT_MS = 15_000;
 
 /**
- * How long the browser may take to start, in milliseconds. This is Playwright's
- * own default, passed explicitly so the time budget below can count it.
+ * How long starting the browser may take in all, retries included, in
+ * milliseconds. It matches Playwright's default for one launch; the capture
+ * shares it across its attempts so the time budget below can count it once.
  */
 export const CAPTURE_LAUNCH_TIMEOUT_MS = 30_000;
 
@@ -275,6 +276,8 @@ export interface CaptureScriptOptions {
   readonly pollBudgetMs?: number;
   /** Delay between cookie polls (default 1s). */
   readonly pollIntervalMs?: number;
+  /** Total time allowed to start the browser, retries included (default {@link CAPTURE_LAUNCH_TIMEOUT_MS}). */
+  readonly launchTimeoutMs?: number;
   /**
    * Protected URL used to confirm a captured cookie is honoured before it is
    * accepted. The persistent profile can hold a dead cookie from a previous
@@ -359,12 +362,13 @@ const AUTOFILL_SNIPPET = `
     // that commits after the check but before the browser acts is not covered:
     // that window is one protocol round trip.
     const stillHere = () => page.url() === startUrl && vettedHost(page.url()) !== null;
-    const userBox = page.locator(USER_SEL).first();
-    const passBox = page.locator(PASS_SEL).first();
-    const submit = page.locator(SUBMIT_SEL).first();
-    // The first VISIBLE match: a hidden input (a password-manager shim, an anti-autofill decoy)
-    // can come first in the page and must not hide the field that is showing.
-    const anyField = page.locator(USER_SEL + ', ' + PASS_SEL).filter({ visible: true }).first();
+    // The first VISIBLE match for each control: a hidden input (a password-manager shim, an
+    // anti-autofill decoy) can come first in the page and must not stand in for the one showing.
+    const firstVisible = (selector) => page.locator(selector).filter({ visible: true }).first();
+    const userBox = firstVisible(USER_SEL);
+    const passBox = firstVisible(PASS_SEL);
+    const submit = firstVisible(SUBMIT_SEL);
+    const anyField = firstVisible(USER_SEL + ', ' + PASS_SEL);
     if (await shows(anyField, 1500)) {
       const passVisible = await passBox.isVisible().catch(() => false);
       const userVisible = await userBox.isVisible().catch(() => false);
@@ -432,6 +436,7 @@ export function buildCaptureScript(opts: CaptureScriptOptions): string {
   const navTimeoutMs = wholeNumber(opts.navTimeoutMs, 120_000, 100);
   const pollBudgetMs = wholeNumber(opts.pollBudgetMs, 180_000, 100);
   const pollIntervalMs = wholeNumber(opts.pollIntervalMs, 1_000, 10);
+  const launchTimeoutMs = wholeNumber(opts.launchTimeoutMs, CAPTURE_LAUNCH_TIMEOUT_MS, 1_000);
 
   return `
 (async () => {
@@ -465,11 +470,13 @@ export function buildCaptureScript(opts: CaptureScriptOptions): string {
 
   // A launcher that was killed leaves its browser holding the profile for a
   // moment, and a login that starts in that moment must not give up at the
-  // first refusal.
+  // first refusal. All attempts share one deadline: giving each the full
+  // timeout would let six of them run for minutes before the login starts.
+  const launchDeadline = Date.now() + ${launchTimeoutMs};
   for (let attempt = 1; ; attempt += 1) {
     try {
       context = await chromium.launchPersistentContext(${JSON.stringify(opts.profileDir)}, {
-        timeout: ${CAPTURE_LAUNCH_TIMEOUT_MS},
+        timeout: Math.max(1000, launchDeadline - Date.now()),
         headless: false,
         args: ['--disable-blink-features=AutomationControlled'],
         userAgent: ${JSON.stringify(opts.userAgent)},
@@ -479,7 +486,7 @@ export function buildCaptureScript(opts: CaptureScriptOptions): string {
       break;
     } catch (launchErr) {
       const reason = String(launchErr && launchErr.message ? launchErr.message : launchErr);
-      if (attempt >= 6 || !/ProcessSingleton|profile.*in use|has been closed/i.test(reason)) throw launchErr;
+      if (attempt >= 6 || Date.now() + 500 >= launchDeadline || !/ProcessSingleton|profile.*in use|has been closed/i.test(reason)) throw launchErr;
       await new Promise((r) => setTimeout(r, 500));
     }
   }
