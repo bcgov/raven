@@ -86,6 +86,22 @@ describe("SessionManager", () => {
       expect(execFileSync).toHaveBeenCalledTimes(1);
     });
 
+    it("takes the shared browser-profile lock by default, beside the profile", async () => {
+      // SiteMinder and SharePoint captures share one Chromium profile; the lock
+      // that serialises them must be the same file for both.
+      const lockFile = join(home.dir, ".workflow-suite", "browser-profile.lock");
+      let heldDuringCapture = false;
+      vi.mocked(execFileSync).mockImplementation(() => {
+        heldDuringCapture = existsSync(lockFile);
+        return captureOutput("real-cookie");
+      });
+
+      await new SessionManager({ targetUrl: TARGET, cachePath }).authenticate();
+
+      expect(heldDuringCapture).toBe(true);
+      expect(existsSync(lockFile)).toBe(false);
+    });
+
     it("surfaces what the capture child actually wrote to stderr, not the command line that embeds the script", async () => {
       // execFileSync's own message is "Command failed: <node> -e <the whole
       // script>", which is useless to the user and is what a missing Playwright
@@ -176,6 +192,20 @@ describe("SessionManager", () => {
 
         expect(options.env["DEBUG"]).toBeUndefined();
         expect(options.env["PWDEBUG"]).toBeUndefined();
+      });
+
+      it("navigates to the protected dashboard, not an anonymously readable REST endpoint", async () => {
+        // The REST endpoints answer anonymous requests, so SiteMinder never
+        // challenges there and no SMSESSION is ever minted.
+        const { args } = await capture();
+        expect(args[1]).toContain(`page.goto(${JSON.stringify(PROBE)},`);
+        expect(args[1]).not.toContain("/rest/api");
+      });
+
+      it("asks the capture for SMSESSION only, and verifies it against the dashboard", async () => {
+        const { args } = await capture();
+        expect(args[1]).toContain(`const wanted = ${JSON.stringify(["SMSESSION"])}`);
+        expect(args[1]).toContain(`const verifyUrl = ${JSON.stringify(PROBE)}`);
       });
 
       it("uses the shared capture timings, so the script's own budgets always end before the process is killed", async () => {

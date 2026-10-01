@@ -3,11 +3,12 @@ import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir, homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { Script } from "node:vm";
 import {
   CAPTURE_TIMINGS,
+  authLockPath,
   authProfileDir,
   buildCaptureScript,
   describeCaptureFailure,
@@ -234,6 +235,13 @@ describe("buildCaptureScript", () => {
   });
 });
 
+describe("authLockPath", () => {
+  it("lives beside the browser profile, so the profile and its lock are always found together", () => {
+    expect(authLockPath()).toBe(join(homedir(), ".workflow-suite", "browser-profile.lock"));
+    expect(dirname(authLockPath())).toBe(dirname(authProfileDir()));
+  });
+});
+
 describe("CAPTURE_TIMINGS", () => {
   const PROBE_OVERRUN_MS = 15_000; // the budget is checked only at the top of each poll, so one probe can overrun it
   const DEFAULT_LOCK_STALE_MS = 300_000;
@@ -361,8 +369,10 @@ describe("capture script cookie acceptance", () => {
     probes?: Record<string, { status: number; location?: string }>;
     /** Number of leading probe calls that throw (e.g. offline). */
     probeThrows?: number;
-    /** Add an unrelated host's SMSESSION to the jar, visible only to an unscoped cookie query. */
+    /** Add an unrelated host's SMSESSION to the jar, visible unless the cookie query is scoped to exactly scopedUrl. */
     unrelated?: boolean;
+    /** The only URL for which an unrelated host's cookie is withheld. */
+    scopedUrl?: string;
     /** URL the main frame reports on navigation (for the debug-logging test). */
     navUrl?: string;
     /** Make context.cookies reject, as it does after the user closes the login window. */
@@ -376,34 +386,51 @@ describe("capture script cookie acceptance", () => {
     let polls = 0, probeCalls = 0, current = null;
     const frame = { url: () => cfg.navUrl || 'about:blank' };
     const navHandlers = [];
+    const dialogHandlers = [];
     const page = {
       url: () => 'about:blank',
-      on(evt, cb) { if (evt === 'framenavigated') navHandlers.push(cb); },
-      goto: async () => { navHandlers.forEach((cb) => cb(frame)); },
+      on(evt, cb) {
+        if (evt === 'framenavigated') navHandlers.push(cb);
+        if (evt === 'dialog') dialogHandlers.push(cb);
+      },
+      goto: async () => {
+        navHandlers.forEach((cb) => cb(frame));
+        dialogHandlers.forEach((cb) => cb({ accept: async () => { process.stderr.write('STUB_DIALOG_ACCEPTED\\n'); } }));
+      },
       mainFrame() { return frame; },
     };
     const context = {
       pages: () => [page],
       newPage: async () => page,
-      close: async () => {},
+      close: async () => { process.stderr.write('STUB_CLOSE\\n'); },
       cookies: async (urls) => {
         if (cfg.cookiesThrow) throw new Error('Target page, context or browser has been closed\\n    at secret/stack/frame.js:1:1');
         if (cfg.rawJar) return cfg.rawJar[Math.min(polls++, cfg.rawJar.length - 1)];
         current = cfg.jar[Math.min(polls++, cfg.jar.length - 1)];
         const jar = current === null ? [] : [{ name: 'SMSESSION', domain: '.gov.bc.ca', value: current }];
         // Like Playwright: with URLs, only cookies the browser would send there.
-        if (cfg.unrelated && !urls) jar.push({ name: 'SMSESSION', domain: 'other.example', value: 'UNRELATED-OTHER-HOST' });
+        if (cfg.unrelated && urls !== cfg.scopedUrl) jar.push({ name: 'SMSESSION', domain: 'other.example', value: 'UNRELATED-OTHER-HOST' });
         return jar;
       },
-      request: { get: async () => {
+      request: { get: async (url, opts) => {
+        process.stderr.write('STUB_PROBE ' + JSON.stringify({ url, opts }) + '\\n');
         probeCalls += 1;
         if (probeCalls <= (cfg.probeThrows || 0)) throw new Error('net::ERR_INTERNET_DISCONNECTED');
         const answer = (cfg.probes || {})[current] || { status: 200 };
         return { status: () => answer.status, headers: () => (answer.location ? { location: answer.location } : {}) };
       } },
     };
-    module.exports = { chromium: { launchPersistentContext: async () => context } };
+    module.exports = { chromium: { launchPersistentContext: async (profile, options) => {
+      process.stderr.write('STUB_LAUNCH ' + JSON.stringify({ profile, options }) + '\\n');
+      return context;
+    } } };
   `;
+
+  const stubEvent = (stderr: string, name: string): unknown[] =>
+    stderr
+      .split("\n")
+      .filter((line) => line.startsWith(`${name} `))
+      .map((line) => JSON.parse(line.slice(name.length + 1)));
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "capture-stub-"));
@@ -495,8 +522,39 @@ describe("capture script cookie acceptance", () => {
     // The persistent profile holds cookies for every host ever visited. Picking
     // by name alone could cache an unrelated host's SMSESSION/FedAuth, even
     // though the probe (which is URL-scoped) validated a different cookie.
-    const result = await capture({ jar: ["target-cookie"], unrelated: true });
+    const result = await capture({ jar: ["target-cookie"], unrelated: true, scopedUrl: baseOpts.targetUrl });
     expect(result).toEqual({ status: "ok", cookies: { SMSESSION: "target-cookie" } });
+  });
+
+  it("scopes the cookie query to exactly the target URL, not just to some URL", async () => {
+    // With any other argument (the profile path, an origin, an empty string) the
+    // unrelated host's cookie is visible and wins.
+    const result = await capture({ jar: ["target-cookie"], unrelated: true, scopedUrl: "https://elsewhere.example/" });
+    expect(result).toEqual({ status: "ok", cookies: { SMSESSION: "UNRELATED-OTHER-HOST" } });
+  });
+
+  it("launches a headed persistent context on the given profile directory and closes it exactly once", async () => {
+    const { stderr } = await runCapture({ jar: ["c"] });
+
+    const [launch] = stubEvent(stderr, "STUB_LAUNCH") as { profile: string; options: Record<string, unknown> }[];
+    expect(launch.profile).toBe(join(dir, "profile"));
+    expect(launch.options).toMatchObject({ headless: false, userAgent: baseOpts.userAgent, viewport: null });
+    expect(stderr.split("\n").filter((line) => line === "STUB_CLOSE")).toHaveLength(1);
+  });
+
+  it("accepts native dialogs instead of letting them stall the login invisibly", async () => {
+    const { stderr } = await runCapture({ jar: ["c"] });
+    expect(stderr).toContain("STUB_DIALOG_ACCEPTED");
+  });
+
+  it("probes the verify URL itself and does not follow the redirect, which is how a dead cookie shows", async () => {
+    // Followed, SiteMinder's bounce lands on the logon page, answers 200 and the
+    // dead cookie would read as live.
+    const { stderr } = await runCapture({ jar: ["c"] }, { verify: true });
+
+    const [probe] = stubEvent(stderr, "STUB_PROBE") as { url: string; opts: Record<string, unknown> }[];
+    expect(probe.url).toBe(baseOpts.targetUrl);
+    expect(probe.opts).toMatchObject({ maxRedirects: 0, failOnStatusCode: false });
   });
 
   it("does not reject a live cookie because an in-app redirect mentions login", async () => {

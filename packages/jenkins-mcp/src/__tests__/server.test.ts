@@ -148,6 +148,32 @@ describe("Jenkins MCP server", () => {
       expect(new Headers(replayed?.headers).get("Accept")).toBe("application/json");
     });
 
+    it("forwards the caller's method, body and headers to the Basic attempt, the replay and every later call", async () => {
+      // The call counts alone cannot tell a faithful replay from one that lost
+      // the request on the way.
+      const basicFetch = vi.fn().mockImplementation(async () => SITEMINDER_REDIRECT());
+      const sessionFetch = vi.fn().mockImplementation(async () => new Response(null, { status: 201 }));
+      const fetch = await createJenkinsFetch(
+        BASE,
+        { user: "jenkins-bot", password: "api-token" },
+        factoriesFor(basicFetch, sessionFetch),
+      );
+      const init = { method: "POST", body: "a=1", headers: { "X-Test": "1", "Content-Type": "application/x-www-form-urlencoded" } };
+
+      await fetch(`${BASE}/job/A/build`, init);
+      await fetch(`${BASE}/job/B/build`, init);
+
+      const [basicInit] = [basicFetch.mock.calls[0][1] as RequestInit];
+      expect(basicInit).toMatchObject({ method: "POST", body: "a=1", redirect: "manual" });
+      expect(new Headers(basicInit.headers).get("X-Test")).toBe("1");
+      for (const call of sessionFetch.mock.calls) {
+        const replay = call[1] as RequestInit;
+        expect(replay).toMatchObject({ method: "POST", body: "a=1" });
+        expect(new Headers(replay.headers).get("X-Test")).toBe("1");
+      }
+      expect(sessionFetch).toHaveBeenCalledTimes(2);
+    });
+
     it("prints one notice per switch, and it never contains the credentials", async () => {
       const basicFetch = vi.fn().mockImplementation(async () => SITEMINDER_REDIRECT());
       const sessionFetch = vi.fn().mockImplementation(async () => new Response("{}", { status: 200 }));

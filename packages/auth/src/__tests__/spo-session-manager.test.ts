@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CAPTURE_TIMINGS } from "../capture-script.js";
@@ -140,6 +141,59 @@ describe("SpoSessionManager", () => {
       await expect(sm.authenticate()).resolves.toEqual({ fedAuth: "fa", rtFa: "rt" });
       await expect(sm.getSession()).resolves.toEqual({ fedAuth: "fa", rtFa: "rt" });
       expect(execFileSync).toHaveBeenCalledTimes(1);
+    });
+
+    const manager = () => new SpoSessionManager({ cachePath, lockPath: join(dir, "browser-profile.lock") });
+
+    it("asks the capture for both SharePoint cookies, only from sharepoint.com, and does not probe", async () => {
+      vi.mocked(execFileSync).mockReturnValueOnce(captured);
+      await manager().authenticate();
+
+      const script = (vi.mocked(execFileSync).mock.calls[0][1] as string[])[1];
+      expect(script).toContain(`const wanted = ${JSON.stringify(["FedAuth", "rtFa"])}`);
+      expect(script).toContain(`const domainFilter = ${JSON.stringify("sharepoint.com")}`);
+      expect(script).toContain("const verifyUrl = null");
+    });
+
+    it("caches a successful capture with the tenant host, so later calls and sibling servers reuse it", async () => {
+      vi.mocked(execFileSync).mockReturnValueOnce(captured);
+      await manager().authenticate();
+
+      expect(await readCachedSpoSession(cachePath)).toEqual({ fedAuth: "fa", rtFa: "rt" });
+      expect(JSON.parse(await readFile(cachePath, "utf-8")).capturedFor).toBe("example.sharepoint.com");
+    });
+
+    it.each([
+      ["FedAuth is missing", { status: "ok", cookies: { rtFa: "rt" } }],
+      ["rtFa is missing", { status: "ok", cookies: { FedAuth: "fa" } }],
+      ["a cookie is empty", { status: "ok", cookies: { FedAuth: "fa", rtFa: "" } }],
+    ])("rejects a capture result where %s, and caches nothing", async (_name, result) => {
+      vi.mocked(execFileSync).mockReturnValueOnce(JSON.stringify(result));
+
+      await expect(manager().authenticate()).rejects.toThrow(/No valid SharePoint session found/);
+      expect(existsSync(cachePath)).toBe(false);
+    });
+
+    it("passes the capture script's own error message through", async () => {
+      vi.mocked(execFileSync).mockReturnValueOnce(
+        JSON.stringify({ status: "error", message: "Cookies not captured within 180s: FedAuth, rtFa" })
+      );
+
+      await expect(manager().authenticate()).rejects.toThrow(/Browser auth failed: Cookies not captured within 180s: FedAuth, rtFa/);
+    });
+
+    it("takes the same shared browser-profile lock by default as the SiteMinder capture", async () => {
+      const lockFile = join(dir, ".workflow-suite", "browser-profile.lock");
+      let heldDuringCapture = false;
+      vi.mocked(execFileSync).mockImplementationOnce(() => {
+        heldDuringCapture = existsSync(lockFile);
+        return captured;
+      });
+
+      await new SpoSessionManager({ cachePath }).authenticate();
+
+      expect(heldDuringCapture).toBe(true);
+      expect(existsSync(lockFile)).toBe(false);
     });
 
     it("uses the shared capture timings, so the script's own budgets always end before the process is killed", async () => {
