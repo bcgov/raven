@@ -327,6 +327,29 @@ describe("Jenkins MCP server", () => {
       expect(createSessionFetch).toHaveBeenCalledTimes(2);
     });
 
+    it("does not go back to the doomed Basic attempt, or repeat the notice, after session creation failed", async () => {
+      // The host is already known to be SiteMinder-protected. A failed login
+      // only means the session is retried; it is not a reason to send the
+      // Basic credentials to that host again.
+      const basicFetch = vi.fn().mockImplementation(async () => SITEMINDER_REDIRECT());
+      const sessionFetch = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      const createSessionFetch = vi.fn()
+        .mockRejectedValueOnce(new Error("Browser auth failed"))
+        .mockResolvedValue(sessionFetch);
+      const fetch = await createJenkinsFetch(
+        BASE,
+        { user: "jenkins-bot", password: "api-token" },
+        { createBasicFetch: () => basicFetch, createSessionFetch },
+      );
+
+      await expect(fetch(`${BASE}/api/json`)).rejects.toThrow("Browser auth failed");
+      await fetch(`${BASE}/api/json`);
+      await fetch(`${BASE}/api/json`);
+
+      expect(basicFetch).toHaveBeenCalledTimes(1);
+      expect(stderrWrites.filter((line) => line.includes("[raven-jenkins]"))).toHaveLength(1);
+    });
+
     it.each([
       [401, "Unauthorized"],
       [403, "Forbidden"],

@@ -113,12 +113,17 @@ export function withJenkinsSessionCookies(fetchFn: AuthenticatedFetch, baseUrl: 
  * instead; once seen, it is remembered so later calls skip the doomed attempt.
  * A 401/403 from the controller itself is a real credential answer and is
  * returned untouched. The session is created at most once, and a failed
- * creation (e.g. the login window was closed) is retried on the next call.
+ * creation (e.g. the login window was closed) is retried on the next call,
+ * still without trying Basic again: the host stays identified.
  */
 function basicFetchWithSessionFallback(
   basicFetch: AuthenticatedFetch,
   createSessionFetch: () => Promise<AuthenticatedFetch>,
 ): AuthenticatedFetch {
+  // Set once the host has answered with a login redirect; never cleared. Kept apart
+  // from the session promise, which is dropped when creating the session fails so
+  // that the next call can try again.
+  let siteMinderHost = false;
   let sessionFetch: Promise<AuthenticatedFetch> | null = null;
 
   const useSession = (): Promise<AuthenticatedFetch> => {
@@ -133,13 +138,14 @@ function basicFetchWithSessionFallback(
   };
 
   return async (url, init) => {
-    if (sessionFetch) return (await sessionFetch)(url, init);
+    if (siteMinderHost) return (await useSession())(url, init);
 
     const response = await basicFetch(url, { ...init, redirect: "manual" });
     if (!isLoginRedirect(response.status, response.headers.get("location") ?? "")) {
       return response;
     }
 
+    siteMinderHost = true;
     process.stderr.write(
       "[raven-jenkins] Basic credentials were redirected to the SiteMinder login; " +
         "using the SMSESSION session instead. Point JENKINS_URL at a host that accepts " +
