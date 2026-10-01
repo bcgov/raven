@@ -8,12 +8,18 @@ import {
   readCachedSpoSession,
   writeCachedSpoSession,
   clearCachedSpoSession,
+  clearCachedSpoSessionIf,
 } from "./spo-cookie-cache.js";
 import {
+  CAPTURE_MAX_BUFFER,
+  CAPTURE_TIMINGS,
   authLockPath,
   authProfileDir,
   buildCaptureScript,
+  captureChildEnv,
+  describeCaptureFailure,
   ensureProfileDir,
+  isEnvFlagOn,
   resolveAutofillCredentials,
   type CaptureResult,
 } from "./capture-script.js";
@@ -28,6 +34,14 @@ const DEFAULT_CACHE_PATH = join(
   "spo-session.json",
 );
 const DEFAULT_TTL = 28800; // 8 hours
+
+/**
+ * The standard "no valid SharePoint session" failure. The MCP tool
+ * instructions key on its first words, so every way a login can fail,
+ * including not getting the browser-login lock in time, is reported in this
+ * one form.
+ */
+class SpoAuthError extends Error {}
 
 /**
  * Manages the SharePoint Online FedAuth/rtFa cookie pair: cache, refresh,
@@ -51,6 +65,7 @@ export class SpoSessionManager {
         config?.sessionTtlSeconds ??
         (Number(process.env["SHAREPOINT_SESSION_TTL"]) || DEFAULT_TTL),
       lockPath: config?.lockPath,
+      lockOptions: config?.lockOptions,
     };
   }
 
@@ -76,7 +91,7 @@ export class SpoSessionManager {
     if (envFedAuth && envRtFa) {
       const pair: SpoCookies = { fedAuth: envFedAuth, rtFa: envRtFa };
       this.cookies = pair;
-      await writeCachedSpoSession(this.config.cachePath, pair, this.host());
+      await this.cacheBestEffort(pair);
       this.log("Loaded SPO session from environment variables");
       return pair;
     }
@@ -97,23 +112,37 @@ export class SpoSessionManager {
    * Shares the profile (and so the cross-process lock) with the SiteMinder
    * capture; after winning the lock it adopts a session another process just
    * cached instead of opening a second browser.
+   *
+   * Every failure, including not getting the lock in time, is reported as a
+   * "No valid SharePoint session found" error (see {@link SpoAuthError}).
    */
   async authenticate(): Promise<SpoCookies> {
-    const profileDir = authProfileDir();
-    await ensureProfileDir(profileDir);
+    try {
+      const profileDir = authProfileDir();
+      await ensureProfileDir(profileDir);
 
-    return withAuthLock(this.config.lockPath ?? authLockPath(), async () => {
-      const adopted = await readCachedSpoSession(
-        this.config.cachePath,
-        this.config.sessionTtlSeconds,
+      return await withAuthLock(
+        this.config.lockPath ?? authLockPath(),
+        async () => {
+          const adopted = await readCachedSpoSession(
+            this.config.cachePath,
+            this.config.sessionTtlSeconds,
+          );
+          if (adopted) {
+            this.cookies = adopted;
+            this.log("Adopted the SPO session another process just captured");
+            return adopted;
+          }
+          return this.captureSession(profileDir);
+        },
+        {
+          onWait: () => this.log("Another RAVEN login is in progress; waiting for it to finish..."),
+          ...this.config.lockOptions,
+        },
       );
-      if (adopted) {
-        this.cookies = adopted;
-        this.log("Adopted the SPO session another process just captured");
-        return adopted;
-      }
-      return this.captureSession(profileDir);
-    });
+    } catch (err) {
+      throw err instanceof SpoAuthError ? err : this.authFailure(err);
+    }
   }
 
   /** Run the browser capture and cache the result. Callers hold the auth lock. */
@@ -121,6 +150,8 @@ export class SpoSessionManager {
     this.log("Starting SPO browser authentication flow...");
 
     const credentials = resolveAutofillCredentials(process.env);
+    const debug = isEnvFlagOn(process.env["RAVEN_AUTH_DEBUG"]);
+    const timings = CAPTURE_TIMINGS.sharePoint;
 
     const script = buildCaptureScript({
       targetUrl: this.config.targetUrl,
@@ -128,33 +159,24 @@ export class SpoSessionManager {
       cookieDomainFilter: "sharepoint.com",
       profileDir,
       userAgent: BROWSER_USER_AGENT,
-      navTimeoutMs: 120_000,
-      pollBudgetMs: 180_000,
+      navTimeoutMs: timings.navTimeoutMs,
+      pollBudgetMs: timings.pollBudgetMs,
+      debug,
       autofill: credentials !== null,
     });
 
+    let pair: SpoCookies;
     try {
       // Run from the monorepo root so require('playwright') resolves
       // from the hoisted node_modules regardless of the caller's cwd.
       const monorepoRoot = join(__dirname, "..", "..", "..");
       const result = execFileSync(process.execPath, ["-e", script], {
         encoding: "utf-8",
-        timeout: 240_000,
+        timeout: timings.processTimeoutMs,
+        maxBuffer: CAPTURE_MAX_BUFFER,
         cwd: monorepoRoot,
-        stdio: ["ignore", "pipe", process.env["RAVEN_AUTH_DEBUG"] ? "inherit" : "pipe"],
-        env: {
-          ...process.env,
-          PLAYWRIGHT_BROWSERS_PATH:
-            process.env["PLAYWRIGHT_BROWSERS_PATH"] ?? undefined,
-          // Autofill credentials travel via the environment, never argv or
-          // the script text.
-          ...(credentials
-            ? {
-                RAVEN_AUTOFILL_USERNAME: credentials.username,
-                RAVEN_AUTOFILL_PASSWORD: credentials.password,
-              }
-            : {}),
-        },
+        stdio: ["ignore", "pipe", debug ? "inherit" : "pipe"],
+        env: captureChildEnv(process.env, credentials),
       });
 
       const parsed: CaptureResult = JSON.parse(result.trim());
@@ -166,30 +188,59 @@ export class SpoSessionManager {
           parsed.message ?? "Authentication failed: cookies not captured",
         );
       }
-
-      const pair: SpoCookies = { fedAuth, rtFa };
-      this.cookies = pair;
-      await writeCachedSpoSession(this.config.cachePath, pair, this.host());
-      this.log("FedAuth/rtFa captured via browser auth");
-      return pair;
+      pair = { fedAuth, rtFa };
     } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Unknown authentication error";
-      throw new Error(
-        `No valid SharePoint session found. Browser auth failed: ${msg}\n\n` +
-          `To fix this, run one of:\n` +
-          `  1. "${process.execPath}" "${authCliPath}" --sharepoint (opens browser for IDIR/Entra login)\n` +
-          `  2. Set SPO_FEDAUTH and SPO_RTFA env vars (paste cookie values from browser DevTools)\n\n` +
-          `The session caches to ~/.workflow-suite/spo-session.json for 8 hours.`,
-      );
+      throw this.authFailure(err);
+    }
+
+    // The capture succeeded. Failing to cache it must not turn it into a
+    // failed login: keep it for this process and carry on.
+    this.cookies = pair;
+    await this.cacheBestEffort(pair);
+    this.log("FedAuth/rtFa captured via browser auth");
+    return pair;
+  }
+
+  /** Build the standard "No valid SharePoint session found" error with the ways to fix it. */
+  private authFailure(err: unknown): SpoAuthError {
+    return new SpoAuthError(
+      `No valid SharePoint session found. Browser auth failed: ${describeCaptureFailure(err)}\n\n` +
+        `To fix this, run one of:\n` +
+        `  1. "${process.execPath}" "${authCliPath}" --sharepoint (opens browser for IDIR/Entra login)\n` +
+        `  2. Set SPO_FEDAUTH and SPO_RTFA env vars (paste cookie values from browser DevTools)\n\n` +
+        `The session caches to ~/.workflow-suite/spo-session.json for 8 hours.`,
+    );
+  }
+
+  /** Cache a pair, logging instead of throwing: a missing cache costs a login, not the session in hand. */
+  private async cacheBestEffort(pair: SpoCookies): Promise<void> {
+    try {
+      await writeCachedSpoSession(this.config.cachePath, pair, this.host());
+    } catch (err) {
+      this.log(`Could not cache the SPO session (${describeCaptureFailure(err)}); using it for this process only`);
     }
   }
 
-  /** Invalidate the current session (e.g., on expiry detection). */
-  async invalidate(): Promise<void> {
+  /**
+   * Invalidate the current session (e.g., on expiry detection).
+   *
+   * Pass the pair that just failed: the disk cache is then removed only if it
+   * still holds that pair. Long-lived MCP servers keep their pair in memory,
+   * so a login another process cached since would otherwise be deleted here
+   * and the next call would launch another browser instead of adopting it.
+   */
+  async invalidate(failedPair?: SpoCookies): Promise<void> {
     this.cookies = null;
-    await clearCachedSpoSession(this.config.cachePath);
-    this.log("SPO session invalidated");
+    const removed =
+      failedPair === undefined
+        ? await clearCachedSpoSession(this.config.cachePath)
+        : await clearCachedSpoSessionIf(this.config.cachePath, failedPair);
+    this.log(
+      removed
+        ? "SPO session invalidated"
+        : "SPO session invalidated in memory; the cache was left as it is " +
+            "(a newer login, or a file that could not be read or removed)",
+    );
   }
 
   /** User agent string for HTTP requests (matches the Playwright browser). */

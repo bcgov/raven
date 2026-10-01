@@ -4,8 +4,8 @@ import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AuthenticatedFetch } from "@nrs/auth";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { createBasicAuthFetch, type AuthenticatedFetch } from "@nrs/auth";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JenkinsClient } from "../jenkins-client.js";
 import {
   configuredBasicAuthCredentials,
@@ -111,6 +111,117 @@ describe("Jenkins MCP server", () => {
     const factoriesFor = (basicFetch: AuthenticatedFetch, sessionFetch: AuthenticatedFetch) => ({
       createBasicFetch: () => basicFetch,
       createSessionFetch: vi.fn().mockResolvedValue(sessionFetch),
+    });
+
+    // The switch prints a notice to stderr; capture it instead of letting it
+    // spill into the test output, and so it can be asserted on.
+    let stderrWrites: string[];
+    beforeEach(() => {
+      stderrWrites = [];
+      vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+        stderrWrites.push(String(chunk));
+        return true;
+      }) as typeof process.stderr.write);
+    });
+    afterEach(() => {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    });
+
+    it("never forwards the Basic Authorization header to the session transport after the switch", async () => {
+      // The security-critical negative: the credentials go to the SiteMinder
+      // host once, are refused, and must not follow the request to the session.
+      const wire = vi.fn().mockResolvedValue(SITEMINDER_REDIRECT());
+      vi.stubGlobal("fetch", wire);
+      const sessionFetch = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      const fetch = await createJenkinsFetch(
+        BASE,
+        { user: "jenkins-bot", password: "api-token-value" },
+        { createBasicFetch: createBasicAuthFetch, createSessionFetch: vi.fn().mockResolvedValue(sessionFetch) },
+      );
+
+      await fetch(`${BASE}/api/json`, { headers: { Accept: "application/json" } });
+
+      expect(new Headers(wire.mock.calls[0][1]?.headers).get("Authorization")).toMatch(/^Basic /);
+      const replayed = sessionFetch.mock.calls[0][1] as RequestInit | undefined;
+      expect(new Headers(replayed?.headers).get("Authorization")).toBeNull();
+      expect(new Headers(replayed?.headers).get("Accept")).toBe("application/json");
+    });
+
+    it("prints one notice per switch, and it never contains the credentials", async () => {
+      const basicFetch = vi.fn().mockImplementation(async () => SITEMINDER_REDIRECT());
+      const sessionFetch = vi.fn().mockImplementation(async () => new Response("{}", { status: 200 }));
+      const fetch = await createJenkinsFetch(
+        BASE,
+        { user: "jenkins-bot", password: "api-token-value" },
+        factoriesFor(basicFetch, sessionFetch),
+      );
+
+      await fetch(`${BASE}/api/json`);
+      await fetch(`${BASE}/job/A/api/json`);
+
+      const notices = stderrWrites.filter((line) => line.includes("[raven-jenkins]"));
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).not.toContain("api-token-value");
+      expect(notices[0]).not.toContain("jenkins-bot");
+    });
+
+    it.each([
+      [301, "https://logon7.gov.bc.ca/clp-cgi/dirSelect.cgi"],
+      [303, "https://logon7.gov.bc.ca/clp-cgi/dirSelect.cgi"],
+      [307, "https://logon7.gov.bc.ca/clp-cgi/dirSelect.cgi"],
+      [308, "https://logon7.gov.bc.ca/clp-cgi/dirSelect.cgi"],
+      [302, "/siteminderagent/forms/login.fcc"],
+      [302, "https://apps.example.gov.bc.ca/fedLaunch?target=jenkins"],
+    ])("switches for a %i redirect to %s", async (status, location) => {
+      const basicFetch = vi.fn().mockResolvedValue(new Response(null, { status, headers: { Location: location } }));
+      const sessionFetch = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      const fetch = await createJenkinsFetch(
+        BASE,
+        { user: "jenkins-bot", password: "api-token" },
+        factoriesFor(basicFetch, sessionFetch),
+      );
+
+      expect((await fetch(`${BASE}/api/json`)).status).toBe(200);
+      expect(sessionFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not switch for a redirect that carries no Location", async () => {
+      const basicFetch = vi.fn().mockResolvedValue(new Response(null, { status: 302 }));
+      const factories = factoriesFor(basicFetch, vi.fn());
+      const fetch = await createJenkinsFetch(BASE, { user: "jenkins-bot", password: "api-token" }, factories);
+
+      expect((await fetch(`${BASE}/api/json`)).status).toBe(302);
+      expect(factories.createSessionFetch).not.toHaveBeenCalled();
+    });
+
+    it("returns the session transport's own login redirect as-is rather than looping (a dead cached cookie)", async () => {
+      const basicFetch = vi.fn().mockImplementation(async () => SITEMINDER_REDIRECT());
+      const sessionFetch = vi.fn().mockImplementation(async () => SITEMINDER_REDIRECT());
+      const fetch = await createJenkinsFetch(
+        BASE,
+        { user: "jenkins-bot", password: "api-token" },
+        factoriesFor(basicFetch, sessionFetch),
+      );
+
+      const response = await fetch(`${BASE}/api/json`);
+
+      expect(response.status).toBe(302);
+      expect(basicFetch).toHaveBeenCalledTimes(1);
+      expect(sessionFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("uses the session transport directly, never creating a Basic one, when no Basic credentials are configured", async () => {
+      const sessionFetch = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      const createBasicFetch = vi.fn();
+      const fetch = await createJenkinsFetch(BASE, null, {
+        createBasicFetch,
+        createSessionFetch: vi.fn().mockResolvedValue(sessionFetch),
+      });
+
+      expect((await fetch(`${BASE}/api/json`)).status).toBe(200);
+      expect(createBasicFetch).not.toHaveBeenCalled();
+      expect(stderrWrites.filter((line) => line.includes("[raven-jenkins]"))).toEqual([]);
     });
 
     it("falls back to the SiteMinder session when Basic auth is redirected to the login page", async () => {

@@ -1,3 +1,5 @@
+import type { AuthLockOptions } from "./auth-lock.js";
+
 /** Cached session data persisted to ~/.workflow-suite/session.json */
 export interface SessionData {
   smsession: string;
@@ -15,6 +17,8 @@ export interface AuthConfig {
   sessionTtlSeconds: number;
   /** Cross-process lock serialising captures on the shared browser profile (default: beside the profile) */
   lockPath?: string;
+  /** Tuning for that lock: stale limit, how long to wait for another login, poll interval */
+  lockOptions?: AuthLockOptions;
 }
 
 /** A fetch-like function with authentication attached */
@@ -53,4 +57,6 @@ export interface SpoAuthConfig {
   sessionTtlSeconds: number;
   /** Cross-process lock serialising captures on the shared browser profile (default: beside the profile) */
   lockPath?: string;
+  /** Tuning for that lock: stale limit, how long to wait for another login, poll interval */
+  lockOptions?: AuthLockOptions;
 }

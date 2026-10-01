@@ -96,6 +96,7 @@ export {
   authProfileDir,
   buildCaptureScript,
   ensureProfileDir,
+  isEnvFlagOn,
   isLoginRedirect,
   LOGIN_HOST_PATTERN,
   LOGIN_PATH_PATTERN,
@@ -113,6 +114,7 @@ export {
   readCachedSpoSession,
   writeCachedSpoSession,
   clearCachedSpoSession,
+  clearCachedSpoSessionIf,
 } from "./spo-cookie-cache.js";
 export type {
   SpoCookies,

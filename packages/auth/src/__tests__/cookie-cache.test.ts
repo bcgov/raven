@@ -1,13 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  clearCachedSession,
   clearCachedSessionIf,
   isUsableSmsession,
   readCachedSession,
   writeCachedSession,
 } from "../cookie-cache.js";
+
+// Permission bits cannot be used to force a delete failure on Windows, or for root.
+const cannotForceDeleteFailure = process.platform === "win32" || process.getuid?.() === 0;
 
 describe("SMSESSION cache", () => {
   let dir: string;
@@ -48,6 +53,14 @@ describe("SMSESSION cache", () => {
       expect(isUsableSmsession(null)).toBe(false);
       expect(isUsableSmsession(undefined)).toBe(false);
     });
+
+    // Each value is wrapped in its own row: it.each would otherwise spread the arrays.
+    it.each([[42], [true], [{}], [[]], [["real-cookie"]]])(
+      "rejects the non-string value %j that a hand-edited cache file can contain",
+      (value) => {
+        expect(isUsableSmsession(value)).toBe(false);
+      }
+    );
   });
 
   describe("readCachedSession", () => {
@@ -67,6 +80,29 @@ describe("SMSESSION cache", () => {
       await seed("real-cookie", 1501);
       expect(await readCachedSession(cachePath, 1500)).toBeNull();
     });
+
+    it.each([
+      ["missing", undefined],
+      ["a string", "garbage"],
+      ["null", null],
+    ])(
+      "rejects an entry whose cachedAt is %s, so a hand-written or foreign file is never served forever",
+      async (_name, cachedAt) => {
+        // A NaN age compares false against the TTL and would never expire.
+        await writeFile(cachePath, JSON.stringify({ smsession: "real-cookie", cachedAt, capturedFor: "x" }));
+        expect(await readCachedSession(cachePath, 1500)).toBeNull();
+      }
+    );
+
+    it("rejects an entry stamped far in the future", async () => {
+      await seed("real-cookie", -3600);
+      expect(await readCachedSession(cachePath, 1500)).toBeNull();
+    });
+
+    it("tolerates a few seconds of clock skew", async () => {
+      await seed("real-cookie", -5);
+      expect(await readCachedSession(cachePath, 1500)).toBe("real-cookie");
+    });
   });
 
   describe("writeCachedSession", () => {
@@ -81,26 +117,50 @@ describe("SMSESSION cache", () => {
       expect(JSON.parse(await readFile(cachePath, "utf-8")).smsession).toBe("real-cookie");
     });
 
-    it("replaces the file atomically: no temp files left behind and readers never see partial JSON", async () => {
-      // A plain writeFile truncates in place, so a sibling reading mid-write
-      // saw a half-written file and (via the corrupt-file path) deleted it.
-      const writes = Array.from({ length: 25 }, (_, i) =>
-        writeCachedSession(cachePath, `cookie-${i}`, "apps.example.gov.bc.ca")
-      );
-      const reads = Array.from({ length: 50 }, async () => {
+    it.each([["blank", ""], ["not a URL", "not a url"]])(
+      "still caches when ATLASSIAN_BASE_URL is %s, instead of throwing 'Invalid URL' after a good login",
+      async (_name, value) => {
+        const saved = process.env["ATLASSIAN_BASE_URL"];
+        process.env["ATLASSIAN_BASE_URL"] = value;
         try {
-          return JSON.parse(await readFile(cachePath, "utf-8")).smsession as string;
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-          throw err; // a SyntaxError here means a torn read
+          await writeCachedSession(cachePath, "real-cookie");
+          expect(JSON.parse(await readFile(cachePath, "utf-8")).smsession).toBe("real-cookie");
+        } finally {
+          if (saved === undefined) delete process.env["ATLASSIAN_BASE_URL"];
+          else process.env["ATLASSIAN_BASE_URL"] = saved;
         }
-      });
+      }
+    );
 
-      const observed = await Promise.all([...reads, ...writes]);
+    it("replaces the file without leaving temporary files behind", async () => {
+      // The no-torn-read guarantee itself is proven against a large payload in
+      // atomic-file.test.ts; this checks the cache goes through that helper.
+      await writeCachedSession(cachePath, "cookie-1", "apps.example.gov.bc.ca");
+      await writeCachedSession(cachePath, "cookie-2", "apps.example.gov.bc.ca");
 
-      expect(observed.filter((v) => typeof v === "string").every((v) => /^cookie-\d+$/.test(v as string))).toBe(true);
-      expect((await readdir(dir)).sort()).toEqual(["session.json"]);
-      expect((await stat(cachePath)).mode & 0o777).toBe(0o600);
+      expect(await readdir(dir)).toEqual(["session.json"]);
+      expect(JSON.parse(await readFile(cachePath, "utf-8")).smsession).toBe("cookie-2");
+      if (process.platform !== "win32") expect((await stat(cachePath)).mode & 0o777).toBe(0o600);
+    });
+  });
+
+  describe("clearCachedSession", () => {
+    it("reports true when it removed the file, and when there was nothing to remove", async () => {
+      await seed("real-cookie");
+      expect(await clearCachedSession(cachePath)).toBe(true);
+      expect(existsSync(cachePath)).toBe(false);
+      expect(await clearCachedSession(cachePath)).toBe(true);
+    });
+
+    it.skipIf(cannotForceDeleteFailure)("reports false when the file could not be removed", async () => {
+      await seed("real-cookie");
+      await chmod(dir, 0o500);
+      try {
+        expect(await clearCachedSession(cachePath)).toBe(false);
+      } finally {
+        await chmod(dir, 0o700);
+      }
+      expect(existsSync(cachePath)).toBe(true);
     });
   });
 
@@ -128,10 +188,30 @@ describe("SMSESSION cache", () => {
       expect(await clearCachedSessionIf(cachePath, "dead-cookie")).toBe(false);
     });
 
-    it("leaves an unparseable file alone instead of deleting what may be a sibling's in-flight write", async () => {
+    it("leaves an unparseable file alone: readers already ignore it and the next atomic write replaces it", async () => {
       await writeFile(cachePath, '{"smsession": "fresh-cook');
       expect(await clearCachedSessionIf(cachePath, "dead-cookie")).toBe(false);
       expect(await readFile(cachePath, "utf-8")).toBe('{"smsession": "fresh-cook');
     });
+
+    it("does not throw on valid JSON that is not a cache record, and removes it as unusable", async () => {
+      await writeFile(cachePath, "null");
+      await expect(clearCachedSessionIf(cachePath, "dead-cookie")).resolves.toBe(true);
+      expect(existsSync(cachePath)).toBe(false);
+    });
+
+    it.skipIf(cannotForceDeleteFailure)(
+      "reports false when the matching file could not be removed, so callers do not believe it is gone",
+      async () => {
+        await seed("dead-cookie");
+        await chmod(dir, 0o500);
+        try {
+          expect(await clearCachedSessionIf(cachePath, "dead-cookie")).toBe(false);
+        } finally {
+          await chmod(dir, 0o700);
+        }
+        expect(await readCachedSession(cachePath, 1500)).toBe("dead-cookie");
+      }
+    );
   });
 });

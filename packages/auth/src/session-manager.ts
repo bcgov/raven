@@ -12,10 +12,15 @@ import {
   isUsableSmsession,
 } from "./cookie-cache.js";
 import {
+  CAPTURE_MAX_BUFFER,
+  CAPTURE_TIMINGS,
   authLockPath,
   authProfileDir,
   buildCaptureScript,
+  captureChildEnv,
+  describeCaptureFailure,
   ensureProfileDir,
+  isEnvFlagOn,
   isLoginRedirect,
   resolveAutofillCredentials,
   siteMinderProbeUrl,
@@ -30,6 +35,17 @@ import { authCliPath } from "./auth-cli-path.js";
 const DEFAULT_CACHE_PATH = join(homedir(), ".workflow-suite", "session.json");
 const DEFAULT_TTL = 1500; // 25 minutes
 const PROBE_TIMEOUT_MS = 15_000;
+
+/**
+ * The standard "no valid session" failure. The MCP tool instructions tell the
+ * model to look for the words "No valid SMSESSION found" and relay the fix, so
+ * every way a login can fail, including not getting the browser-login lock in
+ * time, is reported in this one form.
+ */
+class SessionAuthError extends Error {}
+
+/** An environment variable's value, with blank treated as unset. */
+const envValue = (name: string): string | undefined => process.env[name]?.trim() || undefined;
 
 /** Whether the server currently honours a cookie. `unknown` = could not tell. */
 export type ProbeVerdict = "live" | "dead" | "unknown";
@@ -49,12 +65,18 @@ export async function probeSession(
   probeUrl: string,
   fetchImpl: typeof fetch = globalThis.fetch
 ): Promise<ProbeVerdict> {
+  let response: Response;
   try {
-    const response = await fetchImpl(probeUrl, {
+    response = await fetchImpl(probeUrl, {
       headers: { Cookie: `SMSESSION=${cookie}`, "User-Agent": BROWSER_USER_AGENT },
       redirect: "manual",
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
+  } catch {
+    return "unknown";
+  }
+
+  try {
     const { status } = response;
     if (status === 401 || status === 403) return "dead";
     if (status >= 300 && status < 400) {
@@ -62,8 +84,10 @@ export async function probeSession(
     }
     if (status >= 200 && status < 300) return "live";
     return "unknown";
-  } catch {
-    return "unknown";
+  } finally {
+    // The status is all that is needed. Without this a large page keeps
+    // streaming and holds the caller (the CLI) open until it has finished.
+    await response.body?.cancel().catch(() => {});
   }
 }
 
@@ -79,18 +103,24 @@ export class SessionManager {
   private config: AuthConfig;
 
   constructor(config?: Partial<AuthConfig>) {
+    // A browser capture can only mint SMSESSION on the SSO web host, never on
+    // the BWA API host, so an environment URL pointing at BWA is mapped to the
+    // SSO host. An explicit config.targetUrl is the caller's choice and is
+    // used as given.
+    const confluenceUrl = envValue("CONFLUENCE_URL");
+    const atlassianBaseUrl = envValue("ATLASSIAN_BASE_URL");
     this.config = {
       targetUrl:
         config?.targetUrl ??
-        process.env["CONFLUENCE_URL"] ??
-        // ATLASSIAN_BASE_URL is usually the BWA API host, where a browser
-        // capture can never mint SMSESSION — map it to the SSO web host.
-        (process.env["ATLASSIAN_BASE_URL"]
-          ? `${siteMinderWebUrl(process.env["ATLASSIAN_BASE_URL"])}/int/confluence`
-          : "https://apps.example.gov.bc.ca/int/confluence"),
+        (confluenceUrl
+          ? siteMinderWebUrl(confluenceUrl)
+          : atlassianBaseUrl
+            ? `${siteMinderWebUrl(atlassianBaseUrl)}/int/confluence`
+            : "https://apps.example.gov.bc.ca/int/confluence"),
       cachePath: config?.cachePath ?? DEFAULT_CACHE_PATH,
       sessionTtlSeconds: config?.sessionTtlSeconds ?? DEFAULT_TTL,
       lockPath: config?.lockPath,
+      lockOptions: config?.lockOptions,
     };
   }
 
@@ -117,7 +147,7 @@ export class SessionManager {
     const envCookie = process.env["SMSESSION"];
     if (isUsableSmsession(envCookie)) {
       this.smsession = envCookie;
-      await writeCachedSession(this.config.cachePath, envCookie);
+      await this.cacheBestEffort(envCookie);
       this.log("Loaded SMSESSION from environment variable");
       return envCookie;
     }
@@ -130,7 +160,7 @@ export class SessionManager {
     );
     if (legacyCached) {
       this.smsession = legacyCached;
-      await writeCachedSession(this.config.cachePath, legacyCached);
+      await this.cacheBestEffort(legacyCached);
       this.log("Loaded SMSESSION from legacy confluence-mcp cache");
       return legacyCached;
     }
@@ -157,23 +187,37 @@ export class SessionManager {
    * Having won the lock, this re-checks the cache first, so a waiter adopts
    * the login the previous owner just finished rather than opening a second
    * browser.
+   *
+   * Every failure, including not getting the lock in time, is reported as a
+   * "No valid SMSESSION found" error (see {@link SessionAuthError}).
    */
   async authenticate(): Promise<string> {
-    const profileDir = authProfileDir();
-    await ensureProfileDir(profileDir);
+    try {
+      const profileDir = authProfileDir();
+      await ensureProfileDir(profileDir);
 
-    return withAuthLock(this.config.lockPath ?? authLockPath(), async () => {
-      const adopted = await readCachedSession(
-        this.config.cachePath,
-        this.config.sessionTtlSeconds
+      return await withAuthLock(
+        this.config.lockPath ?? authLockPath(),
+        async () => {
+          const adopted = await readCachedSession(
+            this.config.cachePath,
+            this.config.sessionTtlSeconds
+          );
+          if (adopted) {
+            this.smsession = adopted;
+            this.log("Adopted the session another process just captured");
+            return adopted;
+          }
+          return this.captureSession(profileDir);
+        },
+        {
+          onWait: () => this.log("Another RAVEN login is in progress; waiting for it to finish..."),
+          ...this.config.lockOptions,
+        }
       );
-      if (adopted) {
-        this.smsession = adopted;
-        this.log("Adopted the session another process just captured");
-        return adopted;
-      }
-      return this.captureSession(profileDir);
-    });
+    } catch (err) {
+      throw err instanceof SessionAuthError ? err : this.authFailure(err);
+    }
   }
 
   /** Run the browser capture and cache the result. Callers hold the auth lock. */
@@ -182,69 +226,76 @@ export class SessionManager {
 
     const credentials = resolveAutofillCredentials(process.env);
     const probeUrl = siteMinderProbeUrl(this.config.targetUrl);
+    const debug = isEnvFlagOn(process.env["RAVEN_AUTH_DEBUG"]);
+    const timings = CAPTURE_TIMINGS.siteMinder;
 
     const script = buildCaptureScript({
       targetUrl: probeUrl,
       cookieNames: ["SMSESSION"],
       profileDir,
       userAgent: BROWSER_USER_AGENT,
-      navTimeoutMs: 120_000,
-      pollBudgetMs: 120_000,
+      navTimeoutMs: timings.navTimeoutMs,
+      pollBudgetMs: timings.pollBudgetMs,
       // The persistent profile can already hold a dead SMSESSION; only accept
       // one the protected page actually honours.
       verifyUrl: probeUrl,
+      debug,
       autofill: credentials !== null,
     });
 
+    let smsession: string;
     try {
       // Run from the monorepo root so require('playwright') resolves
       // from the hoisted node_modules regardless of the caller's cwd.
       const monorepoRoot = join(__dirname, "..", "..", "..");
       const result = execFileSync(process.execPath, ["-e", script], {
         encoding: "utf-8",
-        timeout: 180_000,
+        timeout: timings.processTimeoutMs,
+        maxBuffer: CAPTURE_MAX_BUFFER,
         cwd: monorepoRoot,
-        stdio: ["ignore", "pipe", process.env["RAVEN_AUTH_DEBUG"] ? "inherit" : "pipe"],
-        env: {
-          ...process.env,
-          // Ensure Playwright finds its browsers
-          PLAYWRIGHT_BROWSERS_PATH:
-            process.env["PLAYWRIGHT_BROWSERS_PATH"] ?? undefined,
-          // Autofill credentials travel via the environment, never argv or
-          // the script text.
-          ...(credentials
-            ? {
-                RAVEN_AUTOFILL_USERNAME: credentials.username,
-                RAVEN_AUTOFILL_PASSWORD: credentials.password,
-              }
-            : {}),
-        },
+        stdio: ["ignore", "pipe", debug ? "inherit" : "pipe"],
+        env: captureChildEnv(process.env, credentials),
       });
 
       const parsed: CaptureResult = JSON.parse(result.trim());
-      const smsession = parsed.cookies?.["SMSESSION"];
+      const captured = parsed.cookies?.["SMSESSION"];
 
-      if (parsed.status !== "ok" || !isUsableSmsession(smsession)) {
+      if (parsed.status !== "ok" || !isUsableSmsession(captured)) {
         throw new Error(
           parsed.message ?? "Authentication failed: no cookie captured",
         );
       }
-
-      this.smsession = smsession;
-      await writeCachedSession(this.config.cachePath, smsession);
-      this.log("SMSESSION captured via browser auth");
-      return smsession;
+      smsession = captured;
     } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Unknown authentication error";
-      throw new Error(
-        `No valid SMSESSION found. Browser auth failed: ${msg}\n\n` +
-          `To fix this, run one of:\n` +
-          `  1. "${process.execPath}" "${authCliPath}" (opens browser for IDIR login)\n` +
-          `     add --force to re-login even if the cached session looks fresh\n` +
-          `  2. Set SMSESSION env var  (paste cookie value from browser DevTools)\n\n` +
-          `The session caches to ~/.workflow-suite/session.json for 25 minutes.`,
-      );
+      throw this.authFailure(err);
+    }
+
+    // The login is verified. Failing to cache it must not turn it into a
+    // failed login: keep it for this process and carry on.
+    this.smsession = smsession;
+    await this.cacheBestEffort(smsession);
+    this.log("SMSESSION captured via browser auth");
+    return smsession;
+  }
+
+  /** Build the standard "No valid SMSESSION found" error with the ways to fix it. */
+  private authFailure(err: unknown): SessionAuthError {
+    return new SessionAuthError(
+      `No valid SMSESSION found. Browser auth failed: ${describeCaptureFailure(err)}\n\n` +
+        `To fix this, run one of:\n` +
+        `  1. "${process.execPath}" "${authCliPath}" (opens browser for IDIR login)\n` +
+        `     add --force to re-login even if the cached session looks fresh\n` +
+        `  2. Set SMSESSION env var  (paste cookie value from browser DevTools)\n\n` +
+        `The session caches to ~/.workflow-suite/session.json for 25 minutes.`,
+    );
+  }
+
+  /** Cache a session, logging instead of throwing: a missing cache costs a login, not the session in hand. */
+  private async cacheBestEffort(cookie: string): Promise<void> {
+    try {
+      await writeCachedSession(this.config.cachePath, cookie);
+    } catch (err) {
+      this.log(`Could not cache the session (${describeCaptureFailure(err)}); using it for this process only`);
     }
   }
 
@@ -280,17 +331,15 @@ export class SessionManager {
    */
   async invalidate(failedCookie?: string): Promise<void> {
     this.smsession = null;
-    if (failedCookie === undefined) {
-      await clearCachedSession(this.config.cachePath);
-      this.log("Session invalidated");
-      return;
-    }
-
-    const removed = await clearCachedSessionIf(this.config.cachePath, failedCookie);
+    const removed =
+      failedCookie === undefined
+        ? await clearCachedSession(this.config.cachePath)
+        : await clearCachedSessionIf(this.config.cachePath, failedCookie);
     this.log(
       removed
         ? "Session invalidated"
-        : "Session invalidated (kept a newer cached login)"
+        : "Session invalidated in memory; the cache was left as it is " +
+            "(a newer login, or a file that could not be read or removed)"
     );
   }
 

@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, readFile, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, readdir, rm, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   readCachedSpoSession,
   writeCachedSpoSession,
   clearCachedSpoSession,
+  clearCachedSpoSessionIf,
 } from "../spo-cookie-cache.js";
 
 let dir: string;
@@ -69,7 +71,7 @@ describe("spo cookie cache", () => {
     expect(await readCachedSpoSession(cachePath)).toBeNull();
   });
 
-  it("writes the cache file with mode 0600", async () => {
+  it.skipIf(process.platform === "win32")("writes the cache file with mode 0600", async () => {
     await writeCachedSpoSession(cachePath, { fedAuth: "fa", rtFa: "rt" }, "example.sharepoint.com");
     const st = await stat(cachePath);
     expect(st.mode & 0o777).toBe(0o600);
@@ -86,5 +88,52 @@ describe("spo cookie cache", () => {
     await clearCachedSpoSession(cachePath);
     expect(await readCachedSpoSession(cachePath)).toBeNull();
     await clearCachedSpoSession(cachePath); // second call must not throw
+  });
+
+  it("replaces the file without leaving temporary files behind", async () => {
+    // Shares the atomic helper with the SiteMinder cache, so a sibling process
+    // never reads a truncated file while this one is writing.
+    await writeCachedSpoSession(cachePath, { fedAuth: "fa1", rtFa: "rt1" }, "example.sharepoint.com");
+    await writeCachedSpoSession(cachePath, { fedAuth: "fa2", rtFa: "rt2" }, "example.sharepoint.com");
+
+    expect(await readdir(dir)).toEqual(["spo-session.json"]);
+    expect(await readCachedSpoSession(cachePath)).toEqual({ fedAuth: "fa2", rtFa: "rt2" });
+  });
+});
+
+describe("clearCachedSpoSessionIf", () => {
+  const pair = (n: number) => ({ fedAuth: `fa${n}`, rtFa: `rt${n}` });
+
+  it("removes the cache when it still holds the pair that just failed", async () => {
+    await writeCachedSpoSession(cachePath, pair(1), "example.sharepoint.com");
+    expect(await clearCachedSpoSessionIf(cachePath, pair(1))).toBe(true);
+    expect(existsSync(cachePath)).toBe(false);
+  });
+
+  it("keeps a fresher pair another process cached in the meantime", async () => {
+    await writeCachedSpoSession(cachePath, pair(2), "example.sharepoint.com");
+    expect(await clearCachedSpoSessionIf(cachePath, pair(1))).toBe(false);
+    expect(await readCachedSpoSession(cachePath)).toEqual(pair(2));
+  });
+
+  it("treats a pair as different when only one cookie matches", async () => {
+    await writeCachedSpoSession(cachePath, { fedAuth: "fa1", rtFa: "rt-new" }, "example.sharepoint.com");
+    expect(await clearCachedSpoSessionIf(cachePath, pair(1))).toBe(false);
+  });
+
+  it("leaves an unparseable file alone", async () => {
+    await writeFile(cachePath, '{"fedAuth": "fa');
+    expect(await clearCachedSpoSessionIf(cachePath, pair(1))).toBe(false);
+    expect(await readFile(cachePath, "utf-8")).toBe('{"fedAuth": "fa');
+  });
+
+  it("does not throw on valid JSON that is not a cache record, and removes it as unusable", async () => {
+    await writeFile(cachePath, "null");
+    await expect(clearCachedSpoSessionIf(cachePath, pair(1))).resolves.toBe(true);
+    expect(existsSync(cachePath)).toBe(false);
+  });
+
+  it("is a no-op when there is no cache file", async () => {
+    expect(await clearCachedSpoSessionIf(cachePath, pair(1))).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
-import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
+import { readFile, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { dirname } from "node:path";
+import { writeFileAtomic } from "./atomic-file.js";
 import type { SpoCookies, SpoSessionData } from "./types.js";
 
 const DEFAULT_TTL_SECONDS = 28800; // 8 hours — SPO cookies far outlive SMSESSION
@@ -36,6 +36,8 @@ export async function readCachedSpoSession(
 
 /**
  * Write a SharePoint Online cookie pair to the cache file (mode 0600).
+ * The write is atomic (see {@link writeFileAtomic}), so a sibling process
+ * never reads a truncated file.
  */
 export async function writeCachedSpoSession(
   cachePath: string,
@@ -49,22 +51,46 @@ export async function writeCachedSpoSession(
     capturedFor,
   };
 
-  const dir = dirname(cachePath);
-  if (!existsSync(dir)) {
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-  }
-
-  await writeFile(cachePath, JSON.stringify(data, null, 2), {
-    encoding: "utf-8",
-    mode: 0o600,
-  });
+  await writeFileAtomic(cachePath, JSON.stringify(data, null, 2));
 }
 
-/** Delete the cached SPO session file. */
-export async function clearCachedSpoSession(cachePath: string): Promise<void> {
+/**
+ * Delete the cached SPO session file.
+ * Returns true when the file is gone afterwards (removed, or it was not there)
+ * and false when it could not be removed.
+ */
+export async function clearCachedSpoSession(cachePath: string): Promise<boolean> {
   try {
     await unlink(cachePath);
-  } catch {
-    // File doesn't exist, that's fine
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT";
   }
+}
+
+/**
+ * Delete the cache only if it still holds `failedPair`. A sibling process may
+ * have cached a fresher login since the caller's pair died; deleting that
+ * would throw the new login away. The SharePoint twin of
+ * `clearCachedSessionIf`: a file that cannot be read or parsed is left alone,
+ * and valid JSON that is not a usable record is removed. Returns true only
+ * when the file is gone afterwards.
+ */
+export async function clearCachedSpoSessionIf(
+  cachePath: string,
+  failedPair: SpoCookies
+): Promise<boolean> {
+  let data: unknown;
+  try {
+    data = JSON.parse(await readFile(cachePath, "utf-8"));
+  } catch {
+    return false;
+  }
+  const cached = data as Partial<SpoSessionData> | null;
+  const usable = !!cached?.fedAuth && !!cached?.rtFa;
+  if (usable && (cached?.fedAuth !== failedPair.fedAuth || cached?.rtFa !== failedPair.rtFa)) {
+    return false;
+  }
+
+  return clearCachedSpoSession(cachePath);
 }

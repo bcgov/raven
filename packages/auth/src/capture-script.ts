@@ -21,7 +21,11 @@ export function authProfileDir(): string {
   return join(homedir(), ".workflow-suite", "browser-profile");
 }
 
-/** Create (or re-tighten) the profile directory at mode 0700. */
+/**
+ * Create (or re-tighten) the profile directory at mode 0700. The mode bits are
+ * POSIX permissions: they have no effect on Windows, where the user-profile
+ * ACLs on the home directory are what protect the profile.
+ */
 export async function ensureProfileDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await chmod(dir, 0o700);
@@ -41,20 +45,34 @@ export function authLockPath(): string {
   return join(homedir(), ".workflow-suite", "browser-profile.lock");
 }
 
+/** Spellings that switch an environment flag off, matching how RAVEN_SCRUB_PI is read. */
+const OFF_VALUES = new Set(["0", "false", "no", "off", "disabled"]);
+
+/**
+ * Whether an environment flag is switched on: set to anything other than
+ * empty or an "off" spelling (0, false, no, off, disabled, in any case).
+ * `RAVEN_AUTH_DEBUG=0` therefore means off, not "set, so on".
+ */
+export function isEnvFlagOn(value: string | undefined): boolean {
+  const normalised = value?.trim().toLowerCase();
+  return !!normalised && !OFF_VALUES.has(normalised);
+}
+
 /**
  * Resolve autofill credentials from the environment: the dedicated
  * IDIR_USERNAME/IDIR_PASSWORD pair first, else ATLASSIAN_EMAIL/
  * ATLASSIAN_PASSWORD (which already hold the same IDIR credentials for
- * the BWA Basic-auth route). RAVEN_AUTH_AUTOFILL=off disables autofill
- * entirely. Only a complete pair is ever used: a half-configured IDIR pair
- * is skipped rather than combined with the other account's half, because a
- * mismatched login burns IDIR lockout attempts. Returns null when disabled
- * or when neither pair is complete.
+ * the BWA Basic-auth route). RAVEN_AUTH_AUTOFILL set to off, false, 0, no or
+ * disabled (any case) disables autofill entirely. Only a complete pair is
+ * ever used: a half-configured IDIR pair is skipped rather than combined with
+ * the other account's half, because a mismatched login burns IDIR lockout
+ * attempts. Returns null when disabled or when neither pair is complete.
  */
 export function resolveAutofillCredentials(
   env: Record<string, string | undefined>
 ): AutofillCredentials | null {
-  if (env["RAVEN_AUTH_AUTOFILL"] === "off") return null;
+  const autofillSwitch = env["RAVEN_AUTH_AUTOFILL"]?.trim().toLowerCase();
+  if (autofillSwitch !== undefined && OFF_VALUES.has(autofillSwitch)) return null;
 
   const pairs: ReadonlyArray<readonly [string | undefined, string | undefined]> = [
     [env["IDIR_USERNAME"], env["IDIR_PASSWORD"]],
@@ -64,6 +82,75 @@ export function resolveAutofillCredentials(
     if (username && password) return { username, password };
   }
   return null;
+}
+
+/**
+ * Output buffer for the capture child. execFileSync's 1 MiB default kills a
+ * child that writes a lot to stderr or stdout (a verbose browser) in the
+ * middle of a login.
+ */
+export const CAPTURE_MAX_BUFFER = 16 * 1024 * 1024;
+
+/**
+ * Time budgets for the two captures, in milliseconds.
+ *
+ * The script's worst case is its navigation timeout plus its poll budget, plus
+ * one cookie probe (15 s) because the budget is only checked at the top of each
+ * poll. The process timeout must exceed that so a stalled navigation ends in
+ * the script's own "Cookies not captured within Ns" message instead of an
+ * opaque ETIMEDOUT from the parent; and it must stay under the 5-minute stale
+ * limit of the capture lock, so a live capture is never mistaken for an
+ * abandoned one.
+ */
+export const CAPTURE_TIMINGS = {
+  siteMinder: { navTimeoutMs: 60_000, pollBudgetMs: 120_000, processTimeoutMs: 210_000 },
+  sharePoint: { navTimeoutMs: 60_000, pollBudgetMs: 180_000, processTimeoutMs: 270_000 },
+} as const;
+
+/**
+ * A one-line, bounded description of why the capture child failed. What the
+ * child wrote to stderr is what actually went wrong (a missing module, no
+ * display, Chromium not installed); execFileSync's own message is "Command
+ * failed: <node> -e <the whole script>", so only its first line is used, and
+ * only when stderr is empty.
+ */
+export function describeCaptureFailure(err: unknown): string {
+  const stderr = (err as { stderr?: unknown } | null)?.stderr;
+  const stderrText = typeof stderr === "string" ? stderr : Buffer.isBuffer(stderr) ? stderr.toString("utf-8") : "";
+  const stderrLine = stderrText
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line !== "");
+  const line = stderrLine ?? (err instanceof Error ? err.message : "Unknown authentication error").split("\n")[0];
+  return line.slice(0, 300);
+}
+
+/**
+ * The environment for the capture child: the caller's environment, without
+ * Playwright's debug variables, plus the autofill credentials when enabled.
+ *
+ * DEBUG=pw:api (or PWDEBUG) makes Playwright log every call with its
+ * arguments, which includes the password autofill types, so they must never
+ * be inherited. Credentials travel through the environment, never through
+ * argv or the script text.
+ */
+export function captureChildEnv(
+  env: NodeJS.ProcessEnv,
+  credentials: AutofillCredentials | null
+): NodeJS.ProcessEnv {
+  return {
+    ...env,
+    DEBUG: undefined,
+    PWDEBUG: undefined,
+    // Ensure Playwright finds its browsers
+    PLAYWRIGHT_BROWSERS_PATH: env["PLAYWRIGHT_BROWSERS_PATH"] ?? undefined,
+    ...(credentials
+      ? {
+          RAVEN_AUTOFILL_USERNAME: credentials.username,
+          RAVEN_AUTOFILL_PASSWORD: credentials.password,
+        }
+      : {}),
+  };
 }
 
 /**
@@ -101,8 +188,8 @@ export function siteMinderWebUrl(baseUrl: string): string {
 
 /** BC Gov logon hosts (logon7, logontest7, loginproxy...) and the Entra login host. */
 export const LOGIN_HOST_PATTERN = /^(?:(?:logon|login)[a-z0-9-]*\.gov\.bc\.ca|login\.microsoftonline\.com)$/i;
-/** Paths owned by SiteMinder itself. */
-export const LOGIN_PATH_PATTERN = /\/(?:siteminderagent|clp-cgi)\//i;
+/** Paths owned by SiteMinder itself: its agent and CGI directories, and the fedLaunch federation hop. */
+export const LOGIN_PATH_PATTERN = /\/(?:(?:siteminderagent|clp-cgi)\/|fedlaunch(?:\/|$))/i;
 /** Query parameters SiteMinder adds when it bounces a request to login. */
 export const LOGIN_QUERY_PATTERN = /(?:^|[?&])(?:SMAGENTNAME|SMAUTHREASON|fedLaunch)(?:=|&|$)/i;
 
@@ -148,53 +235,100 @@ export interface CaptureScriptOptions {
    * first real value (the SharePoint capture).
    */
   readonly verifyUrl?: string;
+  /**
+   * Log each main-frame navigation (URL without its query string or fragment)
+   * to stderr. Decided by the caller; the script never reads the environment
+   * for it. Default false.
+   */
+  readonly debug?: boolean;
   /** Emit the credential-autofill routine. */
   readonly autofill: boolean;
 }
 
+/**
+ * A finite whole number of at least `min`, else `fallback`. These values are
+ * interpolated into generated code, so NaN, Infinity and negatives must never
+ * reach it (the build function is a public export).
+ */
+function wholeNumber(value: number | undefined, fallback: number, min: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(min, Math.trunc(value)) : fallback;
+}
+
 const AUTOFILL_SNIPPET = `
   // Best-effort credential autofill, restricted to the identity providers'
-  // own login pages. Values come from the environment, never from this
-  // script. MFA prompts are left for the human on purpose.
+  // own login pages over https. Values come from the environment, never from
+  // this script. MFA prompts are left for the human on purpose.
+  //
+  // A rejected password is never retried: every further failed IDIR login
+  // moves the account closer to lockout, so the person takes over after one
+  // try. The password is also never typed for a different account than the
+  // form is already showing.
   const AUTOFILL_HOSTS = ['login.microsoftonline.com', 'logon7.gov.bc.ca'];
   const AUTOFILL_MAX = 8;
+  const PASSWORD_MAX = 1;
+  const USER_SEL = 'input[name="loginfmt"], input[type="email"], input[name="user"], input[name="username"], input#user';
+  const PASS_SEL = 'input[type="password"]';
+  const SUBMIT_SEL = '#idSIButton9, input[type="submit"], button[type="submit"]';
+  const KMSI_SEL = '#idSIButton9';
   let autofillAttempts = 0;
-  async function tryAutofill() {
+  let passwordSubmits = 0;
+  let autofillBusy = false;
+  let autofillAgain = false;
+  // locator.isVisible({ timeout }) ignores its timeout and answers at once, so
+  // a form rendered shortly after the load event was never seen. Wait for it.
+  const shows = (locator, ms) => locator.waitFor({ state: 'visible', timeout: ms }).then(() => true, () => false);
+  async function autofillOnce() {
     if (autofillAttempts >= AUTOFILL_MAX) return;
     const username = process.env.RAVEN_AUTOFILL_USERNAME;
     const password = process.env.RAVEN_AUTOFILL_PASSWORD;
     if (!username || !password) return;
-    let host = '';
-    try { host = new URL(page.url()).hostname; } catch {}
-    if (!AUTOFILL_HOSTS.some((h) => host === h || host.endsWith('.' + h))) return;
-    try {
-      const userBox = page.locator('input[name="loginfmt"], input[type="email"], input[name="user"], input[name="username"], input#user').first();
-      const passBox = page.locator('input[type="password"]').first();
-      const submit = page.locator('#idSIButton9, input[type="submit"], button[type="submit"]').first();
-      const passVisible = await passBox.isVisible({ timeout: 500 }).catch(() => false);
-      const userVisible = await userBox.isVisible({ timeout: 500 }).catch(() => false);
+    let url;
+    try { url = new URL(page.url()); } catch { return; }
+    const host = url.hostname;
+    if (url.protocol !== 'https:' || !AUTOFILL_HOSTS.some((h) => host === h || host.endsWith('.' + h))) return;
+    const userBox = page.locator(USER_SEL).first();
+    const passBox = page.locator(PASS_SEL).first();
+    const submit = page.locator(SUBMIT_SEL).first();
+    const anyField = page.locator(USER_SEL + ', ' + PASS_SEL).first();
+    if (await shows(anyField, 1500)) {
+      const passVisible = await passBox.isVisible().catch(() => false);
+      const userVisible = await userBox.isVisible().catch(() => false);
+      const prefilled = userVisible ? await userBox.inputValue().catch(() => '') : '';
+      if (prefilled && prefilled.trim().toLowerCase() !== username.trim().toLowerCase()) return;
       if (passVisible) {
-        if (userVisible && !(await userBox.inputValue().catch(() => ''))) await userBox.fill(username);
+        if (passwordSubmits >= PASSWORD_MAX) return;
+        if (userVisible && !prefilled) await userBox.fill(username);
         if (!(await passBox.inputValue().catch(() => ''))) {
           autofillAttempts += 1;
+          passwordSubmits += 1;
           await passBox.fill(password);
           await submit.click({ timeout: 1000 }).catch(() => {});
         }
-      } else if (userVisible) {
-        if (!(await userBox.inputValue().catch(() => ''))) {
-          autofillAttempts += 1;
-          await userBox.fill(username);
-          await submit.click({ timeout: 1000 }).catch(() => {});
-        }
-      } else if (host.endsWith('login.microsoftonline.com')) {
-        // "Stay signed in?" — answer Yes so the profile keeps the session.
-        const kmsi = page.locator('#idSIButton9');
-        if (await kmsi.isVisible({ timeout: 300 }).catch(() => false)) {
-          autofillAttempts += 1;
-          await kmsi.click({ timeout: 1000 }).catch(() => {});
-        }
+      } else if (userVisible && !prefilled) {
+        autofillAttempts += 1;
+        await userBox.fill(username);
+        await submit.click({ timeout: 1000 }).catch(() => {});
       }
-    } catch {}
+    } else if (host.endsWith('login.microsoftonline.com')) {
+      // "Stay signed in?" — answer Yes so the profile keeps the session.
+      const kmsi = page.locator(KMSI_SEL);
+      if (await shows(kmsi, 1500)) {
+        autofillAttempts += 1;
+        await kmsi.click({ timeout: 1000 }).catch(() => {});
+      }
+    }
+  }
+  async function tryAutofill() {
+    // Overlapping load events must not park two passes on the same field. One
+    // that arrives mid-pass is remembered and run once more afterwards.
+    if (autofillBusy) { autofillAgain = true; return; }
+    autofillBusy = true;
+    try {
+      do {
+        autofillAgain = false;
+        try { await autofillOnce(); } catch {}
+      } while (autofillAgain && autofillAttempts < AUTOFILL_MAX);
+    } finally { autofillBusy = false; }
   }
   page.on('load', () => { tryAutofill().catch(() => {}); });
 `;
@@ -203,17 +337,23 @@ const AUTOFILL_SNIPPET = `
  * Generate the Playwright capture script executed via \`node -e\` in a
  * subprocess (Playwright must not share the caller's stdio). The script
  * prints exactly one JSON line: {status:'ok', cookies:{...}} or
- * {status:'error', message}.
+ * {status:'error', message}, including when the capture itself fails (for
+ * example the user closes the login window).
+ *
+ * The script also watches the process that launched it and shuts the browser
+ * down if that process dies, so an orphaned capture cannot keep the shared
+ * profile locked against the next login.
  */
 export function buildCaptureScript(opts: CaptureScriptOptions): string {
-  const navTimeoutMs = opts.navTimeoutMs ?? 120_000;
-  const pollBudgetMs = opts.pollBudgetMs ?? 180_000;
-  const pollIntervalMs = opts.pollIntervalMs ?? 1_000;
+  const navTimeoutMs = wholeNumber(opts.navTimeoutMs, 120_000, 100);
+  const pollBudgetMs = wholeNumber(opts.pollBudgetMs, 180_000, 100);
+  const pollIntervalMs = wholeNumber(opts.pollIntervalMs, 1_000, 10);
 
   return `
 const { chromium } = require('playwright');
 
 (async () => {
+  const DEBUG = ${opts.debug === true ? "true" : "false"};
   const context = await chromium.launchPersistentContext(${JSON.stringify(opts.profileDir)}, {
     headless: false,
     args: ['--disable-blink-features=AutomationControlled'],
@@ -221,10 +361,27 @@ const { chromium } = require('playwright');
     ignoreHTTPSErrors: true,
     viewport: null,
   });
+
+  // The lock that serialises captures names only the process that launched
+  // this one. If that process is killed mid-login, nothing else would ever
+  // close this browser, and an orphaned Chromium keeps the persistent profile
+  // locked, so the next login fails. Watch the parent and go down with it.
+  const parentPid = process.ppid;
+  const parentWatch = setInterval(() => {
+    let parentAlive = true;
+    try { process.kill(parentPid, 0); } catch (e) { parentAlive = !!e && e.code === 'EPERM'; }
+    if (!parentAlive) {
+      clearInterval(parentWatch);
+      context.close().catch(() => {}).then(() => process.exit(1));
+    }
+  }, 1000);
+  if (parentWatch.unref) parentWatch.unref();
+
   const page = context.pages()[0] ?? await context.newPage();
-  if (process.env.RAVEN_AUTH_DEBUG) {
+  if (DEBUG) {
+    // The query string and fragment of an SSO hop can carry tokens: log neither.
     page.on('framenavigated', (frame) => {
-      if (frame === page.mainFrame()) process.stderr.write('[capture] ' + frame.url().slice(0, 120) + '\\n');
+      if (frame === page.mainFrame()) process.stderr.write('[capture] ' + frame.url().split(/[?#]/)[0].slice(0, 120) + '\\n');
     });
   }
 ${opts.autofill ? AUTOFILL_SNIPPET : ""}
@@ -258,7 +415,7 @@ ${opts.autofill ? AUTOFILL_SNIPPET : ""}
     await page.goto(${JSON.stringify(opts.targetUrl)}, { waitUntil: 'domcontentloaded', timeout: ${navTimeoutMs} });
   } catch (navErr) {
     const navMsg = navErr && navErr.message ? String(navErr.message) : String(navErr);
-    if (process.env.RAVEN_AUTH_DEBUG) {
+    if (DEBUG) {
       process.stderr.write('[capture] goto failed: ' + navMsg.split('\\n')[0].slice(0, 200) + '\\n');
     }
     const isTransientNet = navMsg.indexOf('net::ERR_') !== -1;
@@ -268,7 +425,8 @@ ${opts.autofill ? AUTOFILL_SNIPPET : ""}
       console.log(JSON.stringify({ status: 'error', message: 'Navigation failed: ' + navMsg.split('\\n')[0] }));
       return;
     }
-    // Transient drops reload above; a goto timeout can coexist with a login
+    // Transient drops are retried from the original target by the
+    // requestfailed handler above; a goto timeout can coexist with a login
     // the user already completed — the cookie poll is the success signal.
   }
 
@@ -337,6 +495,7 @@ ${opts.autofill ? AUTOFILL_SNIPPET : ""}
     await new Promise((r) => setTimeout(r, ${pollIntervalMs}));
   }
 
+  clearInterval(parentWatch);
   await context.close();
 
   if (accepted) {
@@ -347,7 +506,13 @@ ${opts.autofill ? AUTOFILL_SNIPPET : ""}
     const missing = wanted.filter((name) => !found[name]).join(', ') || (wanted.join(', ') + ' (present but not accepted by the server)');
     console.log(JSON.stringify({ status: 'error', message: 'Cookies not captured within ${Math.round(pollBudgetMs / 1000)}s: ' + missing }));
   }
-})();
+})().catch((err) => {
+  // Keep the one-JSON-line contract when anything throws (the login window was
+  // closed, Chromium could not start, ...). Report only the first line of the
+  // message; the caller must not be handed a stack trace.
+  const detail = String(err && err.message ? err.message : err).split('\\n')[0].slice(0, 300);
+  process.stdout.write(JSON.stringify({ status: 'error', message: 'Capture failed: ' + detail }) + '\\n', () => process.exit(0));
+});
 `;
 }
 
