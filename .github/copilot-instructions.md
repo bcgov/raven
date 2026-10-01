@@ -163,7 +163,7 @@ Log search tips: `logType` can be "app" (default), "catalina", or "access". Use 
 
 ### Jenkins
 
-Uses `JENKINS_URL` / `JENKINS_BASE_URL`. Dedicated authentication uses `JENKINS_USER` plus `JENKINS_TOKEN`, `JENKINS_API_TOKEN`, or `JENKINS_PASSWORD`; otherwise it falls back to cached SMSESSION authentication. It does not reuse Atlassian Basic Auth credentials.
+Uses `JENKINS_URL` / `JENKINS_BASE_URL`. Dedicated authentication uses `JENKINS_USER` plus `JENKINS_TOKEN`, `JENKINS_API_TOKEN`, or `JENKINS_PASSWORD`; otherwise it uses cached SMSESSION authentication, and it also switches to SMSESSION for the rest of the process if a Basic request is redirected to the SiteMinder login. It does not reuse Atlassian Basic Auth credentials for Basic auth; the interactive SMSESSION browser login can autofill from `IDIR_USERNAME`/`IDIR_PASSWORD` or, failing that, `ATLASSIAN_EMAIL`/`ATLASSIAN_PASSWORD` (disable with `RAVEN_AUTH_AUTOFILL=off`).
 
 Jenkins tools are generic primitives across controller/job/build/queue/artifact/test/change/promotion/credential domains. Confirm before write calls. Job config writes require protected XML plus the current SHA-256. Credential writes accept only environment/file secret references. See `docs/TOOL_INVENTORY.md` and `packages/jenkins-mcp/README.md` for the generated tool surface and safety controls.
 

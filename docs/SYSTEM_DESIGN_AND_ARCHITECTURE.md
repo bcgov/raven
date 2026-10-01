@@ -332,10 +332,13 @@ loadEnv()  →  process.env  →  SessionManager  →  HTTP Headers (Cookie / Au
                                                    (BC Gov internal, HTTPS)
 ```
 
-**Credentials are present in exactly two places:**
+**Credentials are present only in these places:**
 
 1. **The `.env` file on disk** (encrypted at rest via macOS FileVault)
 2. **Process memory** (ephemeral, cleared when the MCP server exits)
+3. **The environment of the short-lived browser-capture subprocess**, only while a browser login runs with autofill enabled (the default whenever `IDIR_*` or `ATLASSIAN_*` credentials are set; `RAVEN_AUTH_AUTOFILL=off` disables it). The password is typed into the identity provider's HTTPS login page and nowhere else.
+
+The browser-capture profile (`~/.workflow-suite/browser-profile`, mode 0700) also holds identity-provider session cookies at rest, so a later login can complete without typing ("Stay signed in"). Deleting that directory ends those sessions.
 
 **Credentials are absent from:**
 
@@ -358,9 +361,10 @@ Both methods authenticate the **individual developer** — the MCP server operat
 ### 6.4 Session Management
 
 - **Session TTL:** 25 minutes (matches SiteMinder timeout)
-- **Session cache:** `~/.workflow-suite/session.json` (local disk only, `chmod 600`)
+- **Session cache:** `~/.workflow-suite/session.json` (local disk only, `chmod 600`, replaced atomically)
+- **Verification:** a captured cookie is accepted only after the SiteMinder-protected page confirms it works, and `raven-auth` checks a cached cookie against the server instead of trusting its age
 - **Expiry detection:** HTTP 302 redirects to login pages are detected; session is refreshed automatically
-- **No session sharing:** Each MCP server instance manages its own session
+- **Session sharing:** Each MCP server instance keeps its own in-memory cookie but they share the on-disk cache and one persistent browser profile. A lock file (`~/.workflow-suite/browser-profile.lock`) lets only one browser login run at a time, and a process that waited adopts the login the previous one completed
 
 ---
 
@@ -657,7 +661,7 @@ The MCP protocol architecture makes this structurally difficult:
 | **SSH command injection** | Impossible | N/A | Command allowlist + shell metacharacter rejection makes injection structurally impossible |
 | **Path traversal on servers** | Impossible | N/A | Paths validated: must be absolute, no `..`, no metacharacters |
 | **Unauthorized system access** | Very Low | Medium | Uses authenticated user's permissions; no privilege escalation |
-| **Session token theft** | Low | Medium | Tokens stored in memory with 25-min TTL; disk cache at `chmod 600` |
+| **Session token theft** | Low | Medium | Tokens stored in memory with 25-min TTL; disk cache at `chmod 600`; browser profile (identity-provider session cookies) at `chmod 700` |
 | **Prompt injection via tool output** | Low | Low | Tool responses are treated as untrusted content by the AI client; no code execution path |
 | **Data exfiltration by AI** | Very Low | High | No arbitrary destination tools; Artifactory upload reads only from a protected directory and sends only to the configured internal HTTPS endpoint |
 | **Malicious tool modification** | Very Low | High | Tools are compiled TypeScript; source is code-reviewed; no runtime modification |

@@ -177,7 +177,7 @@ JENKINS_URL=<your HTTPS Jenkins base URL>
 # RAVEN_JENKINS_SECRET_DIR=~/.raven/jenkins-secrets
 ```
 
-If dedicated Jenkins credentials are not set, the Jenkins MCP falls back to cached SMSESSION authentication. Job configuration updates require an expected SHA-256 and exact XML from the protected config directory. Credential writes accept secret references from environment variables or mode-restricted files; raw secret values are not accepted as tool arguments.
+If dedicated Jenkins credentials are not set, the Jenkins MCP uses cached SMSESSION authentication. It also switches to SMSESSION for the rest of the process if a Basic request is redirected to the SiteMinder login (which means `JENKINS_URL` points at a SiteMinder-protected host); see [`packages/jenkins-mcp/README.md`](packages/jenkins-mcp/README.md). Job configuration updates require an expected SHA-256 and exact XML from the protected config directory. Credential writes accept secret references from environment variables or mode-restricted files; raw secret values are not accepted as tool arguments.
 
 Optional GitHub settings:
 
@@ -635,20 +635,30 @@ Create `~/.raven/.env` with these three variables:
 
 Each MCP server loads this file at startup via `dotenv`. Credentials are injected into the server process only — they are never exposed to the LLM client.
 
-**Security:** Never commit credentials to git. The `~/.raven/` directory should be `chmod 700` and the `.env` file `chmod 600`. The password stays on your local machine — RAVEN never logs or transmits it.
+**Security:** Never commit credentials to git. The `~/.raven/` directory should be `chmod 700` and the `.env` file `chmod 600`. The password stays on your local machine — RAVEN never logs it, and the only place it is sent is the identity provider's own login page, when browser autofill is enabled (see below).
 
 ### SMSESSION Cookie (Fallback)
 
 If Basic Auth env vars are not set, RAVEN falls back to SiteMinder cookie authentication:
 
-1. Checks for a cached session (`~/.workflow-suite/session.json`)
+1. Checks for a cached session (`~/.workflow-suite/session.json`); an entry older than 25 minutes is ignored
 2. If expired or missing, checks the `SMSESSION` environment variable
-3. If neither exists, opens a Chromium browser for interactive IDIR login
-4. Cookie is cached for 25 minutes, shared across Jira/Confluence/Bitbucket
+3. If neither exists, opens a Chromium browser for interactive IDIR login. A cookie is accepted only once the SiteMinder-protected page confirms it works, so a logged-off or expired cookie left in the browser is never cached
+4. The cookie is cached for 25 minutes and shared across Jira/Confluence/Bitbucket. Several MCP servers can hit expiry together: a lock file (`~/.workflow-suite/browser-profile.lock`) lets only one browser login run at a time, and the others adopt its result
+
+The browser uses a persistent profile (`~/.workflow-suite/browser-profile`, mode 0700), so an existing identity-provider session usually signs you in without typing. The profile keeps identity-provider session cookies on disk (with autofill enabled, Entra's "Stay signed in?" prompt is answered Yes so they persist); delete the directory to end those sessions.
+
+**Autofill.** If `IDIR_USERNAME` and `IDIR_PASSWORD` are both set, they are typed into the identity provider's HTTPS login page; otherwise `ATLASSIAN_EMAIL` and `ATLASSIAN_PASSWORD` are used when both are set. The password is submitted at most once per login attempt, the second factor is always left to you, and anything other than the known identity-provider hosts is ignored. Set `RAVEN_AUTH_AUTOFILL=off` to disable autofill.
 
 ```bash
-# Authenticate via browser
+# Authenticate via browser (a cached session is first checked against the server)
 node packages/auth/dist/cli.js
+
+# Ignore the cached session and log in again
+node packages/auth/dist/cli.js --force
+
+# Verbose capture logging, without query strings or credentials
+RAVEN_AUTH_DEBUG=1 node packages/auth/dist/cli.js
 ```
 
 ## Jira Search Examples (JQL)

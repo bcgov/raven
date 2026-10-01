@@ -264,7 +264,7 @@ The delegated model is a deliberate and sound choice for a local tool: it makes 
 
 | Data Category | Classification | Encryption at Rest | Encryption in Transit | Retention Policy |
 | :--- | :--- | :--- | :--- | :--- |
-| Upstream credentials and session cookies | Restricted | Yes — Keychain or DPAPI; `~/.raven/.env` fallback is plaintext at mode 0600 | TLS 1.2+ | Session cache expires after roughly 25 minutes; `.env` persists until edited |
+| Upstream credentials and session cookies | Restricted | Yes — Keychain or DPAPI; `~/.raven/.env` fallback is plaintext at mode 0600 | TLS 1.2+ | Session cache expires after roughly 25 minutes; the persistent browser profile (`~/.workflow-suite/browser-profile`, mode 0700) keeps identity-provider session cookies until it is deleted; `.env` persists until edited |
 | Jira, Confluence and Bitbucket content (may contain incidental personal information) | Confidential | No — held in memory only | TLS 1.2+ | Not retained; discarded at process exit |
 | Application server logs retrieved over SSH | Confidential | No — streamed, no local temp file | SSH transport | Not retained |
 | Audit records under `~/.raven/audit` | Internal | No — plaintext JSONL at mode 0600 | Not applicable, local only | Indefinite; no rotation or purge implemented |
