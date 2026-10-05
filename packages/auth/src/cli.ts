@@ -9,104 +9,52 @@
  *
  * Usage:
  *   npx raven-auth                    # SiteMinder (default)
+ *   npx raven-auth --force            # SiteMinder, ignore the cached session
  *   npx raven-auth --sharepoint       # SharePoint Online
+ *   npx raven-auth --sharepoint --force
  *   node packages/auth/dist/cli.js
+ *
+ * The behaviour lives in `cli-run.ts` so it can be tested; this file only
+ * wires it to the real managers, the environment and the process exit code.
+ * The credentials (a keychain read on macOS, PowerShell on Windows) are loaded
+ * only once a login is under way, so `--help` and a mistyped option never
+ * touch them.
  */
 
-import { SessionManager } from "./session-manager.js";
-import { readCachedSession } from "./cookie-cache.js";
-import { SpoSessionManager } from "./spo-session-manager.js";
-import { readCachedSpoSession } from "./spo-cookie-cache.js";
-import { loadEnv } from "./load-env.js";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { runCli } from "./cli-run.js";
+import { loadEnv } from "./load-env.js";
+import { SessionManager } from "./session-manager.js";
+import { readCachedSpoSession } from "./spo-cookie-cache.js";
+import { SpoSessionManager } from "./spo-session-manager.js";
 
-const cachePath = join(homedir(), ".workflow-suite", "session.json");
 const spoCachePath = join(homedir(), ".workflow-suite", "spo-session.json");
 
-async function siteMinderAuth(): Promise<void> {
-  console.log("RAVEN Auth - SiteMinder Session Manager");
-  console.log("======================================\n");
+let envLoaded = false;
 
-  // Check if we already have a valid session
-  const existing = await readCachedSession(cachePath, 1500);
-  if (existing) {
-    console.log("Valid SMSESSION found in cache.");
-    console.log(`  Cache:  ~/.workflow-suite/session.json`);
-    console.log("\nYour RAVEN tools should work. Session refreshes automatically.");
-    return;
+/** Run `use` after the environment has been loaded (once). The managers and the cache TTL read it. */
+function withEnv<T>(use: () => T): T {
+  if (!envLoaded) {
+    loadEnv();
+    envLoaded = true;
   }
-
-  console.log("No valid session found. Opening browser for IDIR login...");
-  console.log("  - A Chromium window will open");
-  console.log("  - Log in with your IDIR credentials");
-  console.log("  - The window closes automatically once authenticated");
-  console.log("  - If a page shows 'This site can't be reached', it retries");
-  console.log("    automatically; refresh the page manually if it lingers\n");
-
-  const sm = new SessionManager();
-
-  try {
-    await sm.authenticate();
-    console.log("\nAuthentication successful!");
-    console.log(`  Cached: ~/.workflow-suite/session.json`);
-    console.log(`  TTL:    25 minutes`);
-    console.log("\nYour RAVEN tools (Jira, Confluence, Bitbucket) are ready to use.");
-  } catch (err) {
-    console.error(
-      "\nAuthentication failed:",
-      err instanceof Error ? err.message : String(err)
-    );
-    process.exit(1);
-  }
+  return use();
 }
 
-async function sharePointAuth(): Promise<void> {
-  console.log("RAVEN Auth - SharePoint Online Session Manager");
-  console.log("==============================================\n");
-
-  const existing = await readCachedSpoSession(
-    spoCachePath,
-    Number(process.env["SHAREPOINT_SESSION_TTL"]) || undefined
-  );
-  if (existing) {
-    console.log("Valid SharePoint session found in cache.");
-    console.log("  Cache:  ~/.workflow-suite/spo-session.json");
-    console.log("\nYour SharePoint tools should work. Session refreshes automatically.");
-    return;
+runCli(process.argv.slice(2), {
+  sessionManager: () => withEnv(() => new SessionManager()),
+  spoSessionManager: () => withEnv(() => new SpoSessionManager()),
+  readCachedSpoSession: () =>
+    withEnv(() => readCachedSpoSession(spoCachePath, Number(process.env["SHAREPOINT_SESSION_TTL"]) || undefined)),
+  log: (line) => console.log(line),
+  error: (line) => console.error(line),
+}).then(
+  (code) => {
+    process.exitCode = code;
+  },
+  (err: unknown) => {
+    console.error(`\nraven-auth failed: ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
   }
-
-  console.log("No valid session found. Opening browser for IDIR/Entra login...");
-  console.log("  - A Chromium window will open at your SharePoint tenant");
-  console.log("  - Log in with your IDIR credentials (and MFA if prompted)");
-  console.log("  - The window closes automatically once authenticated");
-  console.log("  - If a page shows 'This site can't be reached', it retries");
-  console.log("    automatically; refresh the page manually if it lingers\n");
-
-  const sm = new SpoSessionManager();
-
-  try {
-    await sm.authenticate();
-    console.log("\nAuthentication successful!");
-    console.log("  Cached: ~/.workflow-suite/spo-session.json");
-    console.log("  TTL:    8 hours");
-    console.log("\nYour RAVEN SharePoint tools are ready to use.");
-  } catch (err) {
-    console.error(
-      "\nAuthentication failed:",
-      err instanceof Error ? err.message : String(err)
-    );
-    process.exit(1);
-  }
-}
-
-async function main(): Promise<void> {
-  loadEnv();
-  if (process.argv.includes("--sharepoint")) {
-    await sharePointAuth();
-    return;
-  }
-  await siteMinderAuth();
-}
-
-main();
+);

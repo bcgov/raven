@@ -238,7 +238,7 @@ This section defines the security posture, authentication/authorization model, c
 | **Identity Provider** | BC Gov SiteMinder with IDIR, reached through an interactive Playwright-driven browser login (`packages/auth/src/capture-script.ts`) |
 | **Authorization Model** | Delegated — RAVEN makes no authorization decision of its own. Every upstream call carries the operator's own identity, so the operator's existing entitlements are the authorization boundary |
 | **Token Format** | Opaque session cookie for SiteMinder; bearer or basic credentials for the token-based providers |
-| **Token Storage** | macOS Keychain or Windows DPAPI where available, otherwise `~/.raven/.env` and a session cache file written with mode 0600 |
+| **Token Storage** | macOS Keychain or Windows DPAPI where available, otherwise `~/.raven/.env` and a session cache file written with mode 0600. The browser login also keeps a persistent Chromium profile (`~/.workflow-suite/browser-profile`) holding identity-provider session cookies |
 
 The delegated model is a deliberate and sound choice for a local tool: it makes privilege escalation through RAVEN impossible for upstream systems, because RAVEN never holds more authority than the person running it. The model has one gap. `packages/server-ui/src/server.ts` `createApp()` mounts fifteen routers with no authentication, authorization, origin, host, or CSRF middleware, so any local process — or any web page the operator visits, via cross-origin request or DNS rebinding — can reach configuration and log endpoints with the operator's full privilege. Authorization is not enforced separately from authentication at that boundary because neither is enforced at all.
 
@@ -251,7 +251,7 @@ The delegated model is a deliberate and sound choice for a local tool: it makes 
 
 ### 6.3 Concurrency & Data Integrity
 
-- **Lock Granularity:** RAVEN runs as independent single-purpose processes with no shared mutable server state, so global lock contention does not arise. The one cross-process lock is `packages/pipeline/src/scheduled-run-lock.ts`, which prevents two scheduled pipeline runs from overlapping.
+- **Lock Granularity:** RAVEN runs as independent single-purpose processes with little shared mutable server state. The exception is session expiry: the MCP servers share one session cache and one persistent browser profile, so browser logins are serialised across processes by a lock file (`packages/auth/src/auth-lock.ts`, `~/.workflow-suite/browser-profile.lock`), the caches are written atomically, and a failed login is remembered for 30 seconds so queued requests do not each start another. Separately, the scheduled pipeline run has its own lock (`packages/pipeline/scripts/scheduled-run.sh`), which prevents two scheduled runs from overlapping.
 - **Race Condition Prevention:** No multi-step privilege alteration exists in the codebase; RAVEN grants no privileges. The audit log appends under a hash chain, so concurrent writes would be detectable as a chain break rather than silently interleaving.
 - **DB-Level Invariants:** Not applicable — there is no database. Uniqueness constraints do not arise.
 
@@ -265,6 +265,7 @@ The delegated model is a deliberate and sound choice for a local tool: it makes 
 | Data Category | Classification | Encryption at Rest | Encryption in Transit | Retention Policy |
 | :--- | :--- | :--- | :--- | :--- |
 | Upstream credentials and session cookies | Restricted | Yes — Keychain or DPAPI; `~/.raven/.env` fallback is plaintext at mode 0600 | TLS 1.2+ | Session cache expires after roughly 25 minutes; `.env` persists until edited |
+| Browser-login profile (identity-provider session cookies under `~/.workflow-suite/browser-profile`) | Restricted | No keychain protection on macOS and Linux (Playwright runs Chromium with a mock keychain); protected by directory mode 0700 or Windows user-profile permissions, and by disk encryption | TLS 1.2+ | Kept until the directory is deleted, which discards the local copy only: the sessions stay valid at the identity provider until they expire or are revoked |
 | Jira, Confluence and Bitbucket content (may contain incidental personal information) | Confidential | No — held in memory only | TLS 1.2+ | Not retained; discarded at process exit |
 | Application server logs retrieved over SSH | Confidential | No — streamed, no local temp file | SSH transport | Not retained |
 | Audit records under `~/.raven/audit` | Internal | No — plaintext JSONL at mode 0600 | Not applicable, local only | Indefinite; no rotation or purge implemented |
@@ -409,7 +410,7 @@ A note on how to read the boxes: the validation contract requires an item to be 
 - [x] **Cryptographic Controls:** `crypto.randomBytes` for identifiers, SHA-256 hash chaining for audit integrity, platform keystore for credentials; no weak algorithm in a security context. `[Confidence: Verified]`
 - [ ] **Side-Channel Defenses:** Not applicable — RAVEN exposes no inbound authentication endpoint and validates no credential presented to it, so there is no rejection path an attacker could time. No constant-time comparison exists, and none is required by this architecture. `[Confidence: N/A]`
 - [x] **Audit Logging:** Structured JSONL with SHA-256 chaining from a genesis hash and a `verifyAuditFile` integrity walk, covering tool invocations and state changes. `[Confidence: Verified]`
-- [ ] **Concurrency Safety:** Independent single-purpose processes with no shared mutable state and one cross-process pipeline lock; no transactional boundary needed, but this is reasoned from structure rather than tested. `[Confidence: Inferred]`
+- [ ] **Concurrency Safety:** Independent single-purpose processes; the shared session caches and browser profile are guarded by a cross-process login lock and atomic writes, and the pipeline has its own lock; no transactional boundary needed, but this is reasoned from structure rather than tested. `[Confidence: Inferred]`
 - [ ] **Dependency Health:** `npm audit` reports 5 advisories including 3 high, one of them in the direct dependency `nodemailer`; license compliance was not audited in this review. `[Confidence: Unknown]`
 - [ ] **Observability:** A health endpoint, a custom logger, and operator-configured email and SSE alerting exist; there are no metrics, no tracing, no correlation IDs, and no log aggregation. `[Confidence: Inferred]`
 - [ ] **Deployment Pipeline:** CI runs a real build, the full vitest suite, and an inventory drift gate, but contains no SAST, SCA, or dependency-audit step — the workflow header defers CodeQL to repository settings. `[Confidence: Inferred]`

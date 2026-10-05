@@ -69,8 +69,9 @@ describe("cookie-cache", () => {
   });
 
   it("clearCachedSession does not throw if file does not exist", async () => {
+    // Nothing to remove means the file is gone, which it now reports as true.
     await expect(
       clearCachedSession("/nonexistent/file.json")
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(true);
   });
 });

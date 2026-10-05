@@ -159,6 +159,10 @@ Set in `~/.raven/.env` (`chmod 600`). **Sensitive** values are secrets — never
 | `ATLASSIAN_BASE_URL` | required | no | jira, confluence, bitbucket, assets, overview, health, bug-classifier | BWA Basic-Auth host (bypasses SiteMinder) |
 | `ATLASSIAN_EMAIL` | required | no | same | IDIR email |
 | `ATLASSIAN_PASSWORD` | required | **yes** | same | IDIR password |
+| `IDIR_USERNAME` | optional | no | auth (browser login) | username typed into the identity provider's login page; used with `IDIR_PASSWORD`, else `ATLASSIAN_EMAIL` / `ATLASSIAN_PASSWORD` are used when both are set |
+| `IDIR_PASSWORD` | optional | **yes** | auth (browser login) | password typed into the identity provider's login page, at most once per login attempt; the second factor is never automated |
+| `RAVEN_AUTH_AUTOFILL` | optional | no | auth (browser login) | `off` (also `false`, `0`, `no`, `disabled`) stops the login page being filled in; otherwise it is filled in whenever a complete credential pair is configured |
+| `RAVEN_AUTH_DEBUG` | optional | no | auth (browser login) | verbose browser-capture logging, without query strings or credentials; any value except empty, `0`, `false`, `no`, `off` or `disabled` turns it on |
 | `RAVEN_SCRUB_PI` | recommended | no | all | PI scrubbing toggle (FOIPPA) |
 | `RAVEN_KEYCHAIN_SERVICE` | optional | no | all (macOS) | override the keychain service name (testing); must be set in the process environment — the keychain is read before .env |
 | `JIRA_EPIC_LINK_FIELD` | optional | no | jira | Epic Link custom-field id (default `customfield_10006`) |
@@ -207,7 +211,7 @@ Set in `~/.raven/.env` (`chmod 600`). **Sensitive** values are secrets — never
 | `RAVEN_JENKINS_DOWNLOAD_DIR` | optional | no | jenkins | protected artifact-download directory (default `~/.raven/jenkins-downloads`) |
 | `RAVEN_JENKINS_SECRET_DIR` | optional | no | jenkins | protected credential-secret source directory (default `~/.raven/jenkins-secrets`) |
 
-If dedicated Jenkins credentials are omitted, the server falls back to the cached SMSESSION flow. It does not reuse Atlassian username/password variables.
+If dedicated Jenkins credentials are omitted, the server falls back to the cached SMSESSION flow. It does not reuse Atlassian username/password variables for Basic authentication (the browser login behind the SMSESSION flow can fill in the login page from `IDIR_*` or `ATLASSIAN_*`, see Core above). If a Basic request is redirected into the SiteMinder login, the server switches to the SMSESSION flow for the rest of the process.
 
 ### RFC Buddy
 | Variable | Required? | Sensitive | Used by | Purpose |

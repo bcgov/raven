@@ -61,6 +61,29 @@ describe("authenticated session fetch", () => {
     expect(retryHeaders.get("Cookie")).toBe("JSESSIONID=jenkins-session; SMSESSION=refreshed-session");
     expect(sessionManager.invalidate).toHaveBeenCalledTimes(1);
   });
+
+  it("tells invalidate which cookie failed so a fresher cached login is not discarded", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(null, {
+        status: 302,
+        headers: { Location: "https://logon.example.gov.bc.ca/clp-cgi/logon" },
+      }))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+    const sessionManager = {
+      getSession: vi.fn()
+        .mockResolvedValueOnce("dead-session")
+        .mockResolvedValueOnce("dead-session")
+        .mockResolvedValueOnce("fresh-session"),
+      invalidate: vi.fn(),
+      userAgent: "raven-test",
+    } as unknown as SessionManager;
+    const authenticatedFetch = await createAuthenticatedFetch(sessionManager);
+
+    await authenticatedFetch("https://jenkins.example.gov.bc.ca/jenkins/api/json");
+
+    expect(sessionManager.invalidate).toHaveBeenCalledWith("dead-session");
+  });
 });
 
 describe("basic auth fetch", () => {

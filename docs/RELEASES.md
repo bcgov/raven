@@ -63,7 +63,7 @@ The bundle includes a `raven-auth` launcher. From the extracted bundle:
 bin/raven-auth
 ```
 
-On Windows use `bin\raven-auth.cmd`; add `--sharepoint` for SharePoint Online.
+On Windows use `bin\raven-auth.cmd`; add `--sharepoint` for SharePoint Online, or `--force` to log in again even if the cached SiteMinder session looks fresh.
 Before the first interactive login, install Playwright Chromium with the
 bundled runtime:
 
