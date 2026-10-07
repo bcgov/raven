@@ -22,7 +22,7 @@ describe("Sonar MCP project listing", () => {
     vi.unstubAllEnvs();
   });
 
-  it("advertises a read-only tool returning every project as structured JSON", async () => {
+  it("advertises a read-only tool returning user-visible projects as structured JSON", async () => {
     const tools = await client.listTools();
     expect(tools.tools.find(({ name }) => name === "sonar_list_projects")?.annotations?.readOnlyHint).toBe(true);
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
@@ -35,6 +35,11 @@ describe("Sonar MCP project listing", () => {
 
     const result = await client.callTool({ name: "sonar_list_projects", arguments: {} });
     expect(result.isError).not.toBe(true);
+    const [url, options] = fetchMock.mock.calls.at(-1) ?? [];
+    expect(new URL(String(url)).pathname).toBe("/api/components/search_projects");
+    expect(new Headers(options?.headers).get("Authorization")).toBe(
+      `Basic ${Buffer.from("test-token:").toString("base64")}`,
+    );
     if (!Array.isArray(result.content) || result.content[0]?.type !== "text") {
       throw new Error("Expected text response");
     }

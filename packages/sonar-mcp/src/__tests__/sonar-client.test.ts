@@ -44,7 +44,7 @@ describe("SonarClient constructor", () => {
 });
 
 describe("SonarClient API operations", () => {
-  it("lists every project through api/projects/search without dropping later pages", async () => {
+  it("lists projects visible to a user token without dropping later pages", async () => {
     const mockFetch = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify({
         paging: { pageIndex: 1, pageSize: 100, total: 3 },
@@ -68,7 +68,7 @@ describe("SonarClient API operations", () => {
     for (const [index, call] of mockFetch.mock.calls.entries()) {
       if (typeof call[0] !== "string") throw new Error("Expected string URL");
       const url = new URL(call[0]);
-      expect(url.pathname).toBe("/api/projects/search");
+      expect(url.pathname).toBe("/api/components/search_projects");
       expect(url.searchParams.get("p")).toBe(String(index + 1));
       expect(url.searchParams.get("ps")).toBe("100");
     }

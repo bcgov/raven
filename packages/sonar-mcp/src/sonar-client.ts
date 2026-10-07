@@ -69,7 +69,7 @@ export class SonarClient {
   async listProjects(): Promise<SonarProject[]> {
     const projects: SonarProject[] = [];
     for (let page = 1; ; page++) {
-      const result = await this.request<SonarProjectsPage>("api/projects/search", {
+      const result = await this.request<SonarProjectsPage>("api/components/search_projects", {
         params: { p: page, ps: 100 },
       });
       if (
