@@ -1,6 +1,6 @@
 {
   "name": "@nrs/github-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "GitHub MCP server for RAVEN suite — GHAS security findings, code scanning, secret scanning, Dependabot, issues, and pull requests via the GitHub REST API",
   "type": "module",
   "main": "dist/index.js",

@@ -1,6 +1,6 @@
 {
   "name": "raven",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "RAVEN - Resource Analytics, Visibility & Enterprise Navigator: Local-first Atlassian analysis suite",
   "private": true,
   "workspaces": [

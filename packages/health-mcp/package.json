@@ -1,6 +1,6 @@
 {
   "name": "@nrs/health-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Project health analysis MCP server for RAVEN suite",
   "type": "module",
   "main": "dist/index.js",

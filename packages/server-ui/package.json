@@ -1,6 +1,6 @@
 {
   "name": "@nrs/server-ui",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Web dashboard for BC Gov server monitoring (read-only)",
   "type": "module",
   "main": "dist/index.js",

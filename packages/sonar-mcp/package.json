@@ -1,6 +1,6 @@
 {
   "name": "@nrs/sonar-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "SonarQube MCP server for RAVEN suite (Community Build + Branch Plugin compatible)",
   "type": "module",
   "main": "dist/index.js",

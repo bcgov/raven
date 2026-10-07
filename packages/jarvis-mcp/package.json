@@ -1,6 +1,6 @@
 {
   "name": "@nrs/jarvis-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Secure Local Proxy to Remote Jarvis MCP Server",
   "type": "module",
   "main": "dist/index.js",

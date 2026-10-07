@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "suiteVersion": "0.1.0",
+  "suiteVersion": "0.2.0",
   "nodeVersion": "24.21.0",
   "protocolCompatibility": "MCP over stdio",
   "supportedPlatforms": ["darwin-x64", "linux-x64", "win32-x64"],
@@ -8,7 +8,7 @@
     {
       "id": "auth",
       "package": "@nrs/auth",
-      "packageVersion": "0.1.0",
+      "packageVersion": "0.2.0",
       "entrypoint": "packages/auth/dist/cli.js",
       "launcher": "raven-auth"
     }
@@ -17,7 +17,7 @@
     {
       "id": "jira",
       "package": "@nrs/jira-mcp",
-      "packageVersion": "0.1.0",
+      "packageVersion": "0.2.0",
       "entrypoint": "packages/jira-mcp/dist/index.js",
       "launcher": "raven-jira",
       "access": "read-write"
@@ -25,7 +25,7 @@
     {
       "id": "confluence",
       "package": "@nrs/confluence-mcp",
-      "packageVersion": "0.1.0",
+      "packageVersion": "0.2.0",
       "entrypoint": "packages/confluence-mcp/dist/index.js",
       "launcher": "raven-confluence",
       "access": "read-write"
@@ -33,7 +33,7 @@
     {
       "id": "bitbucket",
       "package": "@nrs/bitbucket-mcp",
-      "packageVersion": "0.1.0",
+      "packageVersion": "0.2.0",
       "entrypoint": "packages/bitbucket-mcp/dist/index.js",
       "launcher": "raven-bitbucket",
       "access": "read-write"
@@ -41,7 +41,7 @@
     {
       "id": "overview",
       "package": "@nrs/overview-mcp",
-      "packageVersion": "0.1.0",
+      "packageVersion": "0.2.0",
       "entrypoint": "packages/overview-mcp/dist/index.js",
       "launcher": "raven-overview",
       "access": "read-only"
@@ -49,7 +49,7 @@
     {
       "id": "health",
       "package": "@nrs/health-mcp",
-      "packageVersion": "0.1.0",
+      "packageVersion": "0.2.0",
       "entrypoint": "packages/health-mcp/dist/index.js",
       "launcher": "raven-health",
       "access": "read-only"
@@ -57,7 +57,7 @@
     {
       "id": "server-monitor",
       "package": "@nrs/server-mcp",
-      "packageVersion": "0.1.0",
+      "packageVersion": "0.2.0",
       "entrypoint": "packages/server-mcp/dist/index.js",
       "launcher": "raven-server-monitor",
       "access": "read-only"
@@ -65,7 +65,7 @@
     {
       "id": "assets",
       "package": "@nrs/assets-mcp",
-      "packageVersion": "0.1.0",
+      "packageVersion": "0.2.0",
       "entrypoint": "packages/assets-mcp/dist/index.js",
       "launcher": "raven-assets",
       "access": "read-only"
@@ -73,7 +73,7 @@
     {
       "id": "imis",
       "package": "@nrs/imis-mcp",
-      "packageVersion": "0.1.0",
+      "packageVersion": "0.2.0",
       "entrypoint": "packages/imis-mcp/dist/index.js",
       "launcher": "raven-imis",
       "access": "read-only"
@@ -81,7 +81,7 @@
     {
       "id": "bug-classifier",
       "package": "@nrs/bug-classifier-mcp",
-      "packageVersion": "0.1.0",
+      "packageVersion": "0.2.0",
       "entrypoint": "packages/bug-classifier-mcp/dist/index.js",
       "launcher": "raven-bug-classifier",
       "access": "read-only"
@@ -89,7 +89,7 @@
     {
       "id": "ado",
       "package": "@nrs/ado-mcp",
-      "packageVersion": "0.1.0",
+      "packageVersion": "0.2.0",
       "entrypoint": "packages/ado-mcp/dist/index.js",
       "launcher": "raven-ado",
       "access": "read-write"
@@ -97,7 +97,7 @@
     {
       "id": "jarvis",
       "package": "@nrs/jarvis-mcp",
-      "packageVersion": "0.1.0",
+      "packageVersion": "0.2.0",
       "entrypoint": "packages/jarvis-mcp/dist/index.js",
       "launcher": "raven-jarvis",
       "access": "read-only"
@@ -105,7 +105,7 @@
     {
       "id": "sonar",
       "package": "@nrs/sonar-mcp",
-      "packageVersion": "0.1.0",
+      "packageVersion": "0.2.0",
       "entrypoint": "packages/sonar-mcp/dist/index.js",
       "launcher": "raven-sonar",
       "access": "mixed"
@@ -113,7 +113,7 @@
     {
       "id": "jenkins",
       "package": "@nrs/jenkins-mcp",
-      "packageVersion": "0.1.0",
+      "packageVersion": "0.2.0",
       "entrypoint": "packages/jenkins-mcp/dist/index.js",
       "launcher": "raven-jenkins",
       "access": "read-write"
@@ -121,7 +121,7 @@
     {
       "id": "rfcbuddy",
       "package": "@nrs/rfcbuddy-mcp",
-      "packageVersion": "0.1.0",
+      "packageVersion": "0.2.0",
       "entrypoint": "packages/rfcbuddy-mcp/dist/index.js",
       "launcher": "raven-rfcbuddy",
       "access": "mixed"
@@ -129,7 +129,7 @@
     {
       "id": "artifactory",
       "package": "@nrs/artifactory-mcp",
-      "packageVersion": "0.1.0",
+      "packageVersion": "0.2.0",
       "entrypoint": "packages/artifactory-mcp/dist/index.js",
       "launcher": "raven-artifactory",
       "access": "read-write"
@@ -137,7 +137,7 @@
     {
       "id": "sharepoint",
       "package": "@nrs/sharepoint-mcp",
-      "packageVersion": "0.1.0",
+      "packageVersion": "0.2.0",
       "entrypoint": "packages/sharepoint-mcp/dist/index.js",
       "launcher": "raven-sharepoint",
       "access": "read-only"
@@ -145,7 +145,7 @@
     {
       "id": "github",
       "package": "@nrs/github-mcp",
-      "packageVersion": "0.1.0",
+      "packageVersion": "0.2.0",
       "entrypoint": "packages/github-mcp/dist/index.js",
       "launcher": "raven-github",
       "access": "read-write"
