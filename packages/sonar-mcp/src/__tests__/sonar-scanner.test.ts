@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { runScan, isValidSonarScanner, parseSonarConfig, getMergedSonarProps, hasDotNetCode } from "../sonar-scanner.js";
+import { runScan, getScannerPath, isValidSonarScanner, parseSonarConfig, getMergedSonarProps, hasDotNetCode } from "../sonar-scanner.js";
 import spawn from "cross-spawn";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -74,6 +74,34 @@ describe("runScan process execution", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdoutTail).toContain("INFO: Scanner running");
     expect(result.stderrTail).toContain("WARN: Deprecated property");
+  });
+
+  it("finds sonar-scanner.bat on Windows PATH and runs that binary", async () => {
+    const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const previousPath = process.env.PATH;
+    process.env.PATH = "C:\\missing;C:\\scanner\\bin";
+    const scanner = join("C:\\scanner\\bin", "sonar-scanner.bat");
+    try {
+      vi.mocked(existsSync).mockImplementation((path) => path === scanner);
+      expect(getScannerPath("sonar-scanner")).toBe(scanner);
+      const child = new MockChildProcess();
+      vi.mocked(spawn).mockReturnValue(child as any);
+      const scan = runScan({
+        projectKey: "proj",
+        branch: "main",
+        projectDir: "/workspace",
+        serverUrl: "https://sonar.example.com",
+        token: "token",
+        useMsBuild: false,
+      });
+      expect(spawn).toHaveBeenCalledWith(scanner, expect.any(Array), expect.any(Object));
+      child.emit("close", 0);
+      expect((await scan).success).toBe(true);
+    } finally {
+      platform.mockRestore();
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
   });
 
   it("handles non-zero exit code failure", async () => {

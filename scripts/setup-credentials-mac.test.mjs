@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mask, seedDefaults, normalizeAnswer, validateRecord } from "./setup-credentials-mac.lib.mjs";
+import { mask, seedDefaults, normalizeAnswer, applyAnswer, validateRecord } from "./setup-credentials-mac.lib.mjs";
 
 describe("mask", () => {
   it("masks short values entirely", () => {
@@ -44,6 +44,24 @@ describe("normalizeAnswer", () => {
     expect(normalizeAnswer("  p@ss  ", { sensitive: true })).toBe("  p@ss  ");
   });
 
+  describe("applyAnswer", () => {
+    it("keeps a stored value on Enter and erases only the selected key on :clear", () => {
+      const record = seedDefaults(["SONAR_SCANNER_BIN"], { SONAR_SCANNER_BIN: "/old" }, { EXTRA: "kept" });
+      applyAnswer(record, "SONAR_SCANNER_BIN", "");
+      expect(record.SONAR_SCANNER_BIN).toBe("/old");
+      applyAnswer(record, "SONAR_SCANNER_BIN", ":clear");
+      expect(record).toEqual({ EXTRA: "kept" });
+    });
+
+    it("can erase a sensitive value and set a new one", () => {
+      const record = { ATLASSIAN_PASSWORD: "old" };
+      applyAnswer(record, "ATLASSIAN_PASSWORD", ":clear");
+      expect(record).toEqual({});
+      applyAnswer(record, "ATLASSIAN_PASSWORD", "new");
+      expect(record).toEqual({ ATLASSIAN_PASSWORD: "new" });
+    });
+  });
+
   it("strips only a trailing carriage return for sensitive answers", () => {
     expect(normalizeAnswer("x\r", { sensitive: true })).toBe("x");
   });
@@ -60,11 +78,9 @@ describe("validateRecord", () => {
     ATLASSIAN_PASSWORD: "secret",
   };
 
-  it("requires all three ATLASSIAN fields", () => {
-    const errors = validateRecord({ ATLASSIAN_BASE_URL: "https://example.gov.bc.ca" });
-    expect(errors).toContain(
-      "ATLASSIAN_BASE_URL, ATLASSIAN_EMAIL, and ATLASSIAN_PASSWORD are required."
-    );
+  it("allows Atlassian credentials to be omitted or configured independently", () => {
+    expect(validateRecord({})).toEqual([]);
+    expect(validateRecord({ ATLASSIAN_BASE_URL: "https://example.gov.bc.ca" })).toEqual([]);
   });
 
   it("passes with all three ATLASSIAN fields and no GitHub token", () => {

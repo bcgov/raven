@@ -22,6 +22,17 @@ export interface SonarIssuesPage {
   paging?: { pageIndex: number; pageSize: number; total: number };
 }
 
+export interface SonarProject {
+  key: string;
+  name: string;
+  visibility?: "public" | "private";
+}
+
+export interface SonarProjectsPage {
+  paging: { pageIndex: number; pageSize: number; total: number };
+  components: SonarProject[];
+}
+
 export interface SonarQualityGateCondition {
   status: "OK" | "WARN" | "ERROR" | "NO_VALUE";
   metricKey: string;

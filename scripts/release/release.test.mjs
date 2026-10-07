@@ -14,6 +14,7 @@ import { test } from "vitest";
 import {
   isSemVerCore,
   copyWorkspacePackages,
+  copySetupScripts,
   readJson,
   releasedEntries,
   requiresMajorApproval,
@@ -138,6 +139,25 @@ test("workspace packages include package-root runtime assets", () => {
       "utf8",
     ),
   );
+});
+
+test("release bundle includes both credential setup scripts and their helper", () => {
+  const directory = mkdtempSync(join(tmpdir(), "raven-setup-bundle-"));
+  try {
+    copySetupScripts(directory);
+    for (const name of [
+      "setup-credentials.ps1",
+      "setup-credentials-mac.mjs",
+      "setup-credentials-mac.lib.mjs",
+    ]) {
+      assert.equal(
+        readFileSync(join(directory, "scripts", name), "utf8"),
+        readFileSync(new URL(`../${name}`, import.meta.url), "utf8"),
+      );
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("release smoke test seeds the isolated server inventory", async () => {

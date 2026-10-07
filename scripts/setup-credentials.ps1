@@ -70,13 +70,13 @@ if (Test-Path $CredFile) {
         try { $existing[$prop.Name] = Unprotect-String $prop.Value }
         catch { }
     }
-    Write-Host "Existing encrypted credentials found - press Enter to keep each value." -ForegroundColor Yellow
+    Write-Host "Existing encrypted credentials found - press Enter to keep each value, or type :clear to erase it." -ForegroundColor Yellow
     Write-Host ""
 }
 
 function Prompt-Value([string]$name, [string]$prompt, [bool]$isSensitive = $false) {
     $current = $existing[$name]
-    $hint    = if ($current) { " [keep existing]" } else { "" }
+    $hint    = if ($current) { " [Enter to keep; :clear to erase]" } else { "" }
     if ($isSensitive) {
         $sec  = Read-Host "${prompt}${hint}" -AsSecureString
         $plain = if ($sec.Length -gt 0) {
@@ -92,9 +92,14 @@ function Prompt-Value([string]$name, [string]$prompt, [bool]$isSensitive = $fals
         $plain = Read-Host "${prompt}${hint}"
         if ([string]::IsNullOrEmpty($plain)) { $plain = $current }
     }
+    if ($plain -ceq ":clear") {
+        $existing.Remove($name)
+        return $null
+    }
     return $plain
 }
 
+Write-Host "Atlassian (leave blank to skip)" -ForegroundColor Cyan
 $baseUrl  = Prompt-Value "ATLASSIAN_BASE_URL"  "Atlassian base URL (e.g. https://apps.example.gov.bc.ca)"
 $email    = Prompt-Value "ATLASSIAN_EMAIL"      "IDIR email (e.g. Jane.Smith@gov.bc.ca)"
 $password = Prompt-Value "ATLASSIAN_PASSWORD"   "IDIR password" -isSensitive $true
@@ -115,7 +120,7 @@ Write-Host ""
 Write-Host "SonarQube (leave blank to skip)" -ForegroundColor Cyan
 $sonarUrl   = Prompt-Value "SONARQUBE_URL"     "SonarQube base URL (e.g. https://sonar.example.gov.bc.ca)"
 $sonarToken = Prompt-Value "SONARQUBE_TOKEN"   "SonarQube user token" -isSensitive $true
-$sonarBin   = Prompt-Value "SONAR_SCANNER_BIN" "SonarQube scanner binary path (e.g. C:\sonar-scanner\bin\sonar-scanner.bat)"
+$sonarBin   = Prompt-Value "SONAR_SCANNER_BIN" "SonarQube scanner binary path (optional when sonar-scanner is on PATH)"
 
 Write-Host ""
 Write-Host "RFC Buddy (leave blank to skip)" -ForegroundColor Cyan
@@ -140,28 +145,23 @@ Write-Host "GitHub (leave blank to skip)" -ForegroundColor Cyan
 Write-Host "Required token scopes: security_events, issues, pull_requests, contents, metadata"
 $githubToken = Prompt-Value "GITHUB_TOKEN" "GitHub Personal Access Token (PAT)" -isSensitive $true
 $githubApiUrl = Prompt-Value "GITHUB_API_URL" "GitHub API URL (default: https://api.github.com)"
-$githubAllowList = Prompt-Value "GITHUB_REPOSITORY_ALLOWLIST" "GitHub repository allow-list (e.g. bcgov/*)"
+$githubAllowList = Prompt-Value "GITHUB_REPOSITORY_ALLOWLIST" "GitHub repository allow-list (comma-separated, e.g. octo-org/example-repo,octo-org/*)"
 $githubAutofix = Prompt-Value "GITHUB_ENABLE_AUTOFIX" "Enable GitHub autofix tools? (true/false; default false)"
 $githubMerge = Prompt-Value "GITHUB_ENABLE_MERGE" "Enable GitHub PR merge tool? (true/false; default false)"
 $githubTimeout = Prompt-Value "GITHUB_TIMEOUT_MS" "GitHub request timeout in ms (default 30000)"
 
 Write-Host ""
 
-if (-not $baseUrl -or -not $email -or -not $password) {
-    Write-Host "Error: ATLASSIAN_BASE_URL, ATLASSIAN_EMAIL, and ATLASSIAN_PASSWORD are required." -ForegroundColor Red
-    exit 1
-}
 if ($githubToken -and -not $githubAllowList) {
     Write-Host "Error: GITHUB_REPOSITORY_ALLOWLIST is required when configuring GITHUB_TOKEN." -ForegroundColor Red
     exit 1
 }
 
 # Encrypt each value
-$creds = [ordered]@{
-    ATLASSIAN_BASE_URL = Protect-String $baseUrl
-    ATLASSIAN_EMAIL    = Protect-String $email
-    ATLASSIAN_PASSWORD = Protect-String $password
-}
+$creds = [ordered]@{}
+if ($baseUrl)       { $creds["ATLASSIAN_BASE_URL"] = Protect-String $baseUrl }
+if ($email)         { $creds["ATLASSIAN_EMAIL"] = Protect-String $email }
+if ($password)      { $creds["ATLASSIAN_PASSWORD"] = Protect-String $password }
 if ($srvPass)       { $creds["SERVER_A_PASSWORD"]      = Protect-String $srvPass }
 if ($adoBaseUrl)    { $creds["ADO_BASE_URL"]           = Protect-String $adoBaseUrl }
 if ($adoCollection) { $creds["ADO_DEFAULT_COLLECTION"] = Protect-String $adoCollection }

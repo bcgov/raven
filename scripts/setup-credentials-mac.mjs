@@ -20,18 +20,22 @@
 // a hard ceiling around that size. writeKeychainRecord() enforces it.
 
 import { createInterface } from "node:readline";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { parse as parseDotenv } from "dotenv";
-import {
+import { createRequire } from "node:module";
+const authModule = new URL("../packages/auth/dist/load-env.js", import.meta.url);
+const bundledAuthModule = new URL("../runtime/node_modules/@nrs/auth/dist/load-env.js", import.meta.url);
+const loadEnvModule = existsSync(authModule) ? authModule : bundledAuthModule;
+const { parse: parseDotenv } = createRequire(loadEnvModule)("dotenv");
+const {
   readKeychainRecord,
   writeKeychainRecord,
   keychainService,
   KEYCHAIN_ACCOUNT,
   KeychainReadError,
-} from "../packages/auth/dist/load-env.js";
-import { mask, seedDefaults, normalizeAnswer, validateRecord } from "./setup-credentials-mac.lib.mjs";
+} = await import(loadEnvModule);
+import { mask, seedDefaults, normalizeAnswer, applyAnswer, validateRecord } from "./setup-credentials-mac.lib.mjs";
 
 /** Values from ~/.raven/.env, used as first-run defaults; {} when absent. */
 function readEnvFile() {
@@ -119,7 +123,7 @@ console.log("RAVEN Credential Setup (macOS Keychain)");
 console.log("=======================================");
 console.log("Credentials are stored in your login keychain, encrypted at rest and");
 console.log("scoped to your macOS user account. Leave any prompt blank to keep the");
-console.log("existing value (or skip an optional integration).");
+console.log("existing value (or skip an optional integration). Type :clear to erase a value.");
 console.log("");
 
 // One readline interface for the whole session (see createPrompter's doc
@@ -144,7 +148,7 @@ try {
 // Same variables, sections, and order as setup-credentials.ps1.
 const SECTIONS = [
   {
-    header: null,
+    header: "Atlassian (leave blank to skip)",
     fields: [
       ["ATLASSIAN_BASE_URL", "Atlassian base URL (e.g. https://apps.example.gov.bc.ca)", false],
       ["ATLASSIAN_EMAIL", "IDIR email (e.g. Jane.Smith@gov.bc.ca)", false],
@@ -170,7 +174,7 @@ const SECTIONS = [
     fields: [
       ["SONARQUBE_URL", "SonarQube base URL (e.g. https://sonar.example.gov.bc.ca)", false],
       ["SONARQUBE_TOKEN", "SonarQube user token", true],
-      ["SONAR_SCANNER_BIN", "SonarQube scanner binary path (e.g. /opt/sonar-scanner/bin/sonar-scanner)", false],
+      ["SONAR_SCANNER_BIN", "SonarQube scanner binary path (optional when sonar-scanner is on PATH)", false],
     ],
   },
   {
@@ -203,7 +207,7 @@ const SECTIONS = [
     fields: [
       ["GITHUB_TOKEN", "GitHub Personal Access Token (PAT)", true],
       ["GITHUB_API_URL", "GitHub API URL (default: https://api.github.com)", false],
-      ["GITHUB_REPOSITORY_ALLOWLIST", "GitHub repository allow-list (e.g. bcgov/*)", false],
+      ["GITHUB_REPOSITORY_ALLOWLIST", "GitHub repository allow-list (comma-separated, e.g. octo-org/example-repo,octo-org/*)", false],
       ["GITHUB_ENABLE_AUTOFIX", "Enable GitHub autofix tools? (true/false; default false)", false],
       ["GITHUB_ENABLE_MERGE", "Enable GitHub PR merge tool? (true/false; default false)", false],
       ["GITHUB_TIMEOUT_MS", "GitHub request timeout in ms (default 30000)", false],
@@ -234,9 +238,9 @@ for (const section of SECTIONS) {
     if (section.note) console.log(section.note);
   }
   for (const [name, label, sensitive] of section.fields) {
-    const hint = existing[name] ? " [keep existing]" : defaults[name] ? " [import from .env]" : "";
+    const hint = existing[name] ? " [Enter to keep; :clear to erase]" : defaults[name] ? " [import from .env; :clear to erase]" : "";
     const answer = await prompter.ask(`${label}${hint}`, { sensitive });
-    if (answer) record[name] = answer;
+    applyAnswer(record, name, answer);
   }
 }
 prompter.close();
