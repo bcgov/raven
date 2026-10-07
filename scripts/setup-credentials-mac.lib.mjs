@@ -36,16 +36,17 @@ export function normalizeAnswer(answer, { sensitive = false } = {}) {
   return answer.trim();
 }
 
+export function applyAnswer(record, name, answer) {
+  if (answer === ":clear") delete record[name];
+  else if (answer) record[name] = answer;
+}
+
 /**
- * Validation errors for the merged credential record, checked after every
- * prompt has resolved so a value kept from the keychain (blank answer) is
- * covered as well as one just typed. Returns an empty array when valid.
+ * Validation errors for dependent credential settings, checked after every
+ * prompt has resolved so kept values are covered as well as newly typed ones.
  */
 export function validateRecord(record) {
   const errors = [];
-  if (!record.ATLASSIAN_BASE_URL || !record.ATLASSIAN_EMAIL || !record.ATLASSIAN_PASSWORD) {
-    errors.push("ATLASSIAN_BASE_URL, ATLASSIAN_EMAIL, and ATLASSIAN_PASSWORD are required.");
-  }
   if (record.GITHUB_TOKEN && !record.GITHUB_REPOSITORY_ALLOWLIST) {
     errors.push("GITHUB_REPOSITORY_ALLOWLIST is required when configuring GITHUB_TOKEN.");
   }

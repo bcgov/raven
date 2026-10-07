@@ -17,7 +17,7 @@ export interface RunScanOptions {
   exclusions?: string;
   cpdExclusions?: string;
   coverageExclusions?: string;
-  scannerBin?: string; // defaults to "sonar-scanner"
+  scannerBin?: string; // defaults to "sonar-scanner" ("sonar-scanner.bat" on Windows PATH)
   extraArgs?: string[];
   timeoutMs?: number;
   useMsBuild?: boolean;
@@ -326,6 +326,7 @@ function runCommand(
 
 export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
   const bin = opts.scannerBin ?? process.env.SONAR_SCANNER_BIN ?? "sonar-scanner";
+  const resolvedBin = getScannerPath(bin);
   const isDotNet =
     opts.useMsBuild ??
     (Boolean(opts.solutionFile) ||
@@ -333,7 +334,7 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
   const candidateTestsDir = isDotNet ? undefined : getTestsDir(opts.projectDir, opts.testsDir);
 
   if (!isDotNet) {
-    if (!isValidSonarScanner(bin)) {
+    if (!isValidSonarScanner(resolvedBin)) {
       throw new Error(
         `Invalid SonarQube scanner binary path: "${bin}". ` +
         `Make sure SONAR_SCANNER_BIN is correct and points to a valid sonar-scanner executable.`
@@ -349,7 +350,6 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
   if (isDotNet) {
     // Check test bypass or actual existence of the MSBuild binary
     const isTest = process.env.NODE_ENV === "test" || typeof (globalThis as any).vi !== "undefined";
-    const resolvedBin = getScannerPath(bin);
     if (!isTest && !isAbsolute(resolvedBin)) {
       throw new Error(
         `Unable to resolve sonar-scanner binary "${bin}" to an absolute path. ` +
@@ -579,7 +579,7 @@ export async function runScan(opts: RunScanOptions): Promise<RunScanResult> {
   }
 
   return await new Promise<RunScanResult>((resolve) => {
-    const child = spawn(bin, args, { cwd: opts.projectDir, env: process.env });
+    const child = spawn(resolvedBin, args, { cwd: opts.projectDir, env: process.env });
     let out = testPrefix, err = "";
     const TAIL = 8_000;
 

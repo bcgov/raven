@@ -281,6 +281,19 @@ export function copyWorkspacePackages(destination) {
   }
 }
 
+/** Include both platform setup flows and the macOS prompt helper. */
+export function copySetupScripts(bundleRoot) {
+  const scriptsDir = join(bundleRoot, "scripts");
+  mkdirSync(scriptsDir, { recursive: true });
+  for (const name of [
+    "setup-credentials.ps1",
+    "setup-credentials-mac.mjs",
+    "setup-credentials-mac.lib.mjs",
+  ]) {
+    cpSync(join(repoRoot, "scripts", name), join(scriptsDir, name));
+  }
+}
+
 /** Generate native launchers for all catalog servers and utilities. */
 export function writeLaunchers(
   bundleRoot,

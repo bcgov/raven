@@ -127,7 +127,7 @@ RAVEN_SCRUB_PI=true
 
 > **Special characters in values:** if a value contains `#` (or starts/ends with a quote character), wrap the whole value in double quotes — for example `ATLASSIAN_PASSWORD="p@ss#word"`. An unquoted `#` starts a comment and silently truncates the value, which breaks authentication. Quoted and unquoted values are both accepted everywhere.
 
-> **OS-encrypted storage:** instead of the plain-text file, an interactive setup script can store credentials OS-encrypted — `scripts/setup-credentials.ps1` on Windows (DPAPI) or `scripts/setup-credentials-mac.mjs` on macOS (login keychain).
+> **OS-encrypted storage:** instead of the plain-text file, an interactive setup script can store credentials OS-encrypted — `scripts/setup-credentials.ps1` on Windows (DPAPI) or `scripts/setup-credentials-mac.mjs` on macOS (login keychain). Both scripts are included under `scripts/` in platform release bundles. Press Enter to keep a stored value, or type `:clear` at its prompt (including secret prompts) to erase it. Atlassian fields are optional. Remove an erased value from `~/.raven/.env` too if it exists there; the plain-text file remains a fallback.
 
 Optional Jira setting for Epic Link writes:
 
@@ -161,7 +161,7 @@ Optional SonarQube settings:
 # SonarQube Base URL and Authentication credentials
 SONARQUBE_URL=<SonarQube base URL, e.g. https://sonarqube.example.gov.bc.ca/sonar>
 SONARQUBE_TOKEN=<your SonarQube user token>
-SONAR_SCANNER_BIN=<optional path to sonar-scanner binary if not on PATH>
+SONAR_SCANNER_BIN=<optional path to sonar-scanner binary if not on PATH; Windows looks for sonar-scanner.bat on PATH>
 ```
 
 Optional Jenkins settings:
@@ -186,12 +186,14 @@ Optional GitHub settings:
 # repo or fine-grained issues/pull_requests/contents (issue and PR tools)
 GITHUB_TOKEN=<your GitHub PAT>
 # Required: comma-separated repos the tools may target (owner/repo or owner/*)
-GITHUB_REPOSITORY_ALLOWLIST=bcgov/your-repo,bcgov/*
+GITHUB_REPOSITORY_ALLOWLIST=octo-org/octo-repo,octo-org/*
 # GITHUB_API_URL=https://api.github.com
 # Feature flags — merge and autofix tools are disabled unless explicitly enabled:
 # GITHUB_ENABLE_MERGE=true
 # GITHUB_ENABLE_AUTOFIX=true
 ```
+
+Replace the illustrative `octo-org` entries with repositories you actually intend to authorize; separate multiple entries with commas. GitHub uses [`octo-org/octo-repo`](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) in its documentation examples.
 
 All GitHub tools refuse to run without `GITHUB_REPOSITORY_ALLOWLIST`; mutating tools additionally require a `confirm: true` argument per call.
 

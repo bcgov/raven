@@ -149,6 +149,9 @@ for (const manifest of manifests) {
     const embeddedSbom = join(embeddedRoot, basename(manifest.sbom));
     if (
       !existsSync(join(embeddedRoot, "NODE_LICENSE")) ||
+      !existsSync(join(embeddedRoot, "scripts", "setup-credentials.ps1")) ||
+      !existsSync(join(embeddedRoot, "scripts", "setup-credentials-mac.mjs")) ||
+      !existsSync(join(embeddedRoot, "scripts", "setup-credentials-mac.lib.mjs")) ||
       embeddedMetadata.sbom !== manifest.sbom ||
       !existsSync(embeddedSbom) ||
       sha256(embeddedSbom) !== manifest.sbomSha256 ||

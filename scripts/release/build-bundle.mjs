@@ -3,6 +3,7 @@ import { cpSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import {
   catalogPath,
+  copySetupScripts,
   copyProductionModules,
   copyWorkspacePackages,
   createArchive,
@@ -71,6 +72,7 @@ writeLaunchers(bundleRoot, catalog);
 cpSync(join(repoRoot, "LICENSE"), join(bundleRoot, "LICENSE"));
 cpSync(join(repoRoot, "README.md"), join(bundleRoot, "README.md"));
 cpSync(join(repoRoot, ".env.example"), join(bundleRoot, ".env.example"));
+copySetupScripts(bundleRoot);
 cpSync(catalogPath, join(bundleRoot, "server-catalog.json"));
 const sbomName = `${bundleName}.sbom.spdx.json`;
 cpSync(sbomSource, join(bundleRoot, sbomName));
