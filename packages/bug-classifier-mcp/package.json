@@ -1,6 +1,6 @@
 {
   "name": "@nrs/bug-classifier-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Bug pattern classifier MCP server — groups Jira bugs by shared root cause",
   "type": "module",
   "main": "dist/index.js",
