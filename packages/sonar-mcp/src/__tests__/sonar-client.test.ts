@@ -44,6 +44,50 @@ describe("SonarClient constructor", () => {
 });
 
 describe("SonarClient API operations", () => {
+  it("lists every project through api/projects/search without dropping later pages", async () => {
+    const mockFetch = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        paging: { pageIndex: 1, pageSize: 100, total: 3 },
+        components: [
+          { key: "one", name: "Project One", visibility: "private" },
+          { key: "two", name: "ᓀhiyaw\u0313 project", visibility: "public" },
+        ],
+      })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        paging: { pageIndex: 2, pageSize: 100, total: 3 },
+        components: [{ key: "three", name: "Project Three", visibility: "private" }],
+      })));
+    const client = new SonarClient("https://sonar.example.com", "token", mockFetch);
+
+    expect(await client.listProjects()).toEqual([
+      { key: "one", name: "Project One", visibility: "private" },
+      { key: "two", name: "ᓀhiyaw\u0313 project", visibility: "public" },
+      { key: "three", name: "Project Three", visibility: "private" },
+    ]);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    for (const [index, call] of mockFetch.mock.calls.entries()) {
+      if (typeof call[0] !== "string") throw new Error("Expected string URL");
+      const url = new URL(call[0]);
+      expect(url.pathname).toBe("/api/projects/search");
+      expect(url.searchParams.get("p")).toBe(String(index + 1));
+      expect(url.searchParams.get("ps")).toBe("100");
+    }
+  });
+
+  it("reports incomplete project pagination instead of returning a partial list", async () => {
+    const mockFetch = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        paging: { pageIndex: 1, pageSize: 100, total: 2 },
+        components: [{ key: "one", name: "One" }],
+      })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        paging: { pageIndex: 2, pageSize: 100, total: 2 },
+        components: [],
+      })));
+    const client = new SonarClient("https://sonar.example.com", "token", mockFetch);
+    await expect(client.listProjects()).rejects.toThrow(/incomplete/i);
+  });
+
   it("searchIssues builds correct query parameters", async () => {
     const mockResponse = { total: 1, p: 1, ps: 100, issues: [] };
     const mockFetch = createMockFetch({ ok: true, status: 200, body: mockResponse });

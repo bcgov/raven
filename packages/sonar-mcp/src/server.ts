@@ -118,6 +118,23 @@ export function createSonarServer(): McpServer {
     },
   );
 
+  server.tool(
+    "sonar_list_projects",
+    "List all SonarQube projects visible to the configured token, including their keys, names, and visibility.",
+    {},
+    { readOnlyHint: true },
+    async () => {
+      try {
+        const projects = await getClient().listProjects();
+        return {
+          content: [{ type: "text", text: JSON.stringify({ total: projects.length, projects }) }],
+        };
+      } catch (err) {
+        return { content: [{ type: "text", text: `Error: ${safeErr(err)}` }], isError: true };
+      }
+    },
+  );
+
   // -------------------------------------------------------------------------
   // 2. Quality gate for a scan, including reasons for failure
   // -------------------------------------------------------------------------

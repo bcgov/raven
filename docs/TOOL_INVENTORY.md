@@ -16,11 +16,11 @@
 | | Count |
 |---|---|
 | MCP servers | **17** |
-| Tools registered locally (in-process) | **235** |
-| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 235 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
-| **Tools advertised to the AI when everything is connected** | **~241** |
+| Tools registered locally (in-process) | **236** |
+| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 236 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
+| **Tools advertised to the AI when everything is connected** | **~242** |
 | Mutating / write tools | **~82** (81 local + ~1 via Jarvis) |
-| Read-only tools | **~159** |
+| Read-only tools | **~160** |
 | Non-server packages | `auth`, `pipeline`, `server-ui`, `raven-cli` |
 
 Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share one SiteMinder/Basic-Auth session; Server Monitor, IMIS, Azure DevOps / TFS, Sonar, Jenkins, Artifactory, RFC Buddy, and Jarvis authenticate separately via `~/.raven/.env`.
@@ -39,15 +39,15 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 | Server Monitor | `server-monitor` | 7 | 0 | 7 |
 | IMIS | `imis` | 6 | 0 | 6 |
 | Azure DevOps / TFS | `ado` | 12 | 4 | 16 |
-| Sonar | `sonar` | 5 | 1 | 6 |
+| Sonar | `sonar` | 6 | 1 | 7 |
 | Jenkins | `jenkins` | 19 | 15 | 34 |
 | RFC Buddy | `rfcbuddy` | 0 | 1 | 1 |
 | Artifactory | `artifactory` | 12 | 7 | 19 |
 | SharePoint | `sharepoint` | 9 | 0 | 9 |
 | GitHub | `github` | 19 | 15 | 34 |
-| **Subtotal (local)** | | **154** | **81** | **235** |
+| **Subtotal (local)** | | **155** | **81** | **236** |
 | Jarvis (remote proxy) | `jarvis` | ~5 | ~1 | ~6 |
-| **Advertised total** | | **~159** | **~82** | **~241** |
+| **Advertised total** | | **~160** | **~82** | **~242** |
 
 ## Servers and tools
 
@@ -95,8 +95,8 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 
 ### Code quality
 
-#### sonar-mcp — 6 tools (5 read / 1 write)
-- **Read:** `sonar_list_issues`, `sonar_get_quality_gate`, `sonar_get_last_scan`, `sonar_list_security_hotspots`, `sonar_get_project_metrics`
+#### sonar-mcp — 7 tools (6 read / 1 write)
+- **Read:** `sonar_list_issues`, `sonar_list_projects`, `sonar_get_quality_gate`, `sonar_get_last_scan`, `sonar_list_security_hotspots`, `sonar_get_project_metrics`
 - **Write:** `sonar_run_scan`
 
 ### CI/CD

@@ -4,6 +4,8 @@ import type {
   SonarHotspotsPage,
   SonarComponentMeasures,
   SonarAnalysesPage,
+  SonarProject,
+  SonarProjectsPage,
 } from "./types.js";
 
 /**
@@ -61,6 +63,30 @@ export class SonarClient {
     }
     if (resp.status === 204) return {} as T;
     return (await resp.json()) as T;
+  }
+
+  /** List every project visible to the configured SonarQube token. */
+  async listProjects(): Promise<SonarProject[]> {
+    const projects: SonarProject[] = [];
+    for (let page = 1; ; page++) {
+      const result = await this.request<SonarProjectsPage>("api/projects/search", {
+        params: { p: page, ps: 100 },
+      });
+      if (
+        !Array.isArray(result.components) ||
+        !Number.isInteger(result.paging?.total) ||
+        result.paging.total < 0 ||
+        result.paging.pageIndex !== page ||
+        result.components.some((project) => !project || typeof project.key !== "string" || typeof project.name !== "string")
+      ) {
+        throw new Error("Invalid SonarQube project search response.");
+      }
+      if (result.components.length === 0 && projects.length < result.paging.total) {
+        throw new Error("Incomplete SonarQube project list: a page returned no projects before the reported total.");
+      }
+      projects.push(...result.components.map(({ key, name, visibility }) => ({ key, name, visibility })));
+      if (projects.length >= result.paging.total) return projects;
+    }
   }
 
   // ---------------------------------------------------------------------------

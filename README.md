@@ -164,6 +164,8 @@ SONARQUBE_TOKEN=<your SonarQube user token>
 SONAR_SCANNER_BIN=<optional path to sonar-scanner binary if not on PATH; Windows looks for sonar-scanner.bat on PATH>
 ```
 
+The Sonar MCP `sonar_list_projects` tool lists every project visible to the configured token (key, name, and visibility), following SonarQube pagination automatically. It does not require a scanner installation.
+
 Optional Jenkins settings:
 
 ```env
