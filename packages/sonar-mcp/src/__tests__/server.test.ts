@@ -36,7 +36,8 @@ describe("Sonar MCP project listing", () => {
     const result = await client.callTool({ name: "sonar_list_projects", arguments: {} });
     expect(result.isError).not.toBe(true);
     const [url, options] = fetchMock.mock.calls.at(-1) ?? [];
-    expect(new URL(String(url)).pathname).toBe("/api/components/search_projects");
+    expect(new URL(String(url)).pathname).toBe("/api/components/search");
+    expect(new URL(String(url)).searchParams.get("qualifiers")).toBe("TRK");
     expect(new Headers(options?.headers).get("Authorization")).toBe(
       `Basic ${Buffer.from("test-token:").toString("base64")}`,
     );

@@ -68,7 +68,8 @@ describe("SonarClient API operations", () => {
     for (const [index, call] of mockFetch.mock.calls.entries()) {
       if (typeof call[0] !== "string") throw new Error("Expected string URL");
       const url = new URL(call[0]);
-      expect(url.pathname).toBe("/api/components/search_projects");
+      expect(url.pathname).toBe("/api/components/search");
+      expect(url.searchParams.get("qualifiers")).toBe("TRK");
       expect(url.searchParams.get("p")).toBe(String(index + 1));
       expect(url.searchParams.get("ps")).toBe("100");
     }
