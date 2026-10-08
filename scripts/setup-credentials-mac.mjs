@@ -163,11 +163,15 @@ const SECTIONS = [
       ["ADO_DEFAULT_COLLECTION", "ADO default collection (e.g. DefaultCollection)", false],
       ["ADO_PAT", "ADO Personal Access Token", true],
       ["ADO_DEFAULT_PROJECT", "ADO default project name (leave blank to skip)", false],
+      ["ADO_API_VERSION", "ADO API version (optional; default 7.1)", false],
     ],
   },
   {
     header: "Jarvis API (leave blank to skip)",
-    fields: [["JARVIS_TOKEN", "Jarvis Authorization Token", true]],
+    fields: [
+      ["JARVIS_TOKEN", "Jarvis Authorization Token", true],
+      ["JARVIS_BASE_URL", "Jarvis base URL (optional; default https://jarvis-api.example.gov.bc.ca)", false],
+    ],
   },
   {
     header: "SonarQube (leave blank to skip)",
