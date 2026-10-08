@@ -151,9 +151,10 @@ ADO_DEFAULT_PROJECT=<default team project name>
 Optional Jarvis API settings:
 
 ```env
-# Jarvis application inventory token and optional base URL (/mcp is appended automatically)
+# Jarvis application inventory; base URL is required when a token is set
 JARVIS_TOKEN=<your Jarvis Authorization Token>
-# JARVIS_BASE_URL=https://your-jarvis-host.example.gov.bc.ca
+JARVIS_BASE_URL=<your Jarvis base URL, e.g. https://jarvis-api.example.gov.bc.ca>
+# /mcp is appended automatically if omitted
 ```
 
 Optional SonarQube settings:

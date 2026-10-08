@@ -50,5 +50,8 @@ export function validateRecord(record) {
   if (record.GITHUB_TOKEN && !record.GITHUB_REPOSITORY_ALLOWLIST) {
     errors.push("GITHUB_REPOSITORY_ALLOWLIST is required when configuring GITHUB_TOKEN.");
   }
+  if (record.JARVIS_TOKEN && !record.JARVIS_BASE_URL?.trim()) {
+    errors.push("JARVIS_BASE_URL is required when configuring JARVIS_TOKEN.");
+  }
   return errors;
 }

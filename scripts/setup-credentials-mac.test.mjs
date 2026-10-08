@@ -127,4 +127,14 @@ describe("validateRecord", () => {
     });
     expect(errors).toEqual([]);
   });
+
+  it("requires JARVIS_BASE_URL only when JARVIS_TOKEN is configured", () => {
+    expect(validateRecord({ JARVIS_BASE_URL: "https://jarvis.example.test" })).toEqual([]);
+    expect(validateRecord({ JARVIS_TOKEN: "token", JARVIS_BASE_URL: "https://jarvis.example.test" })).toEqual([]);
+    for (const baseUrl of [undefined, "", "   "]) {
+      expect(validateRecord({ JARVIS_TOKEN: "token", JARVIS_BASE_URL: baseUrl })).toContain(
+        "JARVIS_BASE_URL is required when configuring JARVIS_TOKEN."
+      );
+    }
+  });
 });

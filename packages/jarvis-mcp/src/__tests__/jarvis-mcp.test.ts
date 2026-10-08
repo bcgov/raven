@@ -1,9 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { resolveJarvisBaseUrl, DEFAULT_JARVIS_BASE_URL } from "../config.js";
+import { resolveJarvisBaseUrl } from "../config.js";
 
 describe("resolveJarvisBaseUrl", () => {
-  it("falls back to the default Jarvis endpoint with /mcp when JARVIS_BASE_URL is unset", () => {
-    expect(resolveJarvisBaseUrl({})).toBe(`${DEFAULT_JARVIS_BASE_URL}/mcp`);
+  it("requires a configured Jarvis base URL", () => {
+    expect(() => resolveJarvisBaseUrl({})).toThrow(/JARVIS_BASE_URL is required/);
+    expect(() => resolveJarvisBaseUrl({ JARVIS_TOKEN: "token", JARVIS_BASE_URL: "   " }))
+      .toThrow(/JARVIS_BASE_URL is required/);
   });
 
   it("uses JARVIS_BASE_URL when provided and appends /mcp internally", () => {
@@ -16,7 +18,7 @@ describe("resolveJarvisBaseUrl", () => {
     expect(resolveJarvisBaseUrl({ JARVIS_BASE_URL: custom })).toBe("https://jarvis.example.test/mcp");
   });
 
-  it("falls back to the default when JARVIS_BASE_URL is an empty string", () => {
-    expect(resolveJarvisBaseUrl({ JARVIS_BASE_URL: "" })).toBe(`${DEFAULT_JARVIS_BASE_URL}/mcp`);
+  it("rejects an empty Jarvis base URL", () => {
+    expect(() => resolveJarvisBaseUrl({ JARVIS_BASE_URL: "" })).toThrow(/JARVIS_BASE_URL is required/);
   });
 });

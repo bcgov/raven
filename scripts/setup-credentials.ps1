@@ -116,7 +116,7 @@ $adoApiVersion    = Prompt-Value "ADO_API_VERSION"          "ADO API version (op
 Write-Host ""
 Write-Host "Jarvis API (leave blank to skip)" -ForegroundColor Cyan
 $jarvisToken      = Prompt-Value "JARVIS_TOKEN"            "Jarvis Authorization Token" -isSensitive $true
-$jarvisBaseUrl    = Prompt-Value "JARVIS_BASE_URL"         "Jarvis base URL (optional; default https://jarvis-api.example.gov.bc.ca)"
+$jarvisBaseUrl    = Prompt-Value "JARVIS_BASE_URL"         "Jarvis base URL (required with token; e.g. https://jarvis-api.example.gov.bc.ca)"
 
 Write-Host ""
 Write-Host "SonarQube (leave blank to skip)" -ForegroundColor Cyan
@@ -156,6 +156,10 @@ Write-Host ""
 
 if ($githubToken -and -not $githubAllowList) {
     Write-Host "Error: GITHUB_REPOSITORY_ALLOWLIST is required when configuring GITHUB_TOKEN." -ForegroundColor Red
+    exit 1
+}
+if ($jarvisToken -and [string]::IsNullOrWhiteSpace($jarvisBaseUrl)) {
+    Write-Host "Error: JARVIS_BASE_URL is required when configuring JARVIS_TOKEN." -ForegroundColor Red
     exit 1
 }
 

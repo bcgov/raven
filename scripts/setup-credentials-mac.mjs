@@ -170,7 +170,7 @@ const SECTIONS = [
     header: "Jarvis API (leave blank to skip)",
     fields: [
       ["JARVIS_TOKEN", "Jarvis Authorization Token", true],
-      ["JARVIS_BASE_URL", "Jarvis base URL (optional; default https://jarvis-api.example.gov.bc.ca)", false],
+      ["JARVIS_BASE_URL", "Jarvis base URL (required with token; e.g. https://jarvis-api.example.gov.bc.ca)", false],
     ],
   },
   {
