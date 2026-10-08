@@ -7,20 +7,15 @@
  */
 
 /**
- * Default remote Jarvis base host used when JARVIS_BASE_URL is unset.
- * The `/mcp` path is appended by resolveJarvisBaseUrl, so base URLs stay
- * path-free unless a proxy requires otherwise.
- */
-export const DEFAULT_JARVIS_BASE_URL = "https://jarvis-api.example.gov.bc.ca";
-
-/**
- * Resolve the Jarvis base URL from the environment, falling back to the
- * default endpoint when JARVIS_BASE_URL is unset or empty.
+ * Resolve the configured Jarvis base URL, appending `/mcp` if necessary.
  *
  * @param env Environment to read from (defaults to process.env).
  */
 export function resolveJarvisBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
-  let url = env.JARVIS_BASE_URL || DEFAULT_JARVIS_BASE_URL;
+  let url = env.JARVIS_BASE_URL?.trim();
+  if (!url) {
+    throw new Error("JARVIS_BASE_URL is required when JARVIS_TOKEN is set.");
+  }
   while (url.endsWith("/")) {
     url = url.slice(0, -1);
   }

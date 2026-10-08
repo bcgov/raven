@@ -377,6 +377,7 @@ function releaseSmokeEnvironment(home) {
     HOME: home,
     USERPROFILE: home,
     RAVEN_RELEASE_SMOKE_TEST: "1",
+    JARVIS_BASE_URL: "https://jarvis.example.test",
   };
 }
 

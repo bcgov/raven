@@ -25,8 +25,6 @@ if (!token) {
   process.exit(1);
 }
 
-const jarvisUrl = resolveJarvisBaseUrl();
-
 // A custom fetch that injects Authorization headers and logs requests for debugging
 const secureFetch = (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const finalInit = { ...init };
@@ -51,6 +49,7 @@ const secureFetch = (url: RequestInfo | URL, init?: RequestInit): Promise<Respon
 };
 
 try {
+  const jarvisUrl = resolveJarvisBaseUrl();
   // 1. Initialize the remote SSE client
   const client = new Client({
     name: "jarvis-proxy-client",

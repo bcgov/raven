@@ -111,10 +111,12 @@ $adoBaseUrl       = Prompt-Value "ADO_BASE_URL"            "ADO base URL (e.g. h
 $adoCollection    = Prompt-Value "ADO_DEFAULT_COLLECTION"  "ADO default collection (e.g. DefaultCollection)"
 $adoPat           = Prompt-Value "ADO_PAT"                 "ADO Personal Access Token" -isSensitive $true
 $adoProject       = Prompt-Value "ADO_DEFAULT_PROJECT"     "ADO default project name (leave blank to skip)"
+$adoApiVersion    = Prompt-Value "ADO_API_VERSION"          "ADO API version (optional; default 7.1)"
 
 Write-Host ""
 Write-Host "Jarvis API (leave blank to skip)" -ForegroundColor Cyan
 $jarvisToken      = Prompt-Value "JARVIS_TOKEN"            "Jarvis Authorization Token" -isSensitive $true
+$jarvisBaseUrl    = Prompt-Value "JARVIS_BASE_URL"         "Jarvis base URL (required with token; e.g. https://jarvis-api.example.gov.bc.ca)"
 
 Write-Host ""
 Write-Host "SonarQube (leave blank to skip)" -ForegroundColor Cyan
@@ -156,6 +158,10 @@ if ($githubToken -and -not $githubAllowList) {
     Write-Host "Error: GITHUB_REPOSITORY_ALLOWLIST is required when configuring GITHUB_TOKEN." -ForegroundColor Red
     exit 1
 }
+if ($jarvisToken -and [string]::IsNullOrWhiteSpace($jarvisBaseUrl)) {
+    Write-Host "Error: JARVIS_BASE_URL is required when configuring JARVIS_TOKEN." -ForegroundColor Red
+    exit 1
+}
 
 # Encrypt each value
 $creds = [ordered]@{}
@@ -167,7 +173,9 @@ if ($adoBaseUrl)    { $creds["ADO_BASE_URL"]           = Protect-String $adoBase
 if ($adoCollection) { $creds["ADO_DEFAULT_COLLECTION"] = Protect-String $adoCollection }
 if ($adoPat)        { $creds["ADO_PAT"]                = Protect-String $adoPat }
 if ($adoProject)    { $creds["ADO_DEFAULT_PROJECT"]    = Protect-String $adoProject }
+if ($adoApiVersion) { $creds["ADO_API_VERSION"]        = Protect-String $adoApiVersion }
 if ($jarvisToken)   { $creds["JARVIS_TOKEN"]           = Protect-String $jarvisToken }
+if ($jarvisBaseUrl) { $creds["JARVIS_BASE_URL"]        = Protect-String $jarvisBaseUrl }
 if ($sonarUrl)      { $creds["SONARQUBE_URL"]          = Protect-String $sonarUrl }
 if ($sonarToken)    { $creds["SONARQUBE_TOKEN"]        = Protect-String $sonarToken }
 if ($sonarBin)      { $creds["SONAR_SCANNER_BIN"]      = Protect-String $sonarBin }

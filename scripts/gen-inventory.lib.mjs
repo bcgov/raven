@@ -11,7 +11,7 @@ export const JARVIS = { display: "Jarvis", mcpKey: "jarvis", read: 5, write: 1, 
 export const JARVIS_SECTION = `### Remote proxy (data egress)
 
 #### jarvis-mcp — dynamic remote proxy — **data egress**
-\`jarvis-mcp\` registers **zero tools in source**. It is a pass-through proxy: it forwards \`tools/list\`, \`tools/call\`, prompts, and resources straight to the remote Jarvis MCP endpoint (\`JARVIS_BASE_URL\`, default \`https://jarvis-api.example.gov.bc.ca/mcp\`) with an \`Authorization: Bearer <JARVIS_TOKEN>\` header (\`packages/jarvis-mcp/src/index.ts\`, \`config.ts\`).
+\`jarvis-mcp\` registers **zero tools in source**. It is a pass-through proxy: it forwards \`tools/list\`, \`tools/call\`, prompts, and resources straight to the remote Jarvis MCP endpoint (\`JARVIS_BASE_URL\`, required with \`JARVIS_TOKEN\`) with an \`Authorization: Bearer <JARVIS_TOKEN>\` header (\`packages/jarvis-mcp/src/index.ts\`, \`config.ts\`).
 
 - The tool list is **whatever the remote advertises at runtime** — currently ~6: \`get_application\`, \`list_ministries\`, \`search_applications\`, \`list_technologies\`, \`get_application_provenance\` (read) and \`update_application\` (write). Treat that count as a snapshot, not a fixed contract.
 - **This is the only server that proxies MCP traffic to a remote endpoint.** Every RAVEN server makes outbound calls to its upstream; what's unique to Jarvis is that it forwards opaque MCP requests/responses to a separately-hosted BC Gov API whose tool surface is defined remotely, rather than running a fixed local tool set. Relevant to the "local-only" framing and to FOIPPA/data-residency review — see \`SYSTEM_DESIGN_AND_ARCHITECTURE.md\`.`;

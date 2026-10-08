@@ -144,15 +144,17 @@ ADO_BASE_URL=<https://your-ado-server.example.com>
 ADO_DEFAULT_COLLECTION=<default collection, e.g. DefaultCollection>
 ADO_PAT=<your Personal Access Token>
 ADO_DEFAULT_PROJECT=<default team project name>
-# ADO_API_VERSION=7.1
+# Optional API version override for older ADO Server versions (default: 7.1)
+# ADO_API_VERSION=5.1
 ```
 
 Optional Jarvis API settings:
 
 ```env
-# Jarvis application inventory token and custom url (defaults to Jarvis endpoint)
+# Jarvis application inventory; base URL is required when a token is set
 JARVIS_TOKEN=<your Jarvis Authorization Token>
-# JARVIS_BASE_URL=https://jarvis-api.example.gov.bc.ca/mcp
+JARVIS_BASE_URL=<your Jarvis base URL, e.g. https://jarvis-api.example.gov.bc.ca>
+# /mcp is appended automatically if omitted
 ```
 
 Optional SonarQube settings:

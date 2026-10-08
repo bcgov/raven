@@ -37,6 +37,21 @@ describe("seedDefaults", () => {
     const defaults = seedDefaults(PROMPTED, {}, { IMIS_CSV_PATH: "/x.csv" });
     expect(defaults.IMIS_CSV_PATH).toBe("/x.csv");
   });
+
+  it("imports optional ADO and Jarvis settings and keeps existing overrides", () => {
+    const keys = ["ADO_API_VERSION", "JARVIS_BASE_URL"];
+    const defaults = seedDefaults(
+      keys,
+      { ADO_API_VERSION: "5.1", JARVIS_BASE_URL: "https://from-env.example.test" },
+      { JARVIS_BASE_URL: "https://from-keychain.example.test" }
+    );
+    expect(defaults).toEqual({
+      ADO_API_VERSION: "5.1",
+      JARVIS_BASE_URL: "https://from-keychain.example.test",
+    });
+    applyAnswer(defaults, "JARVIS_BASE_URL", ":clear");
+    expect(defaults).toEqual({ ADO_API_VERSION: "5.1" });
+  });
 });
 
 describe("normalizeAnswer", () => {
@@ -111,5 +126,15 @@ describe("validateRecord", () => {
       GITHUB_REPOSITORY_ALLOWLIST: "bcgov/*",
     });
     expect(errors).toEqual([]);
+  });
+
+  it("requires JARVIS_BASE_URL only when JARVIS_TOKEN is configured", () => {
+    expect(validateRecord({ JARVIS_BASE_URL: "https://jarvis.example.test" })).toEqual([]);
+    expect(validateRecord({ JARVIS_TOKEN: "token", JARVIS_BASE_URL: "https://jarvis.example.test" })).toEqual([]);
+    for (const baseUrl of [undefined, "", "   "]) {
+      expect(validateRecord({ JARVIS_TOKEN: "token", JARVIS_BASE_URL: baseUrl })).toContain(
+        "JARVIS_BASE_URL is required when configuring JARVIS_TOKEN."
+      );
+    }
   });
 });
