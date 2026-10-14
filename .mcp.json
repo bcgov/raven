@@ -56,6 +56,10 @@
       "command": "node",
       "args": ["./packages/rfcbuddy-mcp/dist/index.js"]
     },
+    "css": {
+      "command": "node",
+      "args": ["./packages/css-mcp/dist/index.js"]
+    },
     "artifactory": {
       "command": "node",
       "args": ["./packages/artifactory-mcp/dist/index.js"]

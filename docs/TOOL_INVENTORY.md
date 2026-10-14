@@ -15,12 +15,12 @@
 
 | | Count |
 |---|---|
-| MCP servers | **17** |
-| Tools registered locally (in-process) | **236** |
-| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 236 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
-| **Tools advertised to the AI when everything is connected** | **~242** |
-| Mutating / write tools | **~82** (81 local + ~1 via Jarvis) |
-| Read-only tools | **~160** |
+| MCP servers | **18** |
+| Tools registered locally (in-process) | **244** |
+| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 244 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
+| **Tools advertised to the AI when everything is connected** | **~250** |
+| Mutating / write tools | **~85** (84 local + ~1 via Jarvis) |
+| Read-only tools | **~165** |
 | Non-server packages | `auth`, `pipeline`, `server-ui`, `raven-cli` |
 
 Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share one SiteMinder/Basic-Auth session; Server Monitor, IMIS, Azure DevOps / TFS, Sonar, Jenkins, Artifactory, RFC Buddy, and Jarvis authenticate separately via `~/.raven/.env`.
@@ -42,12 +42,13 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 | Sonar | `sonar` | 6 | 1 | 7 |
 | Jenkins | `jenkins` | 19 | 15 | 34 |
 | RFC Buddy | `rfcbuddy` | 0 | 1 | 1 |
+| CSS (Common Hosted SSO) | `css` | 5 | 3 | 8 |
 | Artifactory | `artifactory` | 12 | 7 | 19 |
 | SharePoint | `sharepoint` | 9 | 0 | 9 |
 | GitHub | `github` | 19 | 15 | 34 |
-| **Subtotal (local)** | | **155** | **81** | **236** |
+| **Subtotal (local)** | | **160** | **84** | **244** |
 | Jarvis (remote proxy) | `jarvis` | ~5 | ~1 | ~6 |
-| **Advertised total** | | **~160** | **~82** | **~242** |
+| **Advertised total** | | **~165** | **~85** | **~250** |
 
 ## Servers and tools
 
@@ -110,6 +111,12 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 #### rfcbuddy-mcp — 1 tool (0 read / 1 write)
 - **Read:** _(none)_
 - **Write:** `rfcbuddy_search_rfcs`
+
+### Identity & access
+
+#### css-mcp — 8 tools (5 read / 3 write)
+- **Read:** `list_integrations`, `list_roles`, `list_role_users`, `list_user_roles`, `search_idir_users`
+- **Write:** `create_role`, `assign_user_roles`, `remove_user_role`
 
 ### Build and artifact infrastructure
 

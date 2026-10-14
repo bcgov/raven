@@ -126,6 +126,7 @@ raven/
     ├── sharepoint-mcp/           # Sites, documents, lists (read-only)
     ├── github-mcp/               # GHAS alerts, SARIF, PRs, issues
     ├── rfcbuddy-mcp/             # RFC schedule search
+    ├── css-mcp/                  # CSS (Common Hosted SSO) roles and assignments
     ├── jarvis-mcp/               # Dynamic remote MCP proxy
     ├── server-ui/                # Express dashboard on 127.0.0.1:3777
     ├── pipeline/                 # Autonomous triage-and-PR CLI (uses Copilot SDK)

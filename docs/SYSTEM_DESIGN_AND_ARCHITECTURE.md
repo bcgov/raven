@@ -194,6 +194,7 @@ packages/
   bug-classifier-mcp/   # Bug pattern classifier
   jarvis-mcp/           # Jarvis application inventory (dynamic remote proxy)
   rfcbuddy-mcp/         # RFC Buddy (RFC search)
+  css-mcp/              # CSS (Common Hosted SSO) integrations, roles, user-role assignments
   artifactory-mcp/      # JFrog Artifactory artifacts, build-info, and guarded transfers
   github-mcp/           # GitHub GHAS security (SARIF, alerts), issues, PRs; allow-list gated
 ```
@@ -273,6 +274,7 @@ Of the 221 locally-registered tools, 78 are conservatively classified as writes 
 | `create_credential` / `update_credential` | Stores a supported Jenkins credential using an environment/file secret reference | Cannot accept or return raw secret values through MCP arguments/responses |
 | `trigger_build` / `stop_build` | Starts or interrupts Jenkins CI work | Cannot bypass Jenkins authorization; authentication redirects are rejected |
 | `rfcbuddy_search_rfcs` | Searches and filters RFCs, advancing baseline tracking | Cannot modify upstream RFC ticket configurations or change schedule items |
+| `create_role` / `assign_user_roles` / `remove_user_role` (CSS) | Creates a client role, or grants/revokes roles for one user on one integration environment | Cannot reach integrations outside the API account's CSS team; cannot delete roles or change integration settings |
 | `artifactory_upload_artifact` / `artifactory_download_artifact` | Streams one file through protected local directories with incremental checksums | Cannot accept arbitrary local paths; downloads are staged exclusively and installed only after verification, and overwrite is disabled on Windows |
 | `artifactory_copy_item` / `artifactory_move_item` | Dry-runs by default, then copies or moves an artifact after exact confirmation | Cannot choose another host or bypass Artifactory permissions |
 | `artifactory_delete_item` | Deletes one file after exact-path and current SHA-256 confirmation | Refuses folders and stale/missing checksums |
@@ -625,7 +627,7 @@ RAVEN does not expose arbitrary HTTP or filesystem access. Tool output passes th
 - BC Gov Jira / Confluence / Bitbucket Data Center (internal HTTPS)
 - BC Gov Jira Assets / Insight CMDB (internal HTTPS)
 - BC Gov application servers (internal SSH via VPN)
-- Jenkins (`JENKINS_URL` / `JENKINS_BASE_URL`), on-prem Azure DevOps Server (`ADO_BASE_URL`), SonarQube (`SONARQUBE_URL`), JFrog Artifactory (`ARTIFACTORY_URL`), and RFC Buddy (`RFCBUDDY_URL`), when configured
+- Jenkins (`JENKINS_URL` / `JENKINS_BASE_URL`), on-prem Azure DevOps Server (`ADO_BASE_URL`), SonarQube (`SONARQUBE_URL`), JFrog Artifactory (`ARTIFACTORY_URL`), RFC Buddy (`RFCBUDDY_URL`), and the CSS API (`CSS_API_URL`, default `api.loginproxy.gov.bc.ca`), when configured
 - HTTPS object-storage hosts explicitly allowlisted for Artifactory direct downloads (`RAVEN_ARTIFACTORY_DOWNLOAD_REDIRECT_HOSTS`); these receive no Raven credentials
 - **The Jarvis application-inventory API** (`JARVIS_BASE_URL`, required when `JARVIS_TOKEN` is set; no default endpoint). `jarvis-mcp` is a dynamic proxy: any Jarvis tool call is forwarded to the configured endpoint with a Personal Access Token. Unlike the other servers, which implement a fixed set of tools locally against the systems above, `jarvis-mcp` forwards opaque MCP requests to a remote MCP endpoint — its tool surface is defined remotely. That makes it the most relevant server to the "local-only" framing and to FOIPPA / data-residency review. The destination is fixed by configuration, not chosen by the AI.
 
@@ -805,6 +807,8 @@ Stored in `~/.raven/.env` (not committed to version control). The table below li
 | `RAVEN_JENKINS_CONFIG_DIR` / `RAVEN_JENKINS_DOWNLOAD_DIR` / `RAVEN_JENKINS_SECRET_DIR` | Protected local Jenkins workflow directories | Jenkins |
 | `RFCBUDDY_URL` | RFC Buddy base URL | RFC Buddy |
 | `RFCBUDDY_PAT` | Personal Access Token (bearer token) for API | RFC Buddy |
+| `CSS_API_CLIENT_ID` / `CSS_API_CLIENT_SECRET` | Team CSS API account (client credentials) | CSS |
+| `CSS_API_URL` / `CSS_TOKEN_URL` | Optional API and token endpoint overrides (default production loginproxy) | CSS |
 | `ARTIFACTORY_URL` | HTTPS Artifactory base URL | Artifactory |
 | `ARTIFACTORY_EMAIL` | User's gov.bc.ca email | Artifactory Basic Auth |
 | `ARTIFACTORY_PASSWORD` | User's IDIR password | Artifactory Basic Auth |

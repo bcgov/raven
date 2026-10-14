@@ -209,6 +209,16 @@ RFCBUDDY_URL=<base URL for RFC Buddy API, e.g. https://rfcbuddy.example.com/api/
 RFCBUDDY_PAT=<your Personal Access Token (PAT)>
 ```
 
+Optional CSS (Common Hosted Single Sign-On) API settings. Request a CSS API Account for your team in the SSO-requests app (My Teams > CSS API Account); it reaches only integrations owned by that team:
+
+```env
+CSS_API_CLIENT_ID=<CSS API account client id>
+CSS_API_CLIENT_SECRET=<CSS API account client secret>
+# Optional overrides; default to production loginproxy
+# CSS_API_URL=https://api.loginproxy.gov.bc.ca/api/v1
+# CSS_TOKEN_URL=https://loginproxy.gov.bc.ca/auth/realms/standard/protocol/openid-connect/token
+```
+
 Optional Artifactory settings:
 
 ```env
@@ -324,6 +334,10 @@ Copy this MCP configuration into your client (see [Choosing a Client](#choosing-
     "rfcbuddy": {
       "command": "node",
       "args": ["/path/to/raven/packages/rfcbuddy-mcp/dist/index.js"]
+    },
+    "css": {
+      "command": "node",
+      "args": ["/path/to/raven/packages/css-mcp/dist/index.js"]
     },
     "artifactory": {
       "command": "node",
@@ -567,6 +581,11 @@ Create or edit the file at:
       "command": "node",
       "args": ["/path/to/raven/packages/rfcbuddy-mcp/dist/index.js"]
     },
+    "css": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/path/to/raven/packages/css-mcp/dist/index.js"]
+    },
     "artifactory": {
       "type": "stdio",
       "command": "node",
@@ -792,6 +811,7 @@ raven/                           ← RAVEN root (run npm commands here)
     sonar-mcp/         SonarQube MCP server (issues, quality gate, hotspots, metrics, local scan)
     jenkins-mcp/       Jenkins MCP server (jobs, builds, queue, artifacts, promotions, credentials)
     rfcbuddy-mcp/      RFC Buddy MCP server (RFC schedules search and baseline tracking)
+    css-mcp/           Common Hosted SSO (CSS) API MCP server (integrations, roles, user-role assignments)
     artifactory-mcp/   JFrog Artifactory MCP server (artifacts, build-info, guarded transfers)
     pipeline/          Autonomous DevOps pipeline CLI (GitHub Copilot SDK + MCP tools)
     raven-cli/         CLI interface (coming soon)
