@@ -13,11 +13,11 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@nrs/auth": "*",
     "@nrs/jira-mcp": "*",
     "@nrs/confluence-mcp": "*",
     "@nrs/bitbucket-mcp": "*",
-    "zod": "^4.6.5"
+    "zod": "^4.6.6"
   }
 }

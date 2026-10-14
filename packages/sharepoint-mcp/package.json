@@ -16,11 +16,11 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@nrs/auth": "*",
     "mammoth": "^1.13.0",
     "turndown": "^7.2.0",
-    "zod": "^4.6.5"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@types/turndown": "^5.0.5"
