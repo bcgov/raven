@@ -107,6 +107,9 @@ const route = (path: string): string => path.split("?")[0];
 /** An upstream body fit for an error message. */
 const snippet = (text: string): string => stripUnsafe(text.slice(0, MAX_ERROR_BODY));
 
+/** The class of a runtime error (TimeoutError, TypeError), never its message, which can quote the stream. */
+const errorName = (e: unknown): string => (e instanceof Error && e.name ? stripUnsafe(e.name) : "unknown error");
+
 function retryAfterText(resp: Response): string {
   const ms = parseRetryAfter(resp.headers.get("retry-after"));
   return ms !== undefined && ms >= 0 ? ` after ${Math.ceil(ms / 1000)} s` : " later";
@@ -290,7 +293,17 @@ export class CssClient {
       );
     }
 
-    const text = await resp.text().catch(() => "");
+    let text: string;
+    try {
+      text = await resp.text();
+    } catch (e) {
+      // The headers arrived but the body did not (timeout mid-stream, proxy reset). On a
+      // 2xx that is not an empty success: whether CSS applied the request is unknown.
+      if (!resp.ok) throw new Error(`CSS API ${resp.status} ${resp.statusText} on ${method} ${r}.`);
+      throw new Error(
+        `CSS API ${resp.status} response on ${method} ${r} could not be read (${errorName(e)}); whether CSS applied the request is unknown.`,
+      );
+    }
     if (!resp.ok) {
       throw new Error(`CSS API ${resp.status} ${resp.statusText} on ${method} ${r}: ${snippet(text)}`);
     }
@@ -374,7 +387,12 @@ export class CssClient {
       throw new Error(`CSS token endpoint unavailable (${resp.status} ${resp.statusText}); retry${wait}.`);
     }
 
-    const text = await resp.text().catch(() => "");
+    let text: string;
+    try {
+      text = await resp.text();
+    } catch {
+      throw new Error("CSS token response could not be read; retry.");
+    }
     let json: { access_token?: unknown; expires_in?: unknown };
     try {
       json = JSON.parse(text);

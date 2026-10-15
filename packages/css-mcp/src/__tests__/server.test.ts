@@ -368,11 +368,13 @@ describe("write tools", () => {
         createRole: async () => {
           throw new Error("CSS API 409 Conflict on POST /integrations/7/dev/roles: exists");
         },
+        listRoles: async () => [{ name: "FAM_ADMIN" }],
       }),
     );
     const r: any = await client.callTool({ name: "create_role", arguments: { integrationId: 7, environment: "dev", roleName: "FAM_ADMIN", confirm: true } });
     expect(r.isError).toBe(true);
     expect(textOf(r)).toContain("409 Conflict");
+    expect(textOf(r)).toContain("The role existed before this call.");
   });
 
   it("refuses prod writes unless CSS_ALLOW_PROD_WRITES=true", async () => {
@@ -678,6 +680,7 @@ describe("audit trail", () => {
         createRole: async () => {
           throw new Error("CSS API 409 Conflict on POST /x: exists");
         },
+        listRoles: async () => [], // not present before or after: a plain failure
       }),
       { audit },
     );
@@ -746,6 +749,59 @@ describe("audit trail", () => {
     expect(recs[1].detail).toBe("CSS call errored: CSS API 504 Gateway Timeout on POST /x; DROPPED (held before, gone now): X");
     expect(recs[3].detail).toBe("CSS API 504 Gateway Timeout on POST /x");
     expect(recs[5].detail).toBe("CSS call errored: CSS API 504 Gateway Timeout on POST /x; before-state unavailable; dropped-role check skipped; NOT applied: A");
+  });
+
+  it("audits an errored create_role by observed state: applied if the role appeared, failed if it existed before or never appeared, unverified without a before-state or read-back", async () => {
+    const { dir, audit } = await tempAudit();
+    const listRoles = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ name: "R" }]) // call 1: absent before, present after -> applied
+      .mockResolvedValueOnce([{ name: "R" }])
+      .mockResolvedValueOnce([{ name: "R" }]) // call 2: existed before -> failed
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]) // call 3: never appeared -> failed
+      .mockRejectedValueOnce(new Error("CSS API 503 Error on GET /x: down"))
+      .mockResolvedValueOnce([{ name: "R" }]) // call 4: before unknown, present after -> unverified
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error("CSS API 503 Error on GET /x: down")); // call 5: read-back failed -> unverified
+    const client = await connected(
+      fakeClient({
+        createRole: async () => {
+          throw new Error("CSS API 504 Gateway Timeout on POST /x: slow");
+        },
+        listRoles,
+      }),
+      { audit },
+    );
+    const out: any[] = [];
+    for (let i = 0; i < 5; i++) {
+      out.push(await client.callTool({ name: "create_role", arguments: { integrationId: 7, environment: "dev", roleName: "R", confirm: true } }));
+    }
+    const recs = await records(dir);
+    expect(recs.map((r) => r.outcome)).toEqual([
+      "attempted", "applied",
+      "attempted", "failed",
+      "attempted", "failed",
+      "attempted", "unverified",
+      "attempted", "unverified",
+    ]);
+    expect(out[0].isError).toBeFalsy();
+    expect(textOf(out[0])).toContain("Created role `R` on integration 7 (dev).");
+    expect(textOf(out[0])).toContain("but the read-back shows the role exists now");
+    expect(recs[1].detail).toBe("CSS call errored (CSS API 504 Gateway Timeout on POST /x) but the read-back shows the role exists now");
+    expect(out[1].isError).toBe(true);
+    expect(textOf(out[1])).toContain("The role existed before this call.");
+    expect(recs[3].detail).toBe("CSS API 504 Gateway Timeout on POST /x; role existed before");
+    expect(out[2].isError).toBe(true);
+    expect(recs[5].detail).toBe("CSS API 504 Gateway Timeout on POST /x");
+    expect(out[3].isError).toBe(true);
+    expect(textOf(out[3])).toContain("the before-state could not be read, so it is unknown whether this call created it");
+    expect(recs[7].detail).toBe("CSS call errored: CSS API 504 Gateway Timeout on POST /x; before-state unavailable; role exists now");
+    expect(out[4].isError).toBe(true);
+    expect(textOf(out[4])).toContain("Run list_roles to verify.");
+    expect(recs[9].detail).toBe("CSS call errored: CSS API 504 Gateway Timeout on POST /x; read-back failed: CSS API 503 Error on GET /x");
+    for (const r of recs) expect(JSON.stringify(r)).not.toContain("slow");
   });
 
   it("notes a skipped dropped-role check in the audit detail when the before-state read failed", async () => {

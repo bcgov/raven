@@ -206,6 +206,13 @@ describe("CssClient auth", () => {
     expect(e.message).not.toContain("login page");
   });
 
+  it("rejects a token body that cannot be read without echoing the cause", async () => {
+    const f = vi.fn(async () => ({ ...jsonResponse(200), text: () => Promise.reject(new TypeError("terminated: secret-ish")) }));
+    const e = await rejection(new CssClient(CONFIG, f as any).listIntegrations());
+    expect(e.message).toMatch(/token response could not be read/);
+    expect(e.message).not.toContain("terminated");
+  });
+
   it("rejects a token response without access_token", async () => {
     const f = vi.fn(async () => jsonResponse(200, { expires_in: 300 }));
     await expect(new CssClient(CONFIG, f as any).listIntegrations()).rejects.toThrow(/no access_token/);
@@ -230,6 +237,19 @@ describe("CssClient endpoints", () => {
     const e = await rejection(new CssClient(CONFIG, f as any).listIntegrations());
     expect(e.message).toMatch(/non-JSON 200 response on GET \/integrations \(content-type: text\/html\)/);
     expect(e.message).not.toContain("maintenance");
+  });
+
+  it("treats a 2xx whose body cannot be read as an error, never an empty success", async () => {
+    // Headers arrived, then the body read failed (timeout mid-stream, proxy reset): CSS may or may not have created the role.
+    const f = mockFetch({ ...jsonResponse(201), text: () => Promise.reject(new TypeError("terminated")) });
+    const e = await rejection(new CssClient(CONFIG, f as any).createRole(6551, "dev", "ARTS_ADMIN"));
+    expect(e.message).toMatch(/^CSS API 201 response on POST \/integrations\/6551\/dev\/roles could not be read \(TypeError\); whether CSS applied the request is unknown\.$/);
+    expect(e.message).not.toContain("terminated");
+  });
+
+  it("still reports the status when a non-2xx body cannot be read", async () => {
+    const f = mockFetch({ ...jsonResponse(502), text: () => Promise.reject(new TypeError("terminated")) });
+    await expect(new CssClient(CONFIG, f as any).listIntegrations()).rejects.toThrow(/^CSS API 502 Error on GET \/integrations\.$/);
   });
 
   it("keeps @ in usernames but encodes other path characters", async () => {

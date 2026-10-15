@@ -452,25 +452,75 @@ export function createCssServer(clientOverride?: CssClient, opts: CssServerOptio
     { integrationId, environment, roleName, confirm: confirmFlag },
     { readOnlyHint: false, destructiveHint: false },
     async ({ integrationId, environment, roleName, confirm }) => {
+      const prefix = "Error creating role";
       const entry = { tool: "create_role", attemptId: randomUUID(), integrationId, environment, roleNames: [roleName] };
       try {
         requireConfirmation(confirm, "create_role");
         assertWriteAllowed(environment);
       } catch (e) {
-        return fail("Error creating role", e, await record({ ...entry, outcome: "refused", detail: auditDetail(e) }));
+        return fail(prefix, e, await record({ ...entry, outcome: "refused", detail: auditDetail(e) }));
       }
+
+      // Before-state, so an errored call can be judged by what changed. Best effort: a failed read must not block the write.
+      const roleExists = async () => (await getClient().listRoles(integrationId, environment)).some((r) => r.name === roleName);
+      let before: boolean | null = null;
+      try {
+        before = await roleExists();
+      } catch {
+        before = null;
+      }
+
       try {
         await recordOrRefuse({ ...entry, outcome: "attempted" });
       } catch (e) {
-        return fail("Error creating role: refused because the audit log could not be written", e);
+        return fail(`${prefix}: refused because the audit log could not be written`, e);
       }
+
+      const where = `on integration ${integrationId} (${environment})`;
+      let role: CssRole | null = null;
+      let callError: unknown = null;
       try {
-        const role = await getClient().createRole(integrationId, environment, roleName);
-        const note = await record({ ...entry, outcome: "applied" });
-        return ok(`Created role \`${clean(role.name)}\` on integration ${integrationId} (${environment}).${note}`);
+        role = await getClient().createRole(integrationId, environment, roleName);
       } catch (e) {
-        return fail("Error creating role", e, await record({ ...entry, outcome: "failed", detail: auditDetail(e) }));
+        callError = e;
       }
+      if (role) {
+        const note = await record({ ...entry, outcome: "applied" });
+        return ok(`Created role \`${clean(role.name)}\` ${where}.${note}`);
+      }
+
+      // The call errored. A timeout or an unreadable body can arrive after CSS created the
+      // role, so what CSS holds now, compared with before, decides the record, not the error.
+      const why = auditDetail(callError);
+      let after: boolean;
+      try {
+        after = await roleExists();
+      } catch (e) {
+        const note = await record({ ...entry, outcome: "unverified", detail: detailOf(`CSS call errored: ${why}; read-back failed: ${auditDetail(e)}`) });
+        return err(
+          `${prefix}: ${safeErr(callError)}. The read-back also failed (${safeErr(e)}), so it is unknown whether CSS created the role. ` +
+            `Run list_roles to verify.${note}`,
+        );
+      }
+      if (!after) {
+        return fail(prefix, callError, await record({ ...entry, outcome: "failed", detail: detailOf(why) }));
+      }
+      if (before === null) {
+        const note = await record({ ...entry, outcome: "unverified", detail: detailOf(`CSS call errored: ${why}; before-state unavailable; role exists now`) });
+        return err(
+          `${prefix}: ${safeErr(callError)}. The role exists now, but the before-state could not be read, ` +
+            `so it is unknown whether this call created it.${note}`,
+        );
+      }
+      if (before) {
+        const note = await record({ ...entry, outcome: "failed", detail: detailOf(`${why}; role existed before`) });
+        return fail(prefix, callError, ` The role existed before this call.${note}`);
+      }
+      const note = await record({ ...entry, outcome: "applied", detail: detailOf(`CSS call errored (${why}) but the read-back shows the role exists now`) });
+      return ok(
+        `Created role \`${clean(roleName)}\` ${where}. _The CSS call reported an error (${safeErr(callError)}), ` +
+          `but the read-back shows the role exists now._${note}`,
+      );
     },
   );
 
