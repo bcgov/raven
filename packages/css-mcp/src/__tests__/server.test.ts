@@ -525,6 +525,44 @@ describe("write tools", () => {
     expect(textOf(r)).toContain("Now holds: nothing.");
   });
 
+  it("records an errored write that dropped an existing role as partial, keeping the DROPPED warning", async () => {
+    const client = await connected(
+      fakeClient({
+        assignUserRoles: async () => {
+          throw new Error("CSS API 504 Gateway Timeout on POST /x: upstream");
+        },
+        listUserRoles: beforeAfter(["X"], ["A"]),
+      }),
+    );
+    const r: any = await client.callTool({
+      name: "assign_user_roles",
+      arguments: { integrationId: 7, environment: "dev", username: GUID_USER, roleNames: ["A"], confirm: ASSIGN_OK },
+    });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain("yet CSS's state changed");
+    expect(textOf(r)).toContain("DROPPED (held before, gone now): `X`");
+    expect(textOf(r)).toContain("Now holds: `A`.");
+  });
+
+  it("records an errored write as unverified when the before-state is unknown and the change is not visible", async () => {
+    const listUserRoles = vi.fn().mockRejectedValueOnce(new Error("CSS API 503 Error on GET /x: down")).mockResolvedValueOnce([]);
+    const client = await connected(
+      fakeClient({
+        assignUserRoles: async () => {
+          throw new Error("CSS API 500 Error on POST /x: boom");
+        },
+        listUserRoles,
+      }),
+    );
+    const r: any = await client.callTool({
+      name: "assign_user_roles",
+      arguments: { integrationId: 7, environment: "dev", username: GUID_USER, roleNames: ["A"], confirm: ASSIGN_OK },
+    });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain("unknown whether CSS changed anything");
+    expect(textOf(r)).toContain("NOT applied: `A`");
+  });
+
   it("says it is unknown whether CSS applied the change when both the call and the read-back fail", async () => {
     const listUserRoles = vi.fn().mockResolvedValueOnce([]).mockRejectedValueOnce(new Error("CSS API 503 Error on GET /x: down"));
     const client = await connected(
@@ -659,6 +697,35 @@ describe("audit trail", () => {
     expect(recs[3].detail).toBe("read-back failed: CSS API 503 Error on GET /x");
     expect(recs[5].detail).toContain("CSS call errored (CSS API 504 Gateway Timeout on POST /x) but the read-back shows the change applied");
     expect(JSON.stringify(recs)).not.toContain("jane.smith@gov.bc.ca");
+  });
+
+  it("audits an errored write by observed state change: partial when CSS changed, failed when it did not, unverified without a before-state", async () => {
+    const { dir, audit } = await tempAudit();
+    const listUserRoles = vi
+      .fn()
+      .mockResolvedValueOnce([{ name: "X" }])
+      .mockResolvedValueOnce([{ name: "A" }]) // call 1: changed (X dropped, A applied) -> partial
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]) // call 2: unchanged -> failed
+      .mockRejectedValueOnce(new Error("CSS API 503 Error on GET /x: down"))
+      .mockResolvedValueOnce([]); // call 3: before unknown -> unverified
+    const client = await connected(
+      fakeClient({
+        assignUserRoles: async () => {
+          throw new Error("CSS API 504 Gateway Timeout on POST /x: slow");
+        },
+        listUserRoles,
+      }),
+      { audit },
+    );
+    for (let i = 0; i < 3; i++) {
+      await client.callTool({ name: "assign_user_roles", arguments: { integrationId: 7, environment: "dev", username: GUID_USER, roleNames: ["A"], confirm: ASSIGN_OK } });
+    }
+    const recs = await records(dir);
+    expect(recs.map((r) => r.outcome)).toEqual(["attempted", "partial", "attempted", "failed", "attempted", "unverified"]);
+    expect(recs[1].detail).toBe("CSS call errored: CSS API 504 Gateway Timeout on POST /x; DROPPED (held before, gone now): X");
+    expect(recs[3].detail).toBe("CSS API 504 Gateway Timeout on POST /x");
+    expect(recs[5].detail).toBe("CSS call errored: CSS API 504 Gateway Timeout on POST /x; before-state unavailable; dropped-role check skipped; NOT applied: A");
   });
 
   it("notes a skipped dropped-role check in the audit detail when the before-state read failed", async () => {

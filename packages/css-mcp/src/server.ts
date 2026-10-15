@@ -545,9 +545,25 @@ export function createCssServer(clientOverride?: CssClient, opts: CssServerOptio
     if (dropped.length) problems.push(`DROPPED (held before, gone now): ${codeList(dropped)}`);
 
     if (callError && problems.length) {
-      // The call failed and CSS does not show the change: a plain failure.
-      const note = await record({ ...entry, outcome: "failed", detail: detailOf([auditDetail(callError), beforeDetail].filter(Boolean).join("; ")) });
-      return fail(prefix, callError, ` ${holdsLine}${beforeNote}${note}`);
+      // The call failed and the read-back does not show what was asked. What CSS
+      // holds now, compared with before, decides the record: unknown before-state
+      // means we cannot tell, a changed state is a partial write, an unchanged
+      // state is a plain failure.
+      const why = auditDetail(callError);
+      if (before === null) {
+        const note = await record({ ...entry, outcome: "unverified", detail: detailOf(`CSS call errored: ${why}; ${beforeDetail}; ${problems.join("; ")}`) });
+        return err(
+          `${prefix}: ${safeErr(callError)}. The read-back does not show the change, and the before-state could not be read, ` +
+            `so it is unknown whether CSS changed anything. ${problems.join(". ")}. ${holdsLine}${note}`,
+        );
+      }
+      const changed = before.size !== after.size || [...before].some((n) => !after.has(n)) || [...after].some((n) => !before.has(n));
+      if (changed) {
+        const note = await record({ ...entry, outcome: "partial", detail: detailOf(`CSS call errored: ${why}; ${problems.join("; ")}`) });
+        return err(`${prefix}: ${safeErr(callError)}, yet CSS's state changed. ${problems.join(". ")}. ${holdsLine}${note}`);
+      }
+      const note = await record({ ...entry, outcome: "failed", detail: detailOf(why) });
+      return fail(prefix, callError, ` ${holdsLine}${note}`);
     }
     if (problems.length) {
       const note = await record({ ...entry, outcome: "partial", detail: detailOf([problems.join("; "), beforeDetail].filter(Boolean).join("; ")) });
