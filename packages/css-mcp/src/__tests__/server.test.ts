@@ -266,19 +266,39 @@ describe("read tools", () => {
     expect(textOf(r5)).toContain("Showing 5 of 30");
   });
 
-  it("scrubs PI out of upstream error messages", async () => {
+  it("withholds upstream error bodies from the model while scrubbing is on, and pattern-scrubs other errors", async () => {
     vi.stubEnv("RAVEN_SCRUB_PI", "true");
+    const body = 'user Alicia Wong {"idir_username":"AWONG"} jane.smith@gov.bc.ca not found';
     const client = await connected(
       fakeClient({
         listUserRoles: async () => {
-          throw new Error("CSS API 404 Not Found on GET /x: user jane.smith@gov.bc.ca not found");
+          throw new Error(`CSS API 404 Not Found on GET /integrations/1/dev/users/x/roles: ${body}`);
+        },
+        listRoles: async () => {
+          throw new Error("fakeClient: ask jane.smith@gov.bc.ca");
         },
       }),
     );
     const r: any = await client.callTool({ name: "list_user_roles", arguments: { integrationId: 1, environment: "dev", username: GUID_USER } });
     expect(r.isError).toBe(true);
-    expect(textOf(r)).toContain("[EMAIL]");
-    expect(textOf(r)).not.toContain("jane.smith@gov.bc.ca");
+    expect(textOf(r)).toContain("CSS API 404 Not Found on GET /integrations/1/dev/users/x/roles (upstream body withheld while PI scrubbing is on)");
+    for (const leak of ["Alicia Wong", "AWONG", "jane.smith@gov.bc.ca", "idir_username"]) expect(textOf(r)).not.toContain(leak);
+
+    const other: any = await client.callTool({ name: "list_roles", arguments: { integrationId: 1, environment: "dev" } });
+    expect(textOf(other)).toContain("fakeClient: ask [EMAIL]");
+  });
+
+  it("keeps the upstream error body when scrubbing is off", async () => {
+    vi.stubEnv("RAVEN_SCRUB_PI", "false");
+    const client = await connected(
+      fakeClient({
+        listUserRoles: async () => {
+          throw new Error("CSS API 404 Not Found on GET /x: user AWONG not found");
+        },
+      }),
+    );
+    const r: any = await client.callTool({ name: "list_user_roles", arguments: { integrationId: 1, environment: "dev", username: GUID_USER } });
+    expect(textOf(r)).toContain("CSS API 404 Not Found on GET /x: user AWONG not found");
   });
 });
 
@@ -755,6 +775,10 @@ describe("audit trail", () => {
     await client.callTool({ name: "create_role", arguments: { integrationId: 7, environment: "dev", roleName: "R", confirm: true } });
     expect(JSON.stringify(await records(dir))).not.toContain("jane.smith@gov.bc.ca");
     expect(auditDetail(new Error("fakeClient: ask bob.lee@gov.bc.ca\nfor help"))).toBe("fakeClient: ask [EMAIL] for help");
+    expect(auditDetail(new Error("CSS API 404 Not Found on GET /x: Alicia Wong AWONG"))).toBe("CSS API 404 Not Found on GET /x");
+    expect(auditDetail(new Error("CSS API returned a non-JSON 200 response on GET /x (content-type: text/html)."))).toBe(
+      "CSS API returned a non-JSON 200 response on GET /x (content-type: text/html).",
+    );
   });
 
   it("refuses a write when the write-ahead audit line cannot be written", async () => {

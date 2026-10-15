@@ -9,7 +9,23 @@ import type { CssEnvironment, CssRole, CssUser } from "./types.js";
 export { assertTrustedHost } from "./css-client.js";
 
 const pi = new PiScrubber();
-const safeErr = (err: unknown) => pi.scrubText(err instanceof Error ? err.message : String(err));
+
+/** The one CSS error shape that carries an upstream body: `CSS API <status> <text> on <METHOD> <route>: <body>`. */
+const CSS_BODY_ERROR = /^(CSS API \d{3} .*? on [A-Z]+ \/\S*): /;
+
+/**
+ * Error text for the model. With PI scrubbing on, a CSS error is reduced to
+ * its status and route: the upstream body can name people in ways no pattern
+ * catches. Otherwise the message is pattern-scrubbed as usual.
+ */
+function safeErr(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (pi.isEnabled()) {
+    const css = CSS_BODY_ERROR.exec(msg);
+    if (css) return `${css[1]} (upstream body withheld while PI scrubbing is on)`;
+  }
+  return pi.scrubText(msg);
+}
 
 const DEFAULT_API_URL = "https://api.loginproxy.gov.bc.ca/api/v1";
 const DEFAULT_TOKEN_URL =
@@ -254,7 +270,7 @@ function osUser(): string {
  */
 export function auditDetail(e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e);
-  const css = /^(CSS (?:API|token)[^:]*?)(?::|$)/.exec(msg);
+  const css = CSS_BODY_ERROR.exec(msg);
   const head = css ? css[1] : msg.replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, "[EMAIL]");
   return head.replace(/[^\x20-\x7e]/g, " ").replace(/\s+/g, " ").trim().slice(0, MAX_AUDIT_DETAIL);
 }
