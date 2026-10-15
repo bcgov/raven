@@ -167,12 +167,12 @@ When the AI connects to RAVEN, it receives a tool manifest — a list of availab
 | **Separate credential store** | `~/.raven/.env` with `chmod 600` — credentials never in code or MCP responses |
 | **Per-tool schema validation** | Zod schemas enforce parameter types, ranges, and enums at the boundary |
 | **PI scrubbing layer** | FOIPPA-compliant anonymization before data reaches the AI |
-| **Read-only by default** | 121 of 181 locally-registered tools are read-only; 60 are writes. Jenkins and Artifactory writes include protected local transfers and guarded upstream mutations. See [TOOL_INVENTORY.md](TOOL_INVENTORY.md) for the authoritative split |
+| **Read-only by default** | 160 of 244 locally-registered tools are read-only; 84 are writes. Jenkins and Artifactory writes include protected local transfers and guarded upstream mutations. See [TOOL_INVENTORY.md](TOOL_INVENTORY.md) for the authoritative split |
 | **SSH command allowlist** | Server monitoring permits only a fixed set of read-only shell commands |
 
 ### 3.3 Package Structure
 
-RAVEN is a TypeScript monorepo with 19 packages — 15 MCP servers plus the shared `auth` library, `pipeline` CLI, `server-ui`, and `raven-cli`:
+RAVEN is a TypeScript monorepo with 22 packages — 18 MCP servers plus the shared `auth` library, `pipeline` CLI, `server-ui`, and `raven-cli`:
 
 ```
 packages/
@@ -194,6 +194,7 @@ packages/
   bug-classifier-mcp/   # Bug pattern classifier
   jarvis-mcp/           # Jarvis application inventory (dynamic remote proxy)
   rfcbuddy-mcp/         # RFC Buddy (RFC search)
+  css-mcp/              # CSS (Common Hosted SSO) integrations, roles, user-role assignments
   artifactory-mcp/      # JFrog Artifactory artifacts, build-info, and guarded transfers
   github-mcp/           # GitHub GHAS security (SARIF, alerts), issues, PRs; allow-list gated
 ```
@@ -250,13 +251,13 @@ RAVEN excludes broad administrative and arbitrary-execution capabilities. The re
 | Execute arbitrary commands | **No** | No `exec` or `eval` tool exists. Server monitoring validates commands against an allowlist. |
 | Access arbitrary local files | **No** | Artifactory uploads and downloads are confined to mode-restricted configured directories; paths cannot escape those roots. |
 | Modify server configurations | **No** | Server monitor tools are strictly read-only. |
-| Create user accounts | **No** | No user management tools exist. |
-| Change permissions | **No** | No IAM or permission tools exist. |
-| Access other systems | **No** | Tools connect only to fixed, configured endpoints: Jira, Confluence, Bitbucket, Jira Assets, Jenkins, application servers, and — when configured — Azure DevOps, SonarQube, Artifactory, RFC Buddy, and the Jarvis proxy (§11.3). |
+| Create user accounts | **No** | No identity can be created. `assign_user_roles` may create the CSS-side record of an *existing* IDIR/BCeID identity (CSS's `roles-new` behaviour) so a grant works before the person's first login. |
+| Change permissions | **Limited (CSS only)** | The CSS tools can create client roles and grant or revoke them on integrations owned by the API account's own CSS team. Each user-role write must restate its exact target (`confirm: "<verb>:<integrationId>/<env>/<username>/<roles>"`), prod writes are refused unless `CSS_ALLOW_PROD_WRITES=true`, the result is re-read from CSS, and every attempt is appended to the local audit stream `~/.raven/audit/css.<month>.jsonl` (§4.3). No Keycloak, IdP or filesystem permission tools exist. |
+| Access other systems | **No** | Tools connect only to fixed, configured endpoints: Jira, Confluence, Bitbucket, Jira Assets, Jenkins, application servers, and — when configured — Azure DevOps, SonarQube, Artifactory, RFC Buddy, the Jarvis proxy, and the CSS API (`CSS_API_URL` / `CSS_TOKEN_URL`) (§11.3). |
 
 ### 4.3 Write Tools Are Narrow and Auditable
 
-Of the 221 locally-registered tools, 78 are conservatively classified as writes (the rest are read-only). The table below is illustrative; see [TOOL_INVENTORY.md](TOOL_INVENTORY.md) for the complete read/write split. Jenkins config exports, Jenkins artifact downloads, and Artifactory downloads count as writes because they create protected local files.
+Of the 244 locally-registered tools, 84 are conservatively classified as writes (the rest are read-only). The table below is illustrative; see [TOOL_INVENTORY.md](TOOL_INVENTORY.md) for the complete read/write split. Jenkins config exports, Jenkins artifact downloads, and Artifactory downloads count as writes because they create protected local files.
 
 | Tool | What It Does | What It Cannot Do |
 |------|-------------|------------------|
@@ -273,13 +274,14 @@ Of the 221 locally-registered tools, 78 are conservatively classified as writes 
 | `create_credential` / `update_credential` | Stores a supported Jenkins credential using an environment/file secret reference | Cannot accept or return raw secret values through MCP arguments/responses |
 | `trigger_build` / `stop_build` | Starts or interrupts Jenkins CI work | Cannot bypass Jenkins authorization; authentication redirects are rejected |
 | `rfcbuddy_search_rfcs` | Searches and filters RFCs, advancing baseline tracking | Cannot modify upstream RFC ticket configurations or change schedule items |
+| `create_role` / `assign_user_roles` / `remove_user_role` (CSS) | Creates a client role, or grants/revokes roles for one user on one integration environment | `create_role` requires `confirm: true`; `assign_user_roles` / `remove_user_role` require `confirm: "<verb>:<integrationId>/<env>/<username>/<roles>"` restating the operation (`assign` or `remove`), the exact target and the roles in any order (the refusal never echoes the expected value), then re-read the user's roles and report any difference; an `attempted` audit line is written before the CSS call and the outcome after (linked by `attemptId`; a CSS error still triggers the read-back — for `create_role`, of the integration's roles — and what CSS holds afterwards decides the recorded outcome), and the write is refused if that line cannot be written; `search_idir_users` likewise withholds its rows if its audit line cannot be written; prod writes refused unless `CSS_ALLOW_PROD_WRITES=true`. Cannot reach integrations outside the API account's CSS team; cannot delete roles or change integration settings |
 | `artifactory_upload_artifact` / `artifactory_download_artifact` | Streams one file through protected local directories with incremental checksums | Cannot accept arbitrary local paths; downloads are staged exclusively and installed only after verification, and overwrite is disabled on Windows |
 | `artifactory_copy_item` / `artifactory_move_item` | Dry-runs by default, then copies or moves an artifact after exact confirmation | Cannot choose another host or bypass Artifactory permissions |
 | `artifactory_delete_item` | Deletes one file after exact-path and current SHA-256 confirmation | Refuses folders and stale/missing checksums |
 | `security_publish_sarif` | Uploads SARIF findings to GitHub code scanning after allow-list check and `confirm: true` | Cannot target repos outside `GITHUB_REPOSITORY_ALLOWLIST`; cannot delete or dismiss alerts it did not create |
 | `pr_merge` (GitHub) | Merges a PR only when `GITHUB_ENABLE_MERGE=true` AND `confirm: true` | Disabled by default; cannot bypass branch protection or the caller's GitHub permissions |
 
-Every write operation is subject to the **authenticated user's permissions** in the target system. If the user doesn't have permission to create issues in a Jira project, the tool call will fail — the MCP server cannot escalate privileges.
+Every write operation except `css-mcp`'s (which uses the team-scoped CSS API account described in the authentication section) is subject to the **authenticated user's permissions** in the target system. If the user doesn't have permission to create issues in a Jira project, the tool call will fail — the MCP server cannot escalate privileges.
 
 ---
 
@@ -287,7 +289,7 @@ Every write operation is subject to the **authenticated user's permissions** in 
 
 The complete, current tool inventory — every server, every tool, the read/write classification, and the per-server counts — is maintained as a single source of truth in **[TOOL_INVENTORY.md](TOOL_INVENTORY.md)**, verified against code. It replaces the hand-maintained tables that previously lived in this section, which had drifted out of sync with the tools actually registered.
 
-**Summary as of this revision:** **15 MCP servers**; **181 tools registered locally** (121 read / 60 write); plus the `jarvis-mcp` dynamic proxy, which advertises ~6 additional tools from the remote Jarvis API (~5 read / 1 write) — see §11.3 for the data-egress note. Every upstream write operation runs under the **authenticated user's permissions** in the target system; the MCP server cannot escalate privileges. If the user lacks permission to perform an action, the tool call fails.
+**Summary as of this revision:** **18 MCP servers**; **244 tools registered locally** (160 read / 84 write); plus the `jarvis-mcp` dynamic proxy, which advertises ~6 additional tools from the remote Jarvis API (~5 read / 1 write) — see §11.3 for the data-egress note. Every upstream write operation, except `css-mcp`'s team-scoped CSS API account, runs under the **authenticated user's permissions** in the target system; the MCP server cannot escalate privileges. If the user lacks permission to perform an action, the tool call fails.
 
 ---
 
@@ -356,7 +358,9 @@ RAVEN supports two authentication methods to BC Gov Atlassian systems:
 | **Basic Auth** | When `ATLASSIAN_EMAIL` and `ATLASSIAN_PASSWORD` are set | HTTP `Authorization: Basic base64(email:password)` header |
 | **SiteMinder SSO** | When Basic Auth credentials are not configured | `SMSESSION` cookie obtained via interactive browser login |
 
-Both methods authenticate the **individual developer** — the MCP server operates with the same permissions as the user who configured it. There is no service account, no elevated privilege, and no shared credential.
+Both methods authenticate the **individual developer** — the MCP server operates with the same permissions as the user who configured it. For every server except `css-mcp` there is no service account, no elevated privilege, and no shared credential.
+
+`css-mcp` is the exception. It authenticates with a **team-scoped CSS API account** (OAuth client credentials issued to a CSS team, not to a person) that can read and change client roles on every integration that team owns. CSS attributes those changes to the team account, so RAVEN compensates locally: every write attempt is appended with the operating-system user, target and outcome to a hash-chained audit log (`~/.raven/audit/css.<month>.jsonl`); user-role writes must restate their exact target in `confirm`; prod writes stay off unless `CSS_ALLOW_PROD_WRITES=true`; and the result is re-read from CSS before success is reported. The local log attributes the actions of authorised operators; it is not a control against someone who has taken the secret elsewhere — for that, rotate the secret and rely on CSS/Keycloak's own event logs. Only team members who are allowed to administer access should hold that secret, and it should be rotated in the SSO-requests app (My Teams → CSS API Account) when one of them leaves.
 
 ### 6.4 Session Management
 
@@ -382,6 +386,7 @@ RAVEN includes a personal information scrubber (`PiScrubber`) that is applied to
 | Email addresses | `user@domain.tld` | `[EMAIL]` |
 | Phone numbers | `(250) 555-1234`, `250-555-1234`, `+1-250-555-1234` | `[PHONE]` |
 | IDIR usernames | `USER@IDIR`, `username=JSMITH` | `[IDIR]` |
+| IDIR directory results (`css-mcp`) | Names, emails and IDIR logins returned by `search_idir_users` and role listings | Name → `Person-N`; email and login omitted. The federated `<guid>@azureidir` username is kept by design: it is the role-assignment key and carries no name. `search_idir_users` queries the production directory by default |
 | Social Insurance Numbers | `123-456-789`, `123 456 789` | `[SIN]` |
 | Session tokens | `SMSESSION=abc123...` | `SMSESSION=[TOKEN]` |
 | Bearer tokens | `Bearer eyJ...` | `Bearer [TOKEN]` |
@@ -625,7 +630,7 @@ RAVEN does not expose arbitrary HTTP or filesystem access. Tool output passes th
 - BC Gov Jira / Confluence / Bitbucket Data Center (internal HTTPS)
 - BC Gov Jira Assets / Insight CMDB (internal HTTPS)
 - BC Gov application servers (internal SSH via VPN)
-- Jenkins (`JENKINS_URL` / `JENKINS_BASE_URL`), on-prem Azure DevOps Server (`ADO_BASE_URL`), SonarQube (`SONARQUBE_URL`), JFrog Artifactory (`ARTIFACTORY_URL`), and RFC Buddy (`RFCBUDDY_URL`), when configured
+- Jenkins (`JENKINS_URL` / `JENKINS_BASE_URL`), on-prem Azure DevOps Server (`ADO_BASE_URL`), SonarQube (`SONARQUBE_URL`), JFrog Artifactory (`ARTIFACTORY_URL`), RFC Buddy (`RFCBUDDY_URL`), and the CSS API (`CSS_API_URL`, default `api.loginproxy.gov.bc.ca`), when configured
 - HTTPS object-storage hosts explicitly allowlisted for Artifactory direct downloads (`RAVEN_ARTIFACTORY_DOWNLOAD_REDIRECT_HOSTS`); these receive no Raven credentials
 - **The Jarvis application-inventory API** (`JARVIS_BASE_URL`, required when `JARVIS_TOKEN` is set; no default endpoint). `jarvis-mcp` is a dynamic proxy: any Jarvis tool call is forwarded to the configured endpoint with a Personal Access Token. Unlike the other servers, which implement a fixed set of tools locally against the systems above, `jarvis-mcp` forwards opaque MCP requests to a remote MCP endpoint — its tool surface is defined remotely. That makes it the most relevant server to the "local-only" framing and to FOIPPA / data-residency review. The destination is fixed by configuration, not chosen by the AI.
 
@@ -637,7 +642,7 @@ The AI cannot instruct RAVEN to phone home to an unconfigured host, exfiltrate d
 
 ### 11.5 "Can the AI access systems it shouldn't?"
 
-**No.** RAVEN operates with the authenticated user's permissions. If the user doesn't have access to a Jira project, neither does the AI. There is no privilege escalation, no service account with broad access, and no administrative override.
+**No.** RAVEN operates with the authenticated user's permissions. If the user doesn't have access to a Jira project, neither does the AI. There is no privilege escalation and no administrative override. The one service credential is the `css-mcp` team API account, which is scoped by CSS to the integrations its own team owns and cannot reach any other team's; its writes are confirm-gated, blocked on prod by default and recorded in the local audit log (see the authentication section above).
 
 ### 11.6 "Can the AI be tricked into doing something dangerous?"
 
@@ -660,7 +665,8 @@ The MCP protocol architecture makes this structurally difficult:
 | **PI leakage to AI provider** | Low | Medium | PI scrubber anonymizes all personal data; Copilot Business has zero retention |
 | **SSH command injection** | Impossible | N/A | Command allowlist + shell metacharacter rejection makes injection structurally impossible |
 | **Path traversal on servers** | Impossible | N/A | Paths validated: must be absolute, no `..`, no metacharacters |
-| **Unauthorized system access** | Very Low | Medium | Uses authenticated user's permissions; no privilege escalation |
+| **Unauthorized system access** | Very Low | Medium | Uses authenticated user's permissions; no privilege escalation. The CSS team API account is scoped by CSS to its own team's integrations |
+| **Shared CSS API secret held by a departed or compromised team member** | Low | High | Primary controls are rotation in the SSO-requests app (My Teams → CSS API Account) on departure or suspicion, and CSS/Keycloak's own event logs, since a holder can use the secret from any machine. Locally the secret sits in the operator's RAVEN credential store (`~/.raven/.env` at `chmod 600`, or the keychain/DPAPI store the setup scripts write), it is only ever sent to `*.gov.bc.ca` hosts unless `CSS_ALLOW_ANY_HOST=true` is set (local test doubles only), user-role writes need a role-bound exact-target confirmation, prod writes need `CSS_ALLOW_PROD_WRITES=true`, and the hash-chained audit log attributes authorised operators' actions |
 | **Session token theft** | Low | Medium | Tokens stored in memory with 25-min TTL; disk cache at `chmod 600`; browser profile (identity-provider session cookies) at `chmod 700`, not keychain-encrypted on macOS and Linux |
 | **Prompt injection via tool output** | Low | Low | Tool responses are treated as untrusted content by the AI client; no code execution path |
 | **Data exfiltration by AI** | Very Low | High | No arbitrary destination tools; Artifactory upload reads only from a protected directory and sends only to the configured internal HTTPS endpoint |
@@ -672,14 +678,14 @@ The MCP protocol architecture makes this structurally difficult:
 
 | Requirement | How RAVEN Complies |
 |-------------|-------------------|
-| **FOIPPA s.30 (Protection of PI)** | PI scrubber anonymizes personal information before it reaches the AI. `RAVEN_SCRUB_PI=true` controls this globally. |
+| **FOIPPA s.30 (Protection of PI)** | PI scrubber anonymizes personal information before it reaches the AI. `RAVEN_SCRUB_PI=true` controls this globally. `css-mcp` adds a directory-search flow over IDIR accounts (public servants' names, emails and logins); with scrubbing on, only the pseudonymous name and the federated GUID reach the AI. The PIA must cover this flow before `css-mcp` is used in production. |
 | **FOIPPA s.30.1 (Storage in Canada)** | All enterprise data stays on BC Gov infrastructure. MCP servers run locally. GitHub Copilot Business does not retain data. |
-| **BC Gov ISP (Information Security Policy)** | Credentials stored with restricted permissions (`chmod 600`). Authentication via SiteMinder SSO or Basic Auth. TLS for all network communication. |
+| **BC Gov ISP (Information Security Policy)** | Credentials stored with restricted permissions (`chmod 600`). Authentication via SiteMinder SSO or Basic Auth, or OAuth client credentials for the team-scoped CSS API account (`css-mcp`). TLS for all network communication. |
 | **OWASP Top 10 — Injection** | Zod schema validation on all tool parameters. SSH command allowlist prevents shell injection. |
-| **OWASP Top 10 — Broken Access Control** | All operations use the authenticated user's permissions. No privilege escalation. |
+| **OWASP Top 10 — Broken Access Control** | All operations use the authenticated user's permissions, except `css-mcp`, which uses a team-scoped CSS API account confined by CSS to its own team's integrations. No privilege escalation. |
 | **OWASP Top 10 — Cryptographic Failures** | Credentials never in logs, responses, or code. TLS for all network traffic. |
 | **OWASP Top 10 — SSRF** | No tool accepts an arbitrary URL as a parameter. Endpoints are fixed by configuration (`~/.raven/.env`), not chosen by the AI; the `jarvis-mcp` proxy forwards only to its configured Jarvis endpoint (§11.3). |
-| **Least Privilege** | Read-only by default (121 of 181 local tools; see [TOOL_INVENTORY.md](TOOL_INVENTORY.md)). Jenkins mutations remain subject to controller authorization and protected-file/secret-source controls; Artifactory writes are confined to artifacts, properties, and protected transfer directories. SSH remains read-only. |
+| **Least Privilege** | Read-only by default (160 of 244 local tools; see [TOOL_INVENTORY.md](TOOL_INVENTORY.md)). Jenkins mutations remain subject to controller authorization and protected-file/secret-source controls; Artifactory writes are confined to artifacts, properties, and protected transfer directories. SSH remains read-only. |
 | **GitHub Copilot Business DPA** | Zero data retention. Prompts and responses not stored or used for training. |
 
 ---
@@ -805,6 +811,10 @@ Stored in `~/.raven/.env` (not committed to version control). The table below li
 | `RAVEN_JENKINS_CONFIG_DIR` / `RAVEN_JENKINS_DOWNLOAD_DIR` / `RAVEN_JENKINS_SECRET_DIR` | Protected local Jenkins workflow directories | Jenkins |
 | `RFCBUDDY_URL` | RFC Buddy base URL | RFC Buddy |
 | `RFCBUDDY_PAT` | Personal Access Token (bearer token) for API | RFC Buddy |
+| `CSS_API_CLIENT_ID` / `CSS_API_CLIENT_SECRET` | Team CSS API account (client credentials) | CSS |
+| `CSS_API_URL` / `CSS_TOKEN_URL` | Optional API and token endpoint overrides (default production loginproxy); HTTPS only | CSS |
+| `CSS_ALLOW_PROD_WRITES` | Must be exactly `true` to allow role writes on the prod environment | CSS |
+| `CSS_ALLOW_ANY_HOST` | Must be exactly `true` to let `CSS_API_URL` / `CSS_TOKEN_URL` point outside `*.gov.bc.ca` (local test doubles only) | CSS |
 | `ARTIFACTORY_URL` | HTTPS Artifactory base URL | Artifactory |
 | `ARTIFACTORY_EMAIL` | User's gov.bc.ca email | Artifactory Basic Auth |
 | `ARTIFACTORY_PASSWORD` | User's IDIR password | Artifactory Basic Auth |

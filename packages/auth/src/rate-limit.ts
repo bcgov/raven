@@ -234,34 +234,31 @@ function readEnvInt(name: string, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-export function atlassianLimiterOpts(): LimiterOpts {
+/**
+ * Limiter options for one upstream: `RATE_LIMIT_<PREFIX>_BURST` and
+ * `RATE_LIMIT_<PREFIX>_RPS` over the given defaults, with the breaker settings
+ * every host shares. Each client used to carry its own copy of this.
+ */
+export function limiterOptsFromEnv(prefix: string, defaults: { burst: number; rps: number }): LimiterOpts {
   return {
-    burst: readEnvInt("RATE_LIMIT_ATLASSIAN_BURST", 30),
-    rps: readEnvInt("RATE_LIMIT_ATLASSIAN_RPS", 10),
+    burst: readEnvInt(`RATE_LIMIT_${prefix}_BURST`, defaults.burst),
+    rps: readEnvInt(`RATE_LIMIT_${prefix}_RPS`, defaults.rps),
     breakerFailures: readEnvInt("RATE_LIMIT_BREAKER_FAILURES", 3),
     breakerWindowSec: readEnvInt("RATE_LIMIT_BREAKER_WINDOW_S", 30),
     breakerCooldownSec: readEnvInt("RATE_LIMIT_BREAKER_COOLDOWN_S", 30),
   };
+}
+
+export function atlassianLimiterOpts(): LimiterOpts {
+  return limiterOptsFromEnv("ATLASSIAN", { burst: 30, rps: 10 });
 }
 
 export function sshLimiterOpts(): LimiterOpts {
-  return {
-    burst: readEnvInt("RATE_LIMIT_SSH_BURST", 5),
-    rps: readEnvInt("RATE_LIMIT_SSH_RPS", 2),
-    breakerFailures: readEnvInt("RATE_LIMIT_BREAKER_FAILURES", 3),
-    breakerWindowSec: readEnvInt("RATE_LIMIT_BREAKER_WINDOW_S", 30),
-    breakerCooldownSec: readEnvInt("RATE_LIMIT_BREAKER_COOLDOWN_S", 30),
-  };
+  return limiterOptsFromEnv("SSH", { burst: 5, rps: 2 });
 }
 
 export function spoLimiterOpts(): LimiterOpts {
-  return {
-    burst: readEnvInt("RATE_LIMIT_SPO_BURST", 10),
-    rps: readEnvInt("RATE_LIMIT_SPO_RPS", 4),
-    breakerFailures: readEnvInt("RATE_LIMIT_BREAKER_FAILURES", 3),
-    breakerWindowSec: readEnvInt("RATE_LIMIT_BREAKER_WINDOW_S", 30),
-    breakerCooldownSec: readEnvInt("RATE_LIMIT_BREAKER_COOLDOWN_S", 30),
-  };
+  return limiterOptsFromEnv("SPO", { burst: 10, rps: 4 });
 }
 
 // ─── Fetch wrapper (Atlassian APIs) ──────────────────────────────────

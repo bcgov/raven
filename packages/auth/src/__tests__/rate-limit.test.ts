@@ -9,6 +9,10 @@ import {
   parseRetryAfter,
   wrapFetchWithLimits,
   wrapSshExecWithLimits,
+  limiterOptsFromEnv,
+  atlassianLimiterOpts,
+  sshLimiterOpts,
+  spoLimiterOpts,
 } from "../rate-limit.js";
 
 beforeEach(() => {
@@ -477,5 +481,30 @@ describe("wrapSshExecWithLimits", () => {
     const r = await wrapped("h.example.com");
     expect(r.host).toBe("throttled");
     expect(r.stdout).toBe("");
+  });
+});
+
+describe("limiterOptsFromEnv", () => {
+  it("reads RATE_LIMIT_<PREFIX>_* over the defaults with the shared breaker settings", () => {
+    vi.stubEnv("RATE_LIMIT_CSS_BURST", "7");
+    vi.stubEnv("RATE_LIMIT_CSS_RPS", "");
+    try {
+      expect(limiterOptsFromEnv("CSS", { burst: 10, rps: 5 })).toEqual({
+        burst: 7,
+        rps: 5,
+        breakerFailures: 3,
+        breakerWindowSec: 30,
+        breakerCooldownSec: 30,
+      });
+      expect(atlassianLimiterOpts()).toMatchObject({ burst: 30, rps: 10 });
+      expect(sshLimiterOpts()).toMatchObject({ burst: 5, rps: 2 });
+      expect(spoLimiterOpts()).toMatchObject({ burst: 10, rps: 4 });
+      vi.stubEnv("RATE_LIMIT_SSH_RPS", "9");
+      vi.stubEnv("RATE_LIMIT_SPO_BURST", "11");
+      expect(sshLimiterOpts().rps).toBe(9);
+      expect(spoLimiterOpts().burst).toBe(11);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
