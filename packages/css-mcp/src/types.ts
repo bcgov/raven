@@ -30,6 +30,12 @@ export interface CssUser {
   attributes?: Record<string, string[] | string>;
 }
 
+/** Holders of one role, walked page by page. `more` means the walk stopped at the caller's limit. */
+export interface CssUserList {
+  users: CssUser[];
+  more: boolean;
+}
+
 /** IDIR directory search criteria; at least one must be set. */
 export interface IdirSearch {
   firstName?: string;
@@ -44,4 +50,6 @@ export interface CssClientConfig {
   clientSecret: string;
   apiUrl: string;
   tokenUrl: string;
+  /** Permit hosts outside `*.gov.bc.ca` (local test doubles only). */
+  allowAnyHost?: boolean;
 }

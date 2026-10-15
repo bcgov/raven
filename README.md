@@ -28,12 +28,13 @@ RAVEN gives your local LLM direct access to our Atlassian tools via [MCP (Model 
 | **Jenkins** | Inspect and configure jobs; run and monitor builds; manage queue items, artifacts, promotions, and credential metadata/lifecycle |
 | **GitHub** | GHAS security: publish SARIF findings to code scanning; triage code/secret/Dependabot alerts; issues, PRs, and org security posture — all gated by a repository allow-list |
 | **RFC Buddy** | Filter and search RFCs from current/completed schedule; updates/advances the API-side baseline |
+| **CSS (Common Hosted SSO)** | List Gold integrations, client roles and role holders; search the IDIR directory; create roles and grant/revoke them (exact-target confirmation, prod writes off by default, local audit log) |
 | **Health** | Sprint velocity, issue aging, composite health scores, workload, portfolio comparison |
 | **Overview** | One-shot cross-system project summary (Jira + Confluence + Bitbucket) |
 | **Bug Classifier** | Cluster Jira bugs by shared root cause across projects |
 | **Jarvis** | Query the central Jarvis application inventory (dynamic proxy to a BC Gov API) |
 
-See **[`docs/TOOL_INVENTORY.md`](docs/TOOL_INVENTORY.md)** for the complete tool catalog, per-server counts, and the read/write split. The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share a single authentication session — log in once, use everywhere. Server Monitor, IMIS, Azure DevOps, Jarvis, Sonar, Jenkins, Artifactory, RFC Buddy, SharePoint, and GitHub authenticate separately via credentials in `~/.raven/.env`.
+See **[`docs/TOOL_INVENTORY.md`](docs/TOOL_INVENTORY.md)** for the complete tool catalog, per-server counts, and the read/write split. The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share a single authentication session — log in once, use everywhere. Server Monitor, IMIS, Azure DevOps, Jarvis, Sonar, Jenkins, Artifactory, RFC Buddy, SharePoint, GitHub, and CSS authenticate separately via credentials in `~/.raven/.env`.
 
 ### Autonomous Pipeline (`@nrs/pipeline`)
 
@@ -217,7 +218,11 @@ CSS_API_CLIENT_SECRET=<CSS API account client secret>
 # Optional overrides; default to production loginproxy
 # CSS_API_URL=https://api.loginproxy.gov.bc.ca/api/v1
 # CSS_TOKEN_URL=https://loginproxy.gov.bc.ca/auth/realms/standard/protocol/openid-connect/token
+# Prod role writes are refused unless this is exactly "true"
+# CSS_ALLOW_PROD_WRITES=false
 ```
+
+CSS write tools: `create_role` takes `confirm: true`; `assign_user_roles` and `remove_user_role` take `confirm: "<verb>:<integrationId>/<environment>/<username>/<roles>"` (`assign` or `remove`; the role name, or the comma-separated role names in any order) and refuse any other value without echoing the expected one, then re-read the user's roles and report anything that differs — even when the CSS call itself errored, since what CSS holds afterwards decides the outcome. Prod writes are refused unless `CSS_ALLOW_PROD_WRITES=true`. Every write attempt (an `attempted` line before the CSS call and the outcome after; tool, target, roles, OS user; no names or emails) and every directory search (criteria keys and row count) is appended to the hash-chained audit log `~/.raven/audit/css.<YYYY-MM>.jsonl` (write lines share an `attemptId`); a write is refused, and search results are withheld, if that line cannot be written. Both endpoint URLs must be HTTPS and on a `*.gov.bc.ca` host (`CSS_ALLOW_ANY_HOST=true` only for a local test double); redirects are never followed with credentials attached; requests go through the shared per-host rate limiter (`RATE_LIMIT_CSS_BURST` / `RATE_LIMIT_CSS_RPS`, defaults 10 / 5). `search_idir_users` shows at most 25 rows (max 100); narrow by email or GUID instead of raising it.
 
 Optional Artifactory settings:
 

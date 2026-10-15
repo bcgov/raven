@@ -23,7 +23,7 @@
 | Read-only tools | **~165** |
 | Non-server packages | `auth`, `pipeline`, `server-ui`, `raven-cli` |
 
-Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share one SiteMinder/Basic-Auth session; Server Monitor, IMIS, Azure DevOps / TFS, Sonar, Jenkins, Artifactory, RFC Buddy, and Jarvis authenticate separately via `~/.raven/.env`.
+Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share one SiteMinder/Basic-Auth session; Server Monitor, IMIS, Azure DevOps / TFS, Sonar, Jenkins, Artifactory, RFC Buddy, CSS, and Jarvis authenticate separately via `~/.raven/.env`.
 
 ## Read / write summary
 
@@ -225,6 +225,19 @@ If dedicated Jenkins credentials are omitted, the server falls back to the cache
 |----------|-----------|:---------:|---------|---------|
 | `RFCBUDDY_URL` | required for rfcbuddy | no | rfcbuddy | RFC Buddy API base URL (default `https://rfcbuddy.example.com/api/v1/`) |
 | `RFCBUDDY_PAT` | required for rfcbuddy | **yes** | rfcbuddy | Personal Access Token (bearer token) for API authorization |
+
+### CSS (Common Hosted SSO)
+| Variable | Required? | Sensitive | Used by | Purpose |
+|----------|-----------|:---------:|---------|---------|
+| `CSS_API_CLIENT_ID` | required for css | no | css | Team CSS API account client id (SSO-requests app > My Teams > CSS API Account) |
+| `CSS_API_CLIENT_SECRET` | required for css | **yes** | css | Team CSS API account client secret |
+| `CSS_API_URL` | optional | no | css | HTTPS-only API base (default `https://api.loginproxy.gov.bc.ca/api/v1`) |
+| `CSS_TOKEN_URL` | optional | no | css | HTTPS-only token endpoint (default: standard-realm loginproxy token URL) |
+| `CSS_ALLOW_PROD_WRITES` | optional | no | css | Must be exactly `true` to allow role writes on the `prod` environment |
+| `CSS_ALLOW_ANY_HOST` | optional | no | css | Must be exactly `true` to let `CSS_API_URL` / `CSS_TOKEN_URL` point outside `*.gov.bc.ca` (local test doubles only) |
+| `RATE_LIMIT_CSS_BURST` / `RATE_LIMIT_CSS_RPS` | optional | no | css | Per-host limiter for the CSS API (defaults 10 / 5) |
+
+Write tools append a hash-chained record of every attempt (an `attempted` line before the CSS call, the outcome after; tool, target, roles, OS user; no names or emails) and `search_idir_users` records its criteria keys and row count, all to `~/.raven/audit/css.<YYYY-MM>.jsonl`; a write is refused and search results are withheld if the line cannot be written.
 
 ### Artifactory
 | Variable | Required? | Sensitive | Used by | Purpose |

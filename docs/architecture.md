@@ -57,7 +57,7 @@ graph TD
     Dev -->|HTTP on 127.0.0.1:3777| ServerUI[server-ui: Express dashboard]
     Dev -->|terminal| CLIs[pipeline CLI / raven-cli / raven-auth]
 
-    Assistant -->|MCP stdio| MCPServers[17 MCP servers]
+    Assistant -->|MCP stdio| MCPServers[18 MCP servers]
 
     subgraph Workstation[Local Workstation Trust Boundary]
         MCPServers
@@ -157,7 +157,7 @@ Derived from the codebase-memory import graph over project `raven`. The seams ar
 
 | Entry Point | Type | Path / Reference |
 | :--- | :--- | :--- |
-| 17 MCP server binaries (`raven-jira-mcp`, `raven-server-mcp`, and so on) | MCP stdio server | `packages/*-mcp/src/index.ts`, exposed via `bin` in each `package.json` |
+| 18 MCP server binaries (`raven-jira-mcp`, `raven-server-mcp`, and so on) | MCP stdio server | `packages/*-mcp/src/index.ts`, exposed via `bin` in each `package.json` |
 | Server Monitor dashboard | REST API over HTTP | `packages/server-ui/src/server.ts` `createApp()`, bound to `127.0.0.1:3777` |
 | Autonomous DevOps pipeline | CLI | `packages/pipeline/src/index.ts`, `bin: raven-pipeline` |
 | Local chat interface | CLI | `packages/raven-cli`, `bin: raven` |
@@ -235,7 +235,7 @@ This section defines the security posture, authentication/authorization model, c
 
 | Aspect | Implementation |
 | :--- | :--- |
-| **Authentication Method** | SiteMinder SSO session cookie (`SMSESSION`) captured via an interactive browser login, or HTTP Basic against the BWA host; PAT or API token for Azure DevOps, Jenkins, Artifactory, GitHub and SonarQube; SSH password or opt-in key for application servers |
+| **Authentication Method** | SiteMinder SSO session cookie (`SMSESSION`) captured via an interactive browser login, or HTTP Basic against the BWA host; PAT or API token for Azure DevOps, Jenkins, Artifactory, GitHub and SonarQube; SSH password or opt-in key for application servers; OAuth client credentials for the team-scoped CSS API account used by `css-mcp` (the only non-personal credential; see SYSTEM_DESIGN_AND_ARCHITECTURE.md) |
 | **Identity Provider** | BC Gov SiteMinder with IDIR, reached through an interactive Playwright-driven browser login (`packages/auth/src/capture-script.ts`) |
 | **Authorization Model** | Delegated — RAVEN makes no authorization decision of its own. Every upstream call carries the operator's own identity, so the operator's existing entitlements are the authorization boundary |
 | **Token Format** | Opaque session cookie for SiteMinder; bearer or basic credentials for the token-based providers |

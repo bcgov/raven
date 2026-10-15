@@ -17,6 +17,7 @@ export {
   wrapSshExecWithLimits,
   atlassianLimiterOpts,
   sshLimiterOpts,
+  limiterOptsFromEnv,
 } from "./rate-limit.js";
 export type {
   LimiterOpts,
