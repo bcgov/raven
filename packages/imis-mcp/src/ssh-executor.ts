@@ -414,16 +414,17 @@ export function getSshAuthMode(
 /**
  * Build the command string to execute on the remote server.
  * Prepends nohist to prevent commands appearing in remote bash history.
- * For sudo mode, wraps in: sudo -S -u <user> bash -c '...'
- * with the sudo password piped to sudo's stdin.
+ * For sudo mode, wraps in: sudo -S -p '' -u <user> bash -c '...'
+ * with the sudo password piped to sudo's stdin. The empty prompt keeps
+ * "[sudo] password for <ssh user>:" out of stderr and the tool result.
  */
-function buildRemoteCommand(command: string, sudoUser?: string): string {
+export function buildRemoteCommand(command: string, sudoUser?: string): string {
   const nohist = "unset HISTFILE; set +o history";
   if (!sudoUser) {
     return `${nohist} && ${command}`;
   }
   const inner = shellEscape(`${nohist} && ${command}`);
-  return `${nohist} && sudo -S -u ${sudoUser} bash -c ${inner}`;
+  return `${nohist} && sudo -S -p '' -u ${sudoUser} bash -c ${inner}`;
 }
 
 /**

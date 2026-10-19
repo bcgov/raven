@@ -11,6 +11,7 @@ import {
   buildConnectOpts,
   sshExec,
   deriveSshUser,
+  buildRemoteCommand,
   type SshAuthMode,
 } from "../ssh-executor.js";
 
@@ -844,5 +845,20 @@ describe("validateCommand — complete operand and expansion grammar", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// sudo -S prints "[sudo] password for <ssh user>:" to stderr unless -p sets an
+// empty prompt. That stderr reaches the tool result and exposed the SSH
+// account name to the model.
+describe("buildRemoteCommand", () => {
+  it("suppresses the sudo password prompt", () => {
+    expect(buildRemoteCommand("ls /apps_ux", "wwwsvr")).toContain("sudo -S -p '' -u wwwsvr bash -c");
+  });
+
+  it("does not use sudo without a sudo user", () => {
+    const cmd = buildRemoteCommand("ls /apps_ux");
+    expect(cmd).not.toContain("sudo");
+    expect(cmd).toContain("&& ls /apps_ux");
   });
 });
