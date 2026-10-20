@@ -389,8 +389,10 @@ Classic release definitions on Azure DevOps Services use a separate `vsrm.dev.az
 - `list_technologies` — List all distinct technology tags (databases, frameworks, runtimes, servers, etc.) with usage counts across the full inventory. Accepts optional prefix filter `query`.
 - `get_application_provenance` — Retrieve the field-level audit trail / provenance history showing when fields were modified, what data sources modified them, and their previous vs. new values.
 
-### SonarQube (6 tools)
+### SonarQube
 Defaults to SonarQube Cloud (`https://sonarcloud.io`); set `SONARQUBE_URL` for an on-prem SonarQube Server. A `SONARQUBE_TOKEN` is required for API calls.
+For Cloud project listing, pass the `organization` argument to `sonar_list_projects`; for Cloud .NET scans, pass `/o:<organization>` in `sonar_run_scan`'s `extraArgs`.
+- `sonar_list_projects` — List projects in the supplied Cloud organization or on the configured Server.
 - `sonar_list_issues` — List open issues for a SonarQube project and branch (supports scope/new-code filters).
 - `sonar_get_quality_gate` — Get quality gate status for a project/branch, including failing conditions.
 - `sonar_get_last_scan` — Get the latest analysis for a project/branch plus its quality gate status.

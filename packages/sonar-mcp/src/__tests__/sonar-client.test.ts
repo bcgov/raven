@@ -72,6 +72,30 @@ describe("SonarClient API operations", () => {
       expect(url.searchParams.get("qualifiers")).toBe("TRK");
       expect(url.searchParams.get("p")).toBe(String(index + 1));
       expect(url.searchParams.get("ps")).toBe("100");
+      expect(url.searchParams.has("organization")).toBe(false);
+    }
+  });
+
+  it("requires and forwards a Cloud organization on every page", async () => {
+    const mockFetch = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        paging: { pageIndex: 1, total: 2 },
+        components: [{ key: "one", name: "One" }],
+      })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        paging: { pageIndex: 2, total: 2 },
+        components: [{ key: "two", name: "Two" }],
+      })));
+    const client = new SonarClient("https://sonarcloud.io", "token", mockFetch);
+
+    await expect(client.listProjects()).rejects.toThrow("organization");
+    await expect(client.listProjects("   ")).rejects.toThrow("organization");
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(await client.listProjects("my-org")).toHaveLength(2);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    for (const [index, [url]] of mockFetch.mock.calls.entries()) {
+      expect(new URL(String(url)).searchParams.get("organization")).toBe("my-org");
+      expect(new URL(String(url)).searchParams.get("p")).toBe(String(index + 1));
     }
   });
 

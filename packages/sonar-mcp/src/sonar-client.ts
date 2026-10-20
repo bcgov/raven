@@ -9,8 +9,8 @@ import type {
 } from "./types.js";
 
 /**
- * REST client for SonarQube Server (Community Build + Community Branch Plugin
- * or commercial editions). Targets the stable Web API surface; branch-aware
+ * REST client for SonarQube Cloud and Server (Community Build + Community Branch
+ * Plugin or commercial editions). Targets the stable Web API surface; branch-aware
  * endpoints work transparently when the Community Branch Plugin is installed.
  *
  * Auth: User token via HTTP Basic auth with an empty password
@@ -65,12 +65,17 @@ export class SonarClient {
     return (await resp.json()) as T;
   }
 
-  /** List every project visible to the configured SonarQube token. */
-  async listProjects(): Promise<SonarProject[]> {
+  /** List projects visible to the token within a Cloud organization or on Server. */
+  async listProjects(organization?: string): Promise<SonarProject[]> {
+    const isCloud = new URL(this.baseUrl).hostname === "sonarcloud.io";
+    const cloudOrganization = organization?.trim();
+    if (isCloud && !cloudOrganization) {
+      throw new Error("SonarQube Cloud project listing requires an organization argument.");
+    }
     const projects: SonarProject[] = [];
     for (let page = 1; ; page++) {
       const result = await this.request<SonarProjectsPage>("api/components/search", {
-        params: { qualifiers: "TRK", p: page, ps: 100 },
+        params: { qualifiers: "TRK", p: page, ps: 100, organization: isCloud ? cloudOrganization : undefined },
       });
       if (
         !Array.isArray(result.components) ||

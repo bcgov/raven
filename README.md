@@ -171,9 +171,9 @@ SONARQUBE_TOKEN=<your SonarQube user token>
 SONAR_SCANNER_BIN=<optional path to sonar-scanner binary if not on PATH; Windows looks for sonar-scanner.bat on PATH>
 ```
 
-For SonarQube Cloud scans, set `sonar.organization` to your organization key in the project's scanner properties or pass `-Dsonar.organization=<key>` in `sonar_run_scan`'s `extraArgs`. The Cloud scanner requires this property; SonarQube Server does not.
+For SonarQube Cloud, pass the `organization` key to `sonar_list_projects`. For scans, the generic scanner accepts `sonar.organization` in `sonar-project.properties` or `-Dsonar.organization=<key>` in `sonar_run_scan`'s `extraArgs`. For .NET/MSBuild scans (including auto-detected .NET projects), pass `/o:<key>` in `extraArgs` instead: SonarScanner for .NET does not read `sonar-project.properties`, and `-Dsonar.organization` becomes `/d:sonar.organization`, not the required `/o:` option. SonarQube Server does not require an organization.
 
-The Sonar MCP `sonar_list_projects` tool lists projects the configured user token can browse (key, name, and visibility), following SonarQube pagination automatically. It does not require SonarQube administrator permissions or a scanner installation.
+The Sonar MCP `sonar_list_projects` tool lists projects the configured user token can browse (key, name, and visibility) within the supplied Cloud organization or on the configured Server, following pagination automatically. It does not require SonarQube administrator permissions or a scanner installation.
 
 Optional Jenkins settings:
 

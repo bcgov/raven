@@ -117,12 +117,14 @@ export function createSonarServer(): McpServer {
 
   server.tool(
     "sonar_list_projects",
-    "List all SonarQube projects visible to the configured token, including their keys, names, and visibility.",
-    {},
+    "List SonarQube Server projects visible to the configured token or projects in a SonarQube Cloud organization.",
+    {
+      organization: z.string().optional().describe("SonarQube Cloud organization key (required for Cloud; ignored on Server)"),
+    },
     { readOnlyHint: true },
-    async () => {
+    async ({ organization }) => {
       try {
-        const projects = await getClient().listProjects();
+        const projects = await getClient().listProjects(organization);
         return {
           content: [{ type: "text", text: JSON.stringify({ total: projects.length, projects }) }],
         };

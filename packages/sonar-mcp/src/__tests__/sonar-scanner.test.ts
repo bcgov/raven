@@ -359,6 +359,7 @@ describe("MSBuild/DotNet detection and execution tests", () => {
           "-Dsonar.projectName=WWW SQL Designer",
           "-Dsonar.projectVersion=1.2.3",
           "-Dsonar.verbose=true",
+          "/o:my-org",
         ],
         useMsBuild: true,
       });
@@ -407,6 +408,7 @@ describe("MSBuild/DotNet detection and execution tests", () => {
           "/n:WWW SQL Designer",
           "/v:1.2.3",
           "/d:sonar.verbose=true",
+          "/o:my-org",
         ]),
         expect.any(Object)
       );
