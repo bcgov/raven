@@ -15,21 +15,23 @@ import type {
   AdoReleasePipeline,
   AdoReleasePipelineList,
   AdoPatchOperation,
+  AdoProject,
   AdoProjectList,
   AdoCollectionList,
 } from "./types.js";
 
 /**
- * REST client for Azure DevOps Server (on-premises).
+ * REST client for Azure DevOps Services and Server (on-premises).
  *
  * Auth: PAT (Personal Access Token) via HTTP Basic auth with an empty username.
- * Base URL format: https://{server}/{collection}
- *   e.g. https://ado.example.com/DefaultCollection
+ * Base URL: https://dev.azure.com for Services, or https://{server} for Server.
+ * The collection argument is the organization name for Services.
  *
  * All requests target api-version 7.1 (supported by ADO Server 2020+).
  * Earlier versions (2019) can use 5.1 — override with ADO_API_VERSION env var.
  */
 export class AdoClient {
+  readonly isCloud: boolean;
   private baseUrl: string;
   private apiVersion: string;
   private authHeader: string;
@@ -40,6 +42,7 @@ export class AdoClient {
     let url = baseUrl;
     while (url.endsWith("/")) url = url.slice(0, -1);
     this.baseUrl = url;
+    this.isCloud = new URL(url).hostname === "dev.azure.com";
     this.apiVersion = apiVersion;
     // PAT auth: empty username, PAT as password
     this.authHeader = `Basic ${Buffer.from(`:${pat}`).toString("base64")}`;
@@ -55,7 +58,10 @@ export class AdoClient {
     options?: RequestInit & { params?: Record<string, string> }
   ): Promise<{ data: T; continuationToken?: string }> {
     const { params, ...fetchOpts } = options ?? {};
-    const query = params ? `?${new URLSearchParams({ ...params, "api-version": this.apiVersion })}` : `?api-version=${this.apiVersion}`;
+    const separator = path.includes("?") ? "&" : "?";
+    const query = params
+      ? `${separator}${new URLSearchParams({ ...params, "api-version": this.apiVersion })}`
+      : `${separator}api-version=${this.apiVersion}`;
     const url = `${this.baseUrl}/${path.replace(/^\//, "")}${query}`;
 
     const resp = await this.fetchFn(url, {
@@ -391,21 +397,11 @@ export class AdoClient {
     return this.request<AdoCollectionList>(`_apis/projectCollections`);
   }
 
-  /** List team projects in a named collection. */
+  /** List team projects in a collection (or Cloud organization). */
   async listProjects(collection: string, top = 200): Promise<AdoProjectList> {
-    // Build URL manually to avoid URLSearchParams encoding '$top' as '%24top'
-    const url = `${this.baseUrl}/${encodeURIComponent(collection)}/_apis/projects?$top=${top}&api-version=${this.apiVersion}`;
-    const resp = await this.fetchFn(url, {
-      headers: {
-        Authorization: this.authHeader,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-    });
-    if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
-      throw new Error(`ADO API error ${resp.status} ${resp.statusText}: ${body.slice(0, 500)}`);
-    }
-    return resp.json() as Promise<AdoProjectList>;
+    const value = await this.listAllPages<AdoProject>(
+      `${encodeURIComponent(collection)}/_apis/projects?$top=${top}`
+    );
+    return { value, count: value.length };
   }
 }

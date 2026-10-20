@@ -57,7 +57,7 @@ export function createAdoServer(): McpServer {
   const server = new McpServer(
     { name: "RAVEN Azure DevOps / TFS", version: "0.1.0" },
     {
-      instructions: `You have access to tools for a locally hosted Azure DevOps Server / TFS instance. Use these tools for Azure DevOps or TFS URLs, including collection/project paths such as /COLLECTION/PROJECT and classic build or release pages under /_build and /_release (for example, /_release?...definitionId=1). Tools cover work items (search, read, create, update, comment), repositories, branches, file browsing, pull requests, YAML and designer pipelines, classic build pipelines, and classic release pipelines. Write tools (create_work_item, update_work_item, add_work_item_comment, create_pull_request) modify live ADO data — confirm with the user before calling them. Set ADO_BASE_URL, ADO_PAT, and ADO_DEFAULT_PROJECT in ~/.raven/.env (or the DPAPI-encrypted equivalent on Windows). For multi-collection ADO Server instances, set ADO_DEFAULT_COLLECTION or pass the collection parameter to each tool.${WORKAROUND_NOTE}`,
+      instructions: `You have access to tools for Azure DevOps Services and Azure DevOps Server / TFS. ADO_BASE_URL defaults to https://dev.azure.com; set ADO_DEFAULT_COLLECTION to the Cloud organization name or the on-prem Server collection (or pass collection to a tool). Server URLs include collection/project paths such as /COLLECTION/PROJECT and classic build or release pages under /_build and /_release. Tools cover work items, repositories, pull requests, and pipelines. Write tools (create_work_item, update_work_item, add_work_item_comment, create_pull_request) modify live ADO data — confirm with the user before calling them. Set ADO_PAT and ADO_DEFAULT_PROJECT in ~/.raven/.env (or the DPAPI-encrypted equivalent on Windows).${WORKAROUND_NOTE}`,
     }
   );
 
@@ -65,9 +65,8 @@ export function createAdoServer(): McpServer {
 
   function getClient(): AdoClient {
     if (!client) {
-      const baseUrl = process.env["ADO_BASE_URL"];
+      const baseUrl = process.env["ADO_BASE_URL"] || "https://dev.azure.com";
       const pat     = process.env["ADO_PAT"];
-      if (!baseUrl) throw new Error("ADO_BASE_URL is not set. Add it to ~/.raven/.env.");
       if (!pat)     throw new Error("ADO_PAT is not set. Add it to ~/.raven/.env.");
       const apiVersion = process.env["ADO_API_VERSION"] ?? "7.1";
       client = new AdoClient(baseUrl, pat, apiVersion);
@@ -82,7 +81,11 @@ export function createAdoServer(): McpServer {
   }
 
   function defaultCollection(supplied?: string): string | undefined {
-    return supplied || process.env["ADO_DEFAULT_COLLECTION"] || undefined;
+    const collection = supplied || process.env["ADO_DEFAULT_COLLECTION"] || undefined;
+    if (!collection && client?.isCloud) {
+      throw new Error("Set ADO_DEFAULT_COLLECTION to the Cloud organization name or supply collection.");
+    }
+    return collection;
   }
 
   const safeErr = (err: unknown) =>
@@ -106,7 +109,7 @@ Returns the top matching work items with their titles, types, states, and priori
     {
       wiql: z.string().describe("WIQL query string"),
       project: z.string().optional().describe("Project name (uses ADO_DEFAULT_PROJECT if omitted)"),
-      collection: z.string().optional().describe("Collection name — required on multi-collection ADO Server instances"),
+      collection: z.string().optional().describe("Cloud organization or on-prem collection (uses ADO_DEFAULT_COLLECTION if omitted)"),
       top: z.number().int().min(1).max(200).default(20).describe("Maximum number of results"),
     },
     { readOnlyHint: true },
@@ -134,7 +137,7 @@ Returns the top matching work items with their titles, types, states, and priori
     {
       id: z.number().int().describe("Work item ID"),
       project: z.string().optional().describe("Project name (uses ADO_DEFAULT_PROJECT if omitted)"),
-      collection: z.string().optional().describe("Collection name — required on multi-collection ADO Server instances"),
+      collection: z.string().optional().describe("Cloud organization or on-prem collection (uses ADO_DEFAULT_COLLECTION if omitted)"),
     },
     { readOnlyHint: true },
     async ({ id, project, collection }) => {
@@ -179,7 +182,7 @@ Priority values: 1 (Critical), 2 (High), 3 (Medium), 4 (Low).`,
       iterationPath: z.string().optional().describe("Iteration path, e.g. 'MyProject\\\\Sprint 5'"),
       tags: z.string().optional().describe("Semicolon-separated tags"),
       project: z.string().optional().describe("Project name (uses ADO_DEFAULT_PROJECT if omitted)"),
-      collection: z.string().optional().describe("Collection name — required on multi-collection ADO Server instances"),
+      collection: z.string().optional().describe("Cloud organization or on-prem collection (uses ADO_DEFAULT_COLLECTION if omitted)"),
     },
     { readOnlyHint: false },
     async ({ type, title, description, priority, assignedTo, areaPath, iterationPath, tags, project, collection }) => {
@@ -218,7 +221,7 @@ Priority values: 1 (Critical), 2 (High), 3 (Medium), 4 (Low).`,
       description: z.string().optional().describe("New description (HTML allowed)"),
       tags: z.string().optional().describe("Semicolon-separated tags (replaces existing)"),
       project: z.string().optional().describe("Project name (uses ADO_DEFAULT_PROJECT if omitted)"),
-      collection: z.string().optional().describe("Collection name — required on multi-collection ADO Server instances"),
+      collection: z.string().optional().describe("Cloud organization or on-prem collection (uses ADO_DEFAULT_COLLECTION if omitted)"),
     },
     { readOnlyHint: false },
     async ({ id, title, state, priority, assignedTo, description, tags, project, collection }) => {
@@ -254,7 +257,7 @@ Priority values: 1 (Critical), 2 (High), 3 (Medium), 4 (Low).`,
       id: z.number().int().describe("Work item ID"),
       text: z.string().describe("Comment text (HTML allowed)"),
       project: z.string().optional().describe("Project name (uses ADO_DEFAULT_PROJECT if omitted)"),
-      collection: z.string().optional().describe("Collection name — required on multi-collection ADO Server instances"),
+      collection: z.string().optional().describe("Cloud organization or on-prem collection (uses ADO_DEFAULT_COLLECTION if omitted)"),
     },
     { readOnlyHint: false },
     async ({ id, text, project, collection }) => {
@@ -279,7 +282,7 @@ Priority values: 1 (Critical), 2 (High), 3 (Medium), 4 (Low).`,
     "List all Git repositories in an Azure DevOps project.",
     {
       project: z.string().optional().describe("Project name (uses ADO_DEFAULT_PROJECT if omitted)"),
-      collection: z.string().optional().describe("Collection name — required on multi-collection ADO Server instances"),
+      collection: z.string().optional().describe("Cloud organization or on-prem collection (uses ADO_DEFAULT_COLLECTION if omitted)"),
     },
     { readOnlyHint: true },
     async ({ project, collection }) => {
@@ -304,7 +307,7 @@ Priority values: 1 (Critical), 2 (High), 3 (Medium), 4 (Low).`,
       repo: z.string().describe("Repository name or ID"),
       filter: z.string().optional().describe("Optional substring filter for branch names"),
       project: z.string().optional().describe("Project name (uses ADO_DEFAULT_PROJECT if omitted)"),
-      collection: z.string().optional().describe("Collection name — required on multi-collection ADO Server instances"),
+      collection: z.string().optional().describe("Cloud organization or on-prem collection (uses ADO_DEFAULT_COLLECTION if omitted)"),
     },
     { readOnlyHint: true },
     async ({ repo, filter, project, collection }) => {
@@ -331,7 +334,7 @@ Priority values: 1 (Critical), 2 (High), 3 (Medium), 4 (Low).`,
       path: z.string().default("/").describe("Path to browse (default: root '/')"),
       branch: z.string().default("main").describe("Branch name (default: 'main')"),
       project: z.string().optional().describe("Project name (uses ADO_DEFAULT_PROJECT if omitted)"),
-      collection: z.string().optional().describe("Collection name — required on multi-collection ADO Server instances"),
+      collection: z.string().optional().describe("Cloud organization or on-prem collection (uses ADO_DEFAULT_COLLECTION if omitted)"),
     },
     { readOnlyHint: true },
     async ({ repo, path, branch, project, collection }) => {
@@ -357,7 +360,7 @@ Priority values: 1 (Critical), 2 (High), 3 (Medium), 4 (Low).`,
       path: z.string().describe("File path, e.g. '/src/main/java/com/example/App.java'"),
       branch: z.string().default("main").describe("Branch name (default: 'main')"),
       project: z.string().optional().describe("Project name (uses ADO_DEFAULT_PROJECT if omitted)"),
-      collection: z.string().optional().describe("Collection name — required on multi-collection ADO Server instances"),
+      collection: z.string().optional().describe("Cloud organization or on-prem collection (uses ADO_DEFAULT_COLLECTION if omitted)"),
     },
     { readOnlyHint: true },
     async ({ repo, path, branch, project, collection }) => {
@@ -387,7 +390,7 @@ Priority values: 1 (Critical), 2 (High), 3 (Medium), 4 (Low).`,
       status: z.enum(["active", "completed", "abandoned", "all"]).default("active").describe("PR status filter"),
       top: z.number().int().min(1).max(100).default(25).describe("Maximum number of results"),
       project: z.string().optional().describe("Project name (uses ADO_DEFAULT_PROJECT if omitted)"),
-      collection: z.string().optional().describe("Collection name — required on multi-collection ADO Server instances"),
+      collection: z.string().optional().describe("Cloud organization or on-prem collection (uses ADO_DEFAULT_COLLECTION if omitted)"),
     },
     { readOnlyHint: true },
     async ({ repo, status, top, project, collection }) => {
@@ -414,7 +417,7 @@ Priority values: 1 (Critical), 2 (High), 3 (Medium), 4 (Low).`,
       repo: z.string().describe("Repository name or ID"),
       prId: z.number().int().describe("Pull request ID"),
       project: z.string().optional().describe("Project name (uses ADO_DEFAULT_PROJECT if omitted)"),
-      collection: z.string().optional().describe("Collection name — required on multi-collection ADO Server instances"),
+      collection: z.string().optional().describe("Cloud organization or on-prem collection (uses ADO_DEFAULT_COLLECTION if omitted)"),
     },
     { readOnlyHint: true },
     async ({ repo, prId, project, collection }) => {
@@ -457,7 +460,7 @@ Priority values: 1 (Critical), 2 (High), 3 (Medium), 4 (Low).`,
       description: z.string().optional().describe("PR description"),
       isDraft: z.boolean().default(false).describe("Create as draft PR"),
       project: z.string().optional().describe("Project name (uses ADO_DEFAULT_PROJECT if omitted)"),
-      collection: z.string().optional().describe("Collection name — required on multi-collection ADO Server instances"),
+      collection: z.string().optional().describe("Cloud organization or on-prem collection (uses ADO_DEFAULT_COLLECTION if omitted)"),
     },
     { readOnlyHint: false },
     async ({ repo, title, sourceBranch, targetBranch, description, isDraft, project, collection }) => {
@@ -489,12 +492,21 @@ Priority values: 1 (Critical), 2 (High), 3 (Medium), 4 (Low).`,
 
   server.tool(
     "list_projects",
-    "List all team projects across all collections in the Azure DevOps Server instance.",
+    "List team projects in the configured Cloud organization or across collections on Azure DevOps Server.",
     {},
     { readOnlyHint: true },
     async () => {
       try {
         const ado = getClient();
+        if (ado.isCloud) {
+          const organization = defaultCollection();
+          if (!organization) throw new Error("Set ADO_DEFAULT_COLLECTION to the Cloud organization name.");
+          const data = await ado.listProjects(organization);
+          const lines = data.value.map(
+            (p) => `- **${p.name}** (${p.state})${p.description ? " — " + p.description : ""}`
+          );
+          return { content: [{ type: "text", text: lines.length ? lines.join("\n") : "No projects found." }] };
+        }
         const collections = await ado.listCollections();
         if (collections.count === 0) return { content: [{ type: "text", text: "No collections found." }] };
 
@@ -526,7 +538,7 @@ Priority values: 1 (Critical), 2 (High), 3 (Medium), 4 (Low).`,
     "List pipelines from the Azure DevOps Pipelines service, including YAML and designer-configured pipeline records. For classic Build service definitions, use list_build_pipelines.",
     {
       project: z.string().optional().describe("Project name (uses ADO_DEFAULT_PROJECT if omitted)"),
-      collection: z.string().optional().describe("Collection name — required on multi-collection ADO Server instances"),
+      collection: z.string().optional().describe("Cloud organization or on-prem collection (uses ADO_DEFAULT_COLLECTION if omitted)"),
     },
     { readOnlyHint: true },
     async ({ project, collection }) => {
@@ -550,7 +562,7 @@ Priority values: 1 (Critical), 2 (High), 3 (Medium), 4 (Low).`,
     "List Azure DevOps / TFS Build service definitions, including classic build pipelines.",
     {
       project: z.string().optional().describe("Project name (uses ADO_DEFAULT_PROJECT if omitted)"),
-      collection: z.string().optional().describe("Collection name — required on multi-collection ADO Server instances"),
+      collection: z.string().optional().describe("Cloud organization or on-prem collection (uses ADO_DEFAULT_COLLECTION if omitted)"),
     },
     { readOnlyHint: true },
     async ({ project, collection }) => {
@@ -571,10 +583,10 @@ Priority values: 1 (Critical), 2 (High), 3 (Medium), 4 (Low).`,
 
   server.tool(
     "list_release_pipelines",
-    "List classic release pipelines defined in an Azure DevOps project.",
+    "List classic release pipelines on Azure DevOps Server (Cloud releases use a different host).",
     {
       project: z.string().optional().describe("Project name (uses ADO_DEFAULT_PROJECT if omitted)"),
-      collection: z.string().optional().describe("Collection name — required on multi-collection ADO Server instances"),
+      collection: z.string().optional().describe("Cloud organization or on-prem collection (uses ADO_DEFAULT_COLLECTION if omitted)"),
     },
     { readOnlyHint: true },
     async ({ project, collection }) => {

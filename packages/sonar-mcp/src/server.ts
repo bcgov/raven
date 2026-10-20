@@ -17,9 +17,7 @@ const safeErr = (err: unknown) => pi.scrubText(err instanceof Error ? err.messag
 // Global config (server URL + global Sonar properties)
 // ---------------------------------------------------------------------------
 function getServerUrl(): string {
-  const url = process.env.SONARQUBE_URL;
-  if (!url) throw new Error("SONARQUBE_URL is not set (see scripts/setup-credentials.ps1)");
-  return url;
+  return process.env.SONARQUBE_URL || "https://sonarcloud.io";
 }
 function getToken(): string {
   const t = process.env.SONARQUBE_TOKEN;
@@ -67,9 +65,8 @@ export function createSonarServer(): McpServer {
     { name: "RAVEN SonarQube", version: "0.1.0" },
     {
       instructions:
-        "SonarQube tools for RAVEN. Compatible with SonarQube Community Build " +
-        " + Community Branch Plugin. All tools accept a branch parameter so " +
-        "Copilot can target a specific feature/PR branch.",
+        "SonarQube tools for RAVEN. Defaults to SonarQube Cloud; set SONARQUBE_URL " +
+        "for a SonarQube Server instance. Branch-aware endpoints require branch support.",
     },
   );
 

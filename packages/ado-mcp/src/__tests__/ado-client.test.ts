@@ -350,6 +350,38 @@ describe("listProjects", () => {
     expect(url).toContain("$top=200");
     expect(url).toContain("api-version=7.1");
   });
+
+  it("uses the existing collection path for a Cloud organization", async () => {
+    const mockFetch = createMockFetch({ ok: true, status: 200, body: { value: [], count: 0 } });
+    const client = new AdoClient("https://dev.azure.com", "pat", "7.1", mockFetch as any);
+
+    await client.listProjects("my-org");
+    expect(mockFetch.mock.calls[0][0]).toBe(
+      "https://dev.azure.com/my-org/_apis/projects?$top=200&api-version=7.1",
+    );
+  });
+
+  it.each([
+    ["https://dev.azure.com", "my-org"],
+    ["https://ado.example.com", "DefaultCollection"],
+  ])("follows project continuation tokens on %s", async (baseUrl, collection) => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        value: [{ name: "First", state: "wellFormed" }], count: 1,
+      }), { headers: { "x-ms-continuationtoken": "page+2" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        value: [{ name: "Second", state: "wellFormed" }], count: 1,
+      })));
+    const client = new AdoClient(baseUrl, "pat", "7.1", mockFetch as any);
+
+    const result = await client.listProjects(collection);
+    expect(result.value.map((project) => project.name)).toEqual(["First", "Second"]);
+    expect(result.count).toBe(2);
+    expect(mockFetch.mock.calls[0][0]).toBe(`${baseUrl}/${collection}/_apis/projects?$top=200&api-version=7.1`);
+    expect(mockFetch.mock.calls[1][0]).toBe(
+      `${baseUrl}/${collection}/_apis/projects?$top=200&continuationToken=page%2B2&api-version=7.1`,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

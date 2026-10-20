@@ -106,9 +106,9 @@ $password = Prompt-Value "ATLASSIAN_PASSWORD"   "IDIR password" -isSensitive $tr
 $srvPass  = Prompt-Value "SERVER_A_PASSWORD"    "_A account password (leave blank to skip)" -isSensitive $true
 
 Write-Host ""
-Write-Host "Azure DevOps Server (leave blank to skip)" -ForegroundColor Cyan
-$adoBaseUrl       = Prompt-Value "ADO_BASE_URL"            "ADO base URL (e.g. https://ado.example.gov.bc.ca)"
-$adoCollection    = Prompt-Value "ADO_DEFAULT_COLLECTION"  "ADO default collection (e.g. DefaultCollection)"
+Write-Host "Azure DevOps (leave blank to skip)" -ForegroundColor Cyan
+$adoBaseUrl       = Prompt-Value "ADO_BASE_URL"            "ADO base URL (default: https://dev.azure.com; override for Server)"
+$adoCollection    = Prompt-Value "ADO_DEFAULT_COLLECTION"  "ADO Cloud organization or Server collection (e.g. DefaultCollection)"
 $adoPat           = Prompt-Value "ADO_PAT"                 "ADO Personal Access Token" -isSensitive $true
 $adoProject       = Prompt-Value "ADO_DEFAULT_PROJECT"     "ADO default project name (leave blank to skip)"
 $adoApiVersion    = Prompt-Value "ADO_API_VERSION"          "ADO API version (optional; default 7.1)"
@@ -120,7 +120,7 @@ $jarvisBaseUrl    = Prompt-Value "JARVIS_BASE_URL"         "Jarvis base URL (req
 
 Write-Host ""
 Write-Host "SonarQube (leave blank to skip)" -ForegroundColor Cyan
-$sonarUrl   = Prompt-Value "SONARQUBE_URL"     "SonarQube base URL (e.g. https://sonar.example.gov.bc.ca)"
+$sonarUrl   = Prompt-Value "SONARQUBE_URL"     "SonarQube base URL (default: https://sonarcloud.io; override for Server)"
 $sonarToken = Prompt-Value "SONARQUBE_TOKEN"   "SonarQube user token" -isSensitive $true
 $sonarBin   = Prompt-Value "SONAR_SCANNER_BIN" "SonarQube scanner binary path (optional when sonar-scanner is on PATH)"
 

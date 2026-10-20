@@ -139,14 +139,19 @@ JIRA_EPIC_LINK_FIELD=customfield_10006
 Optional Azure DevOps settings:
 
 ```env
-# Azure DevOps Server (on-premises)
-ADO_BASE_URL=<https://your-ado-server.example.com>
-ADO_DEFAULT_COLLECTION=<default collection, e.g. DefaultCollection>
+# Azure DevOps Services (default: https://dev.azure.com)
+ADO_DEFAULT_COLLECTION=<your Cloud organization name>
 ADO_PAT=<your Personal Access Token>
 ADO_DEFAULT_PROJECT=<default team project name>
+# For Azure DevOps Server instead, set its base URL and use a Server collection:
+# ADO_BASE_URL=https://your-ado-server.example.com
+# ADO_DEFAULT_COLLECTION=DefaultCollection
+# Individual tool calls can override the configured organization/collection with `collection`.
 # Optional API version override for older ADO Server versions (default: 7.1)
 # ADO_API_VERSION=5.1
 ```
+
+Classic release definitions on Azure DevOps Services use a separate `vsrm.dev.azure.com` host; `list_release_pipelines` retains its Server URL behavior and does not switch hosts.
 
 Optional Jarvis API settings:
 
@@ -157,14 +162,16 @@ JARVIS_BASE_URL=<your Jarvis base URL, e.g. https://jarvis-api.example.gov.bc.ca
 # /mcp is appended automatically if omitted
 ```
 
-Optional SonarQube settings:
+Optional SonarQube settings (defaults to SonarQube Cloud):
 
 ```env
-# SonarQube Base URL and Authentication credentials
-SONARQUBE_URL=<SonarQube base URL, e.g. https://sonarqube.example.gov.bc.ca/sonar>
+# Set SONARQUBE_URL only to override the https://sonarcloud.io default (e.g. for SonarQube Server).
+# SONARQUBE_URL=https://sonarqube.example.gov.bc.ca/sonar
 SONARQUBE_TOKEN=<your SonarQube user token>
 SONAR_SCANNER_BIN=<optional path to sonar-scanner binary if not on PATH; Windows looks for sonar-scanner.bat on PATH>
 ```
+
+For SonarQube Cloud scans, set `sonar.organization` to your organization key in the project's scanner properties or pass `-Dsonar.organization=<key>` in `sonar_run_scan`'s `extraArgs`. The Cloud scanner requires this property; SonarQube Server does not.
 
 The Sonar MCP `sonar_list_projects` tool lists projects the configured user token can browse (key, name, and visibility), following SonarQube pagination automatically. It does not require SonarQube administrator permissions or a scanner installation.
 

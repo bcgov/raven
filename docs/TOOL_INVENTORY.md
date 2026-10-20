@@ -182,8 +182,8 @@ Set in `~/.raven/.env` (`chmod 600`). **Sensitive** values are secrets — never
 ### Azure DevOps
 | Variable | Required? | Sensitive | Used by | Purpose |
 |----------|-----------|:---------:|---------|---------|
-| `ADO_BASE_URL` | required for ado | no | ado | Azure DevOps Server base URL |
-| `ADO_DEFAULT_COLLECTION` | required for ado | no | ado | default collection |
+| `ADO_BASE_URL` | optional | no | ado | defaults to `https://dev.azure.com`; set to an on-prem Server base URL when needed |
+| `ADO_DEFAULT_COLLECTION` | required for Cloud project listing; other Cloud calls can supply `collection` | no | ado | Cloud organization or default on-prem collection; individual calls can override it |
 | `ADO_PAT` | required for ado | **yes** | ado | personal access token |
 | `ADO_DEFAULT_PROJECT` | optional | no | ado | default team project |
 | `ADO_API_VERSION` | optional | no | ado | API version (default `7.1`) |
@@ -197,7 +197,7 @@ Set in `~/.raven/.env` (`chmod 600`). **Sensitive** values are secrets — never
 ### Sonar
 | Variable | Required? | Sensitive | Used by | Purpose |
 |----------|-----------|:---------:|---------|---------|
-| `SONARQUBE_URL` | required for sonar | no | sonar | SonarQube base URL |
+| `SONARQUBE_URL` | optional | no | sonar | defaults to `https://sonarcloud.io`; override for SonarQube Server |
 | `SONARQUBE_TOKEN` | required for sonar | **yes** | sonar | SonarQube user token |
 | `SONAR_SCANNER_BIN` | optional | no | sonar | path to `sonar-scanner` if not on `PATH` |
 

@@ -625,7 +625,7 @@ RAVEN does not expose arbitrary HTTP or filesystem access. Tool output passes th
 - BC Gov Jira / Confluence / Bitbucket Data Center (internal HTTPS)
 - BC Gov Jira Assets / Insight CMDB (internal HTTPS)
 - BC Gov application servers (internal SSH via VPN)
-- Jenkins (`JENKINS_URL` / `JENKINS_BASE_URL`), on-prem Azure DevOps Server (`ADO_BASE_URL`), SonarQube (`SONARQUBE_URL`), JFrog Artifactory (`ARTIFACTORY_URL`), and RFC Buddy (`RFCBUDDY_URL`), when configured
+- Jenkins (`JENKINS_URL` / `JENKINS_BASE_URL`), Azure DevOps Services (`ADO_DEFAULT_COLLECTION` selects the organization; on-prem Server uses `ADO_BASE_URL`), SonarQube Cloud (on-prem Server uses `SONARQUBE_URL`), JFrog Artifactory (`ARTIFACTORY_URL`), and RFC Buddy (`RFCBUDDY_URL`), when configured
 - HTTPS object-storage hosts explicitly allowlisted for Artifactory direct downloads (`RAVEN_ARTIFACTORY_DOWNLOAD_REDIRECT_HOSTS`); these receive no Raven credentials
 - **The Jarvis application-inventory API** (`JARVIS_BASE_URL`, required when `JARVIS_TOKEN` is set; no default endpoint). `jarvis-mcp` is a dynamic proxy: any Jarvis tool call is forwarded to the configured endpoint with a Personal Access Token. Unlike the other servers, which implement a fixed set of tools locally against the systems above, `jarvis-mcp` forwards opaque MCP requests to a remote MCP endpoint — its tool surface is defined remotely. That makes it the most relevant server to the "local-only" framing and to FOIPPA / data-residency review. The destination is fixed by configuration, not chosen by the AI.
 
@@ -791,12 +791,12 @@ Stored in `~/.raven/.env` (not committed to version control). The table below li
 | `ATLASSIAN_PASSWORD` | User's IDIR password | Basic Auth |
 | `RAVEN_SCRUB_PI` | Enable PI scrubbing (`true`/`1`) | All servers |
 | `SERVER_A_PASSWORD` | SSH and sudo password for servers | Server Monitor, IMIS |
-| `ADO_BASE_URL` | Azure DevOps base URL | Azure DevOps |
-| `ADO_DEFAULT_COLLECTION` | Default Azure DevOps collection | Azure DevOps |
+| `ADO_BASE_URL` | Azure DevOps base URL (defaults to `https://dev.azure.com`; override for Server) | Azure DevOps |
+| `ADO_DEFAULT_COLLECTION` | Default Azure DevOps Server collection or Services organization | Azure DevOps |
 | `ADO_PAT` | Azure DevOps personal access token | Azure DevOps |
 | `ADO_DEFAULT_PROJECT` | Default Azure DevOps project | Azure DevOps |
 | `JARVIS_TOKEN` | Jarvis API token | Jarvis |
-| `SONARQUBE_URL` | SonarQube base URL | Sonar |
+| `SONARQUBE_URL` | SonarQube base URL (defaults to `https://sonarcloud.io`) | Sonar |
 | `SONARQUBE_TOKEN` | SonarQube user token | Sonar |
 | `SONAR_SCANNER_BIN` | Optional path to the local sonar-scanner binary | Sonar (`sonar_run_scan`) |
 | `JENKINS_URL` / `JENKINS_BASE_URL` | HTTPS Jenkins controller base URL; HTTP is rejected before authentication | Jenkins |
