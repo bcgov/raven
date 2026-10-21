@@ -19,7 +19,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@nrs/auth": "*",
-    "markdown-it": "^15.0.2",
+    "markdown-it": "^15.0.3",
     "turndown": "^7.2.0",
     "zod": "^4.6.6"
   },
