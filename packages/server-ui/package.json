@@ -14,7 +14,7 @@
     "@nrs/auth": "*",
     "@nrs/server-mcp": "*",
     "express": "^5.3.0",
-    "nodemailer": "^10.1.0"
+    "nodemailer": "^10.1.5"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
