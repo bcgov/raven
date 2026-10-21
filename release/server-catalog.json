@@ -127,6 +127,14 @@
       "access": "mixed"
     },
     {
+      "id": "css",
+      "package": "@nrs/css-mcp",
+      "packageVersion": "0.2.0",
+      "entrypoint": "packages/css-mcp/dist/index.js",
+      "launcher": "raven-css",
+      "access": "read-write"
+    },
+    {
       "id": "artifactory",
       "package": "@nrs/artifactory-mcp",
       "packageVersion": "0.2.0",

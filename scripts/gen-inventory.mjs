@@ -28,6 +28,7 @@ import { createHealthServer } from "../packages/health-mcp/dist/server.js";
 import { createOverviewServer } from "../packages/overview-mcp/dist/server.js";
 import { createBugClassifierServer } from "../packages/bug-classifier-mcp/dist/server.js";
 import { createRfcBuddyServer } from "../packages/rfcbuddy-mcp/dist/server.js";
+import { createCssServer } from "../packages/css-mcp/dist/server.js";
 import { createArtifactoryServer } from "../packages/artifactory-mcp/dist/server.js";
 import { createSharePointServer } from "../packages/sharepoint-mcp/dist/server.js";
 import { createGitHubServer } from "../packages/github-mcp/dist/server.js";
@@ -49,6 +50,7 @@ const SERVERS = [
   { display: "Sonar", pkg: "sonar-mcp", mcpKey: "sonar", group: "Code quality", factory: createSonarServer },
   { display: "Jenkins", pkg: "jenkins-mcp", mcpKey: "jenkins", group: "CI/CD", factory: createJenkinsServer },
   { display: "RFC Buddy", pkg: "rfcbuddy-mcp", mcpKey: "rfcbuddy", group: "RFC tracking & schedules", factory: createRfcBuddyServer },
+  { display: "CSS (Common Hosted SSO)", pkg: "css-mcp", mcpKey: "css", group: "Identity & access", factory: createCssServer },
   { display: "Artifactory", pkg: "artifactory-mcp", mcpKey: "artifactory", group: "Build and artifact infrastructure", factory: createArtifactoryServer },
   { display: "SharePoint", pkg: "sharepoint-mcp", mcpKey: "sharepoint", group: "Microsoft 365", factory: createSharePointServer },
   { display: "GitHub", pkg: "github-mcp", mcpKey: "github", group: "GitHub platform / security", factory: createGitHubServer },

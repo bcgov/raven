@@ -8,11 +8,11 @@
 
 RAVEN is a **TypeScript / Node.js npm-workspace monorepo** for BC Gov NR Sector. It ships:
 
-- **15 MCP (Model Context Protocol) servers** that bridge a local LLM to Atlassian (Jira, Confluence, Bitbucket), Azure DevOps Server, Jenkins, Artifactory, BC Gov server logs over SSH, IMIS server inventory, Jira Assets CMDB, bug pattern classification, project-health analytics, SonarQube code quality, RFC scheduling, and Jarvis application inventory.
+- **18 MCP (Model Context Protocol) servers** that bridge a local LLM to Atlassian (Jira, Confluence, Bitbucket), Azure DevOps Server, Jenkins, Artifactory, BC Gov server logs over SSH, IMIS server inventory, Jira Assets CMDB, bug pattern classification, project-health analytics, SonarQube code quality, RFC scheduling, Jarvis application inventory, and CSS (Common Hosted SSO) role management.
 - **`@nrs/server-ui`** — an Express web dashboard at `http://localhost:3777` for monitoring app servers.
 - **`@nrs/pipeline`** — an autonomous DevOps CLI (`raven-pipeline`) that detects production errors, triages with AI, generates fixes, and opens PRs.
 
-There are **15 MCP workspaces** under `packages/`. **TypeScript 5.9 strict, ES2022, NodeNext modules.** Tests use **vitest**. **Node 24 LTS** recommended; supported versions are 22.12+ within 22.x, 24.x, or 26+ (see `engines` in `package.json`).
+There are **18 MCP workspaces** under `packages/`. **TypeScript 5.9 strict, ES2022, NodeNext modules.** Tests use **vitest**. **Node 24 LTS** recommended; supported versions are 22.12+ within 22.x, 24.x, or 26+ (see `engines` in `package.json`).
 
 The repo lives inside the `bcgov-c/epsilon` monorepo at path `raven/`. Most paths in this file are relative to `raven/` (the npm workspace root).
 
@@ -70,6 +70,7 @@ raven/
     ├── sonar-mcp/      — @nrs/sonar-mcp (SonarQube issues/quality gate/hotspots/metrics + local scan)
     ├── artifactory-mcp/ — @nrs/artifactory-mcp (Artifactory artifacts, build-info, guarded transfers)
     ├── jenkins-mcp/    — @nrs/jenkins-mcp (Jenkins jobs/builds/config/queue/artifacts/promotions/credentials)
+    ├── css-mcp/        — @nrs/css-mcp (CSS / Common Hosted SSO: integrations, client roles, user-role grants with local audit log)
     ├── server-mcp/     — @nrs/server-mcp: in-process ssh2 + log search. Exports `./client`.
     ├── imis-mcp/       — @nrs/imis-mcp: SSH explorer for IMIS-tracked servers. Exports `./client`.
     ├── server-ui/      — @nrs/server-ui (Express dashboard, port 3777)
@@ -139,7 +140,7 @@ Trust this file for build/test commands, project layout, conventions, and trust-
 
 # RAVEN MCP Tools — Chat-time Reference
 
-Everything above is for repo navigation and PR review. **The sections below are for Copilot Chat in IDEs when this repo's MCP servers are connected** (clients pick these up via `.mcp.json`). RAVEN's MCP servers connect only to your configured BC Gov upstreams (Jira, Confluence, Bitbucket, app servers, and — when enabled — ADO, Sonar, Artifactory, RFC Buddy, and the `jarvis-mcp` remote proxy); they add no third-party data sinks beyond those. Artifactory direct downloads may additionally read from explicitly allowlisted HTTPS storage hosts without sending Artifactory credentials. See [`../docs/TOOL_INVENTORY.md`](../docs/TOOL_INVENTORY.md).
+Everything above is for repo navigation and PR review. **The sections below are for Copilot Chat in IDEs when this repo's MCP servers are connected** (clients pick these up via `.mcp.json`). RAVEN's MCP servers connect only to your configured BC Gov upstreams (Jira, Confluence, Bitbucket, app servers, and — when enabled — ADO, Sonar, Artifactory, RFC Buddy, the CSS API at `api.loginproxy.gov.bc.ca`, and the `jarvis-mcp` remote proxy); they add no third-party data sinks beyond those. Artifactory direct downloads may additionally read from explicitly allowlisted HTTPS storage hosts without sending Artifactory credentials. See [`../docs/TOOL_INVENTORY.md`](../docs/TOOL_INVENTORY.md).
 
 **CRITICAL:** When a user asks you to do something, **actively call the tools** — do not just describe what you would do. Chain multiple tool calls together to complete multi-step tasks.
 

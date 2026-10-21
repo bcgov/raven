@@ -130,6 +130,11 @@ $rfcbuddyUrl   = Prompt-Value "RFCBUDDY_URL"   "RFC Buddy base URL (e.g. https:/
 $rfcbuddyPat   = Prompt-Value "RFCBUDDY_PAT"   "RFC Buddy Personal Access Token (PAT)" -isSensitive $true
 
 Write-Host ""
+Write-Host "CSS / Common Hosted SSO API account (leave blank to skip)" -ForegroundColor Cyan
+$cssClientId     = Prompt-Value "CSS_API_CLIENT_ID"     "CSS API account client id (SSO-requests app > My Teams > CSS API Account)"
+$cssClientSecret = Prompt-Value "CSS_API_CLIENT_SECRET" "CSS API account client secret" -isSensitive $true
+
+Write-Host ""
 Write-Host "Artifactory (leave blank to skip)" -ForegroundColor Cyan
 $artifactoryUrl      = Prompt-Value "ARTIFACTORY_URL"      "Internal Artifactory HTTPS base URL"
 $artifactoryEmail    = Prompt-Value "ARTIFACTORY_EMAIL"    "Artifactory IDIR email"
@@ -181,6 +186,8 @@ if ($sonarToken)    { $creds["SONARQUBE_TOKEN"]        = Protect-String $sonarTo
 if ($sonarBin)      { $creds["SONAR_SCANNER_BIN"]      = Protect-String $sonarBin }
 if ($rfcbuddyUrl)   { $creds["RFCBUDDY_URL"]           = Protect-String $rfcbuddyUrl }
 if ($rfcbuddyPat)   { $creds["RFCBUDDY_PAT"]           = Protect-String $rfcbuddyPat }
+if ($cssClientId)     { $creds["CSS_API_CLIENT_ID"]     = Protect-String $cssClientId }
+if ($cssClientSecret) { $creds["CSS_API_CLIENT_SECRET"] = Protect-String $cssClientSecret }
 if ($artifactoryUrl)      { $creds["ARTIFACTORY_URL"]      = Protect-String $artifactoryUrl }
 if ($artifactoryEmail)    { $creds["ARTIFACTORY_EMAIL"]    = Protect-String $artifactoryEmail }
 if ($artifactoryPassword) { $creds["ARTIFACTORY_PASSWORD"] = Protect-String $artifactoryPassword }

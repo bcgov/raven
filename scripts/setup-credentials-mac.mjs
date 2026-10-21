@@ -189,6 +189,13 @@ const SECTIONS = [
     ],
   },
   {
+    header: "CSS / Common Hosted SSO API account (leave blank to skip)",
+    fields: [
+      ["CSS_API_CLIENT_ID", "CSS API account client id (SSO-requests app > My Teams > CSS API Account)", false],
+      ["CSS_API_CLIENT_SECRET", "CSS API account client secret", true],
+    ],
+  },
+  {
     header: "Artifactory (leave blank to skip)",
     fields: [
       ["ARTIFACTORY_URL", "Internal Artifactory HTTPS base URL", false],

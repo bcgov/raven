@@ -22,6 +22,7 @@
     "packages/sonar-mcp",
     "packages/jenkins-mcp",
     "packages/rfcbuddy-mcp",
+    "packages/css-mcp",
     "packages/artifactory-mcp",
     "packages/sharepoint-mcp",
     "packages/github-mcp"
