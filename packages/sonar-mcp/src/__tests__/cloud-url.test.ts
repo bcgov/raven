@@ -8,7 +8,7 @@ afterEach(() => {
   vi.resetModules();
 });
 
-it("uses SonarCloud when SONARQUBE_URL is not configured", async () => {
+it("requires an explicit URL before contacting SonarQube Cloud", async () => {
   vi.stubEnv("SONARQUBE_URL", undefined);
   vi.stubEnv("SONARQUBE_TOKEN", "test-token");
   const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
@@ -21,17 +21,10 @@ it("uses SonarCloud when SONARQUBE_URL is not configured", async () => {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   try {
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    const missing = await client.callTool({ name: "sonar_list_projects", arguments: {} });
+    const missing = await client.callTool({ name: "sonar_list_projects", arguments: { organization: "my-org" } });
     expect(missing.isError).toBe(true);
+    expect(JSON.stringify(missing.content)).toContain("SONARQUBE_URL is not set");
     expect(fetchMock).not.toHaveBeenCalled();
-
-    const result = await client.callTool({
-      name: "sonar_list_projects",
-      arguments: { organization: "my-org" },
-    });
-    expect(result.isError).not.toBe(true);
-    expect(String(fetchMock.mock.calls[0][0])).toContain("https://sonarcloud.io/api/components/search");
-    expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.get("organization")).toBe("my-org");
   } finally {
     await Promise.all([client.close(), server.close()]);
   }

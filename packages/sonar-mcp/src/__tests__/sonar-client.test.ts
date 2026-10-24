@@ -22,6 +22,9 @@ function createMockFetch(response: {
 }
 
 describe("SonarClient constructor", () => {
+  it("rejects insecure URLs before handling tokens", () => {
+    expect(() => new SonarClient("http://sonar.example.com", "token")).toThrow("HTTPS");
+  });
   it("strips trailing slashes from baseUrl", async () => {
     const mockFetch = createMockFetch({ ok: true, status: 200, body: {} });
     const client = new SonarClient("https://sonar.example.com///", "token123", mockFetch as any);
@@ -44,6 +47,16 @@ describe("SonarClient constructor", () => {
 });
 
 describe("SonarClient API operations", () => {
+  it("requires and forwards an organization for the US Cloud region", async () => {
+    const mockFetch = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ paging: { pageIndex: 1, total: 0 }, components: [] })),
+    );
+    const client = new SonarClient("https://sonarqube.us", "token", mockFetch);
+    await expect(client.listProjects()).rejects.toThrow("organization");
+    expect(mockFetch).not.toHaveBeenCalled();
+    await client.listProjects("org-us");
+    expect(new URL(String(mockFetch.mock.calls[0][0])).searchParams.get("organization")).toBe("org-us");
+  });
   it("lists projects visible to a user token without dropping later pages", async () => {
     const mockFetch = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify({
@@ -94,8 +107,10 @@ describe("SonarClient API operations", () => {
     expect(await client.listProjects("my-org")).toHaveLength(2);
     expect(mockFetch).toHaveBeenCalledTimes(2);
     for (const [index, [url]] of mockFetch.mock.calls.entries()) {
-      expect(new URL(String(url)).searchParams.get("organization")).toBe("my-org");
-      expect(new URL(String(url)).searchParams.get("p")).toBe(String(index + 1));
+      if (typeof url !== "string") throw new Error("Expected string URL");
+      const requestUrl = new URL(url);
+      expect(requestUrl.searchParams.get("organization")).toBe("my-org");
+      expect(requestUrl.searchParams.get("p")).toBe(String(index + 1));
     }
   });
 

@@ -24,6 +24,11 @@ export class SonarClient {
   constructor(baseUrl: string, token: string, fetchFn?: typeof globalThis.fetch) {
     let url = baseUrl;
     while (url.endsWith("/")) url = url.slice(0, -1);
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") throw new Error("SONARQUBE_URL must use HTTPS.");
+    if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+      throw new Error("SONARQUBE_URL must not contain credentials, a query, or a fragment.");
+    }
     this.baseUrl = url;
     this.authHeader = `Basic ${Buffer.from(`${token}:`).toString("base64")}`;
     this.fetchFn = fetchFn ?? globalThis.fetch;
@@ -49,6 +54,7 @@ export class SonarClient {
 
     const resp = await this.fetchFn(url, {
       ...fetchOpts,
+      redirect: "error",
       headers: {
         Authorization: this.authHeader,
         Accept: "application/json",
@@ -67,7 +73,7 @@ export class SonarClient {
 
   /** List projects visible to the token within a Cloud organization or on Server. */
   async listProjects(organization?: string): Promise<SonarProject[]> {
-    const isCloud = new URL(this.baseUrl).hostname === "sonarcloud.io";
+    const isCloud = ["sonarcloud.io", "sonarqube.us"].includes(new URL(this.baseUrl).hostname);
     const cloudOrganization = organization?.trim();
     if (isCloud && !cloudOrganization) {
       throw new Error("SonarQube Cloud project listing requires an organization argument.");

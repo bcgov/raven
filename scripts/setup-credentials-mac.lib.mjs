@@ -53,5 +53,11 @@ export function validateRecord(record) {
   if (record.JARVIS_TOKEN && !record.JARVIS_BASE_URL?.trim()) {
     errors.push("JARVIS_BASE_URL is required when configuring JARVIS_TOKEN.");
   }
+  if (record.ADO_PAT && !record.ADO_BASE_URL?.trim()) {
+    errors.push("ADO_BASE_URL is required when configuring ADO_PAT.");
+  }
+  if (record.SONARQUBE_TOKEN && !record.SONARQUBE_URL?.trim()) {
+    errors.push("SONARQUBE_URL is required when configuring SONARQUBE_TOKEN.");
+  }
   return errors;
 }

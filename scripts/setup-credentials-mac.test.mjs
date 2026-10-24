@@ -137,4 +137,19 @@ describe("validateRecord", () => {
       );
     }
   });
+
+  it("requires explicit ADO and Sonar URLs when their tokens are configured", () => {
+    for (const baseUrl of [undefined, "", "   "]) {
+      expect(validateRecord({ ADO_PAT: "pat", ADO_BASE_URL: baseUrl })).toContain(
+        "ADO_BASE_URL is required when configuring ADO_PAT."
+      );
+      expect(validateRecord({ SONARQUBE_TOKEN: "token", SONARQUBE_URL: baseUrl })).toContain(
+        "SONARQUBE_URL is required when configuring SONARQUBE_TOKEN."
+      );
+    }
+    expect(validateRecord({
+      ADO_PAT: "pat", ADO_BASE_URL: "https://dev.azure.com",
+      SONARQUBE_TOKEN: "token", SONARQUBE_URL: "https://sonarcloud.io",
+    })).toEqual([]);
+  });
 });

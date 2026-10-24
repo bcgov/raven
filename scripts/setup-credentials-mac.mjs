@@ -159,7 +159,7 @@ const SECTIONS = [
   {
     header: "Azure DevOps (leave blank to skip)",
     fields: [
-      ["ADO_BASE_URL", "ADO base URL (default: https://dev.azure.com; override for Server)", false],
+      ["ADO_BASE_URL", "ADO HTTPS base URL (required with PAT; Cloud: https://dev.azure.com)", false],
       ["ADO_DEFAULT_COLLECTION", "ADO Cloud organization or Server collection (e.g. DefaultCollection)", false],
       ["ADO_PAT", "ADO Personal Access Token", true],
       ["ADO_DEFAULT_PROJECT", "ADO default project name (leave blank to skip)", false],
@@ -176,7 +176,7 @@ const SECTIONS = [
   {
     header: "SonarQube (leave blank to skip)",
     fields: [
-      ["SONARQUBE_URL", "SonarQube base URL (default: https://sonarcloud.io; override for Server)", false],
+      ["SONARQUBE_URL", "SonarQube HTTPS base URL (required with token; Cloud: https://sonarcloud.io)", false],
       ["SONARQUBE_TOKEN", "SonarQube user token", true],
       ["SONAR_SCANNER_BIN", "SonarQube scanner binary path (optional when sonar-scanner is on PATH)", false],
     ],

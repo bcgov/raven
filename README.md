@@ -19,7 +19,7 @@ RAVEN gives your local LLM direct access to our Atlassian tools via [MCP (Model 
 | **Confluence** | Search (CQL + filtered); navigate the space tree; read/create/update/delete/move pages as Markdown; manage attachments, labels, and comments |
 | **Bitbucket** | Browse/search code; review PRs end-to-end (diff, comment, approve, merge, decline); commit history and blame; tags; CI build status; create branches, repos, and PRs; commit single files server-side; push local branches (host-pinned, never forced) |
 | **SharePoint** | Search, browse, and read BC Gov SharePoint Online project documentation — sites, document libraries, files (Word/PDF/images), and site pages (read-only) |
-| **Azure DevOps / TFS** | Work items (WIQL), repos and branches, pull requests, YAML/designer pipelines, classic build pipelines, and classic release pipelines on on-prem Azure DevOps Server |
+| **Azure DevOps / TFS** | Work items (WIQL), repos and branches, pull requests, and YAML/designer and classic build pipelines on Azure DevOps Services or Server; classic release pipelines on Server |
 | **Assets (CMDB)** | Query the Jira Assets CMDB — apps, environments, tech stacks, people, org portfolios; object/schema introspection |
 | **Server Monitor** | Discover deployed apps; search Tomcat/Apache logs; compare versions; diff configs; JVM heap (read-only, over SSH) |
 | **IMIS** | Search the server inventory and SSH in to browse apps and configs (read-only) |
@@ -139,19 +139,22 @@ JIRA_EPIC_LINK_FIELD=customfield_10006
 Optional Azure DevOps settings:
 
 ```env
-# Azure DevOps Services (default: https://dev.azure.com)
+# Azure DevOps Services (opt in; set the Cloud URL explicitly)
+ADO_BASE_URL=https://dev.azure.com
 ADO_DEFAULT_COLLECTION=<your Cloud organization name>
 ADO_PAT=<your Personal Access Token>
 ADO_DEFAULT_PROJECT=<default team project name>
-# For Azure DevOps Server instead, set its base URL and use a Server collection:
+# For Azure DevOps Server instead, set its HTTPS base URL and use a Server collection:
 # ADO_BASE_URL=https://your-ado-server.example.com
 # ADO_DEFAULT_COLLECTION=DefaultCollection
-# Individual tool calls can override the configured organization/collection with `collection`.
-# Optional API version override for older ADO Server versions (default: 7.1)
-# ADO_API_VERSION=5.1
+# Individual tool calls except list_projects can override the organization/collection with `collection`.
+# Optional API version override (default 7.1; Server 2020: 6.0, Server 2019: 5.0)
+# ADO_API_VERSION=6.0
 ```
 
-Classic release definitions on Azure DevOps Services use a separate `vsrm.dev.azure.com` host; `list_release_pipelines` retains its Server URL behavior and does not switch hosts.
+For Cloud, keep `ADO_BASE_URL` at the host root; put the organization only in `ADO_DEFAULT_COLLECTION` (or a tool's `collection` argument). Supplying it in both places duplicates the path. Work-item comments use the documented preview API on 6.0/7.0/7.1; older API versions do not support comment operations in this client.
+
+Classic release definitions on Azure DevOps Services use a separate `vsrm.dev.azure.com` host; `list_release_pipelines` supports Server only and reports an explicit error for Cloud rather than switching hosts.
 
 Optional Jarvis API settings:
 
@@ -162,16 +165,20 @@ JARVIS_BASE_URL=<your Jarvis base URL, e.g. https://jarvis-api.example.gov.bc.ca
 # /mcp is appended automatically if omitted
 ```
 
-Optional SonarQube settings (defaults to SonarQube Cloud):
+Optional SonarQube settings (opt in to Cloud with an explicit URL):
 
 ```env
-# Set SONARQUBE_URL only to override the https://sonarcloud.io default (e.g. for SonarQube Server).
+SONARQUBE_URL=https://sonarcloud.io
+# US Cloud region: https://sonarqube.us (Enterprise); for Server, use its HTTPS base URL instead.
 # SONARQUBE_URL=https://sonarqube.example.gov.bc.ca/sonar
 SONARQUBE_TOKEN=<your SonarQube user token>
 SONAR_SCANNER_BIN=<optional path to sonar-scanner binary if not on PATH; Windows looks for sonar-scanner.bat on PATH>
 ```
 
 For SonarQube Cloud, pass the `organization` key to `sonar_list_projects`. For scans, the generic scanner accepts `sonar.organization` in `sonar-project.properties` or `-Dsonar.organization=<key>` in `sonar_run_scan`'s `extraArgs`. For .NET/MSBuild scans (including auto-detected .NET projects), pass `/o:<key>` in `extraArgs` instead: SonarScanner for .NET does not read `sonar-project.properties`, and `-Dsonar.organization` becomes `/d:sonar.organization`, not the required `/o:` option. SonarQube Server does not require an organization.
+For US Cloud scans, also set `sonar.region=us` (for example `-Dsonar.region=us` in `extraArgs`); the scanner defaults to EU. Check [SonarSource's US-region scanner minimum versions](https://docs.sonarsource.com/sonarqube-cloud/getting-started/choosing-your-region#prerequisites) before scanning.
+
+Azure DevOps Services and SonarQube Cloud are external to BC Gov infrastructure. Before enabling them for enterprise data, complete the applicable privacy and data-residency review; SonarQube Cloud currently offers EU and US regions, not a Canadian region.
 
 The Sonar MCP `sonar_list_projects` tool lists projects the configured user token can browse (key, name, and visibility) within the supplied Cloud organization or on the configured Server, following pagination automatically. It does not require SonarQube administrator permissions or a scanner installation.
 

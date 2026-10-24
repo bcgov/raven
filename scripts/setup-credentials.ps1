@@ -107,7 +107,7 @@ $srvPass  = Prompt-Value "SERVER_A_PASSWORD"    "_A account password (leave blan
 
 Write-Host ""
 Write-Host "Azure DevOps (leave blank to skip)" -ForegroundColor Cyan
-$adoBaseUrl       = Prompt-Value "ADO_BASE_URL"            "ADO base URL (default: https://dev.azure.com; override for Server)"
+$adoBaseUrl       = Prompt-Value "ADO_BASE_URL"            "ADO HTTPS base URL (required with PAT; Cloud: https://dev.azure.com)"
 $adoCollection    = Prompt-Value "ADO_DEFAULT_COLLECTION"  "ADO Cloud organization or Server collection (e.g. DefaultCollection)"
 $adoPat           = Prompt-Value "ADO_PAT"                 "ADO Personal Access Token" -isSensitive $true
 $adoProject       = Prompt-Value "ADO_DEFAULT_PROJECT"     "ADO default project name (leave blank to skip)"
@@ -120,7 +120,7 @@ $jarvisBaseUrl    = Prompt-Value "JARVIS_BASE_URL"         "Jarvis base URL (req
 
 Write-Host ""
 Write-Host "SonarQube (leave blank to skip)" -ForegroundColor Cyan
-$sonarUrl   = Prompt-Value "SONARQUBE_URL"     "SonarQube base URL (default: https://sonarcloud.io; override for Server)"
+$sonarUrl   = Prompt-Value "SONARQUBE_URL"     "SonarQube HTTPS base URL (required with token; Cloud: https://sonarcloud.io)"
 $sonarToken = Prompt-Value "SONARQUBE_TOKEN"   "SonarQube user token" -isSensitive $true
 $sonarBin   = Prompt-Value "SONAR_SCANNER_BIN" "SonarQube scanner binary path (optional when sonar-scanner is on PATH)"
 
@@ -160,6 +160,14 @@ if ($githubToken -and -not $githubAllowList) {
 }
 if ($jarvisToken -and [string]::IsNullOrWhiteSpace($jarvisBaseUrl)) {
     Write-Host "Error: JARVIS_BASE_URL is required when configuring JARVIS_TOKEN." -ForegroundColor Red
+    exit 1
+}
+if ($adoPat -and [string]::IsNullOrWhiteSpace($adoBaseUrl)) {
+    Write-Host "Error: ADO_BASE_URL is required when configuring ADO_PAT." -ForegroundColor Red
+    exit 1
+}
+if ($sonarToken -and [string]::IsNullOrWhiteSpace($sonarUrl)) {
+    Write-Host "Error: SONARQUBE_URL is required when configuring SONARQUBE_TOKEN." -ForegroundColor Red
     exit 1
 }
 

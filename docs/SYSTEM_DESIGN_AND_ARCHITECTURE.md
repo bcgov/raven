@@ -303,7 +303,8 @@ Credentials are stored in `~/.raven/.env` with restricted file permissions (`chm
 ├── ATLASSIAN_EMAIL       (user's gov.bc.ca email)
 ├── ATLASSIAN_PASSWORD    (user's IDIR password)
 ├── SERVER_A_PASSWORD     (SSH and sudo password for servers)
-├── SONARQUBE_URL         (SonarQube base URL)
+├── ADO_BASE_URL          (explicit HTTPS Cloud or Server base URL)
+├── SONARQUBE_URL         (explicit HTTPS Cloud or Server base URL)
 ├── SONARQUBE_TOKEN       (SonarQube user token)
 ├── SONAR_SCANNER_BIN     (optional custom path to sonar-scanner)
 ├── ARTIFACTORY_URL       (HTTPS Artifactory base URL)
@@ -625,11 +626,11 @@ RAVEN does not expose arbitrary HTTP or filesystem access. Tool output passes th
 - BC Gov Jira / Confluence / Bitbucket Data Center (internal HTTPS)
 - BC Gov Jira Assets / Insight CMDB (internal HTTPS)
 - BC Gov application servers (internal SSH via VPN)
-- Jenkins (`JENKINS_URL` / `JENKINS_BASE_URL`), Azure DevOps Services (`ADO_DEFAULT_COLLECTION` selects the organization; on-prem Server uses `ADO_BASE_URL`), SonarQube Cloud (on-prem Server uses `SONARQUBE_URL`), JFrog Artifactory (`ARTIFACTORY_URL`), and RFC Buddy (`RFCBUDDY_URL`), when configured
+- Jenkins (`JENKINS_URL` / `JENKINS_BASE_URL`), Azure DevOps Services or Server (explicit `ADO_BASE_URL`; `ADO_DEFAULT_COLLECTION` selects the Cloud organization or Server collection), SonarQube Cloud or Server (explicit `SONARQUBE_URL`), JFrog Artifactory (`ARTIFACTORY_URL`), and RFC Buddy (`RFCBUDDY_URL`), when configured
 - HTTPS object-storage hosts explicitly allowlisted for Artifactory direct downloads (`RAVEN_ARTIFACTORY_DOWNLOAD_REDIRECT_HOSTS`); these receive no Raven credentials
 - **The Jarvis application-inventory API** (`JARVIS_BASE_URL`, required when `JARVIS_TOKEN` is set; no default endpoint). `jarvis-mcp` is a dynamic proxy: any Jarvis tool call is forwarded to the configured endpoint with a Personal Access Token. Unlike the other servers, which implement a fixed set of tools locally against the systems above, `jarvis-mcp` forwards opaque MCP requests to a remote MCP endpoint — its tool surface is defined remotely. That makes it the most relevant server to the "local-only" framing and to FOIPPA / data-residency review. The destination is fixed by configuration, not chosen by the AI.
 
-The AI cannot instruct RAVEN to phone home to an unconfigured host, exfiltrate data to an attacker-controlled URL, or communicate with any system not explicitly programmed into a tool.
+The AI cannot instruct RAVEN to choose an arbitrary destination per call. Configuration explicitly selects the upstream hosts. Azure DevOps Services and SonarQube Cloud are external to BC Gov infrastructure and opt-in; their use with enterprise data requires a privacy and data-residency check. SonarQube Cloud currently offers EU (`sonarcloud.io`) and US (`sonarqube.us`) regions, not a Canadian region. Review third-party destinations, including Jarvis, before enabling them.
 
 ### 11.4 "Can the AI modify production servers?"
 
@@ -673,7 +674,7 @@ The MCP protocol architecture makes this structurally difficult:
 | Requirement | How RAVEN Complies |
 |-------------|-------------------|
 | **FOIPPA s.30 (Protection of PI)** | PI scrubber anonymizes personal information before it reaches the AI. `RAVEN_SCRUB_PI=true` controls this globally. |
-| **FOIPPA s.30.1 (Storage in Canada)** | All enterprise data stays on BC Gov infrastructure. MCP servers run locally. GitHub Copilot Business does not retain data. |
+| **Data residency review** | Local MCP execution does not establish Canadian storage for connected services. Cloud services (including Azure DevOps Services and SonarQube Cloud) are opt-in and require an approved privacy/data-residency assessment before enterprise data is sent. SonarQube Cloud offers EU and US regions only. |
 | **BC Gov ISP (Information Security Policy)** | Credentials stored with restricted permissions (`chmod 600`). Authentication via SiteMinder SSO or Basic Auth. TLS for all network communication. |
 | **OWASP Top 10 — Injection** | Zod schema validation on all tool parameters. SSH command allowlist prevents shell injection. |
 | **OWASP Top 10 — Broken Access Control** | All operations use the authenticated user's permissions. No privilege escalation. |
@@ -791,12 +792,12 @@ Stored in `~/.raven/.env` (not committed to version control). The table below li
 | `ATLASSIAN_PASSWORD` | User's IDIR password | Basic Auth |
 | `RAVEN_SCRUB_PI` | Enable PI scrubbing (`true`/`1`) | All servers |
 | `SERVER_A_PASSWORD` | SSH and sudo password for servers | Server Monitor, IMIS |
-| `ADO_BASE_URL` | Azure DevOps base URL (defaults to `https://dev.azure.com`; override for Server) | Azure DevOps |
+| `ADO_BASE_URL` | Required Azure DevOps HTTPS base URL (`https://dev.azure.com` for Cloud or on-prem Server URL) | Azure DevOps |
 | `ADO_DEFAULT_COLLECTION` | Default Azure DevOps Server collection or Services organization | Azure DevOps |
 | `ADO_PAT` | Azure DevOps personal access token | Azure DevOps |
 | `ADO_DEFAULT_PROJECT` | Default Azure DevOps project | Azure DevOps |
 | `JARVIS_TOKEN` | Jarvis API token | Jarvis |
-| `SONARQUBE_URL` | SonarQube base URL (defaults to `https://sonarcloud.io`) | Sonar |
+| `SONARQUBE_URL` | Required SonarQube HTTPS base URL (`https://sonarcloud.io` or `https://sonarqube.us` for Cloud, or on-prem Server URL) | Sonar |
 | `SONARQUBE_TOKEN` | SonarQube user token | Sonar |
 | `SONAR_SCANNER_BIN` | Optional path to the local sonar-scanner binary | Sonar (`sonar_run_scan`) |
 | `JENKINS_URL` / `JENKINS_BASE_URL` | HTTPS Jenkins controller base URL; HTTP is rejected before authentication | Jenkins |

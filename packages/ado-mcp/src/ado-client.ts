@@ -27,9 +27,22 @@ import type {
  * Base URL: https://dev.azure.com for Services, or https://{server} for Server.
  * The collection argument is the organization name for Services.
  *
- * All requests target api-version 7.1 (supported by ADO Server 2020+).
- * Earlier versions (2019) can use 5.1 — override with ADO_API_VERSION env var.
+ * Requests default to api-version 7.1 (Services and Server 2022+).
+ * Set ADO_API_VERSION=6.0 for Server 2020 or 5.0 for Server 2019.
  */
+function pathSegment(value: string): string {
+  let decoded = value;
+  try {
+    decoded = decodeURIComponent(value);
+  } catch {
+    // A literal percent sign is a valid name character; encodeURIComponent escapes it.
+  }
+  if (decoded === "." || decoded === "..") {
+    throw new Error("ADO path segment must not be a dot segment.");
+  }
+  return encodeURIComponent(value);
+}
+
 export class AdoClient {
   readonly isCloud: boolean;
   private baseUrl: string;
@@ -41,8 +54,17 @@ export class AdoClient {
     // Strip trailing slashes (string-based to avoid ReDoS-vulnerable regex)
     let url = baseUrl;
     while (url.endsWith("/")) url = url.slice(0, -1);
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") throw new Error("ADO_BASE_URL must use HTTPS.");
+    if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+      throw new Error("ADO_BASE_URL must not contain credentials, a query, or a fragment.");
+    }
+    const pathStart = url.indexOf("/", url.indexOf("://") + 3);
+    if (parsed.hostname === "dev.azure.com" && pathStart !== -1) {
+      throw new Error("For Cloud, set ADO_BASE_URL=https://dev.azure.com and the organization in ADO_DEFAULT_COLLECTION.");
+    }
     this.baseUrl = url;
-    this.isCloud = new URL(url).hostname === "dev.azure.com";
+    this.isCloud = parsed.hostname === "dev.azure.com";
     this.apiVersion = apiVersion;
     // PAT auth: empty username, PAT as password
     this.authHeader = `Basic ${Buffer.from(`:${pat}`).toString("base64")}`;
@@ -60,12 +82,13 @@ export class AdoClient {
     const { params, ...fetchOpts } = options ?? {};
     const separator = path.includes("?") ? "&" : "?";
     const query = params
-      ? `${separator}${new URLSearchParams({ ...params, "api-version": this.apiVersion })}`
+      ? `${separator}${new URLSearchParams({ ...params, "api-version": params["api-version"] ?? this.apiVersion })}`
       : `${separator}api-version=${this.apiVersion}`;
     const url = `${this.baseUrl}/${path.replace(/^\//, "")}${query}`;
 
     const resp = await this.fetchFn(url, {
       ...fetchOpts,
+      redirect: "error",
       headers: {
         Authorization: this.authHeader,
         "Content-Type": "application/json",
@@ -94,17 +117,20 @@ export class AdoClient {
   private async listAllPages<T>(path: string): Promise<T[]> {
     const values: T[] = [];
     let continuationToken: string | undefined;
+    const seenTokens = new Set<string>();
 
     do {
+      if (seenTokens.size >= 1000) throw new Error("ADO API exceeded the pagination limit (1000 pages).");
       const page = await this.requestPage<{ value?: T[] }>(
         path,
         continuationToken ? { params: { continuationToken } } : undefined
       );
       values.push(...(page.data.value ?? []));
-      if (page.continuationToken && page.continuationToken === continuationToken) {
+      if (page.continuationToken && seenTokens.has(page.continuationToken)) {
         throw new Error("ADO API returned a repeated continuation token.");
       }
       continuationToken = page.continuationToken;
+      if (continuationToken) seenTokens.add(continuationToken);
     } while (continuationToken);
 
     return values;
@@ -117,8 +143,8 @@ export class AdoClient {
   /** Build the URL path prefix for a project, optionally scoped to a collection. */
   private projectPrefix(project: string, collection?: string): string {
     return collection
-      ? `${encodeURIComponent(collection)}/${encodeURIComponent(project)}`
-      : encodeURIComponent(project);
+      ? `${pathSegment(collection)}/${pathSegment(project)}`
+      : pathSegment(project);
   }
 
   /**
@@ -178,7 +204,7 @@ export class AdoClient {
    */
   async createWorkItem(type: string, project: string, ops: AdoPatchOperation[], collection?: string): Promise<AdoWorkItem> {
     return this.request<AdoWorkItem>(
-      `${this.projectPrefix(project, collection)}/_apis/wit/workitems/${encodeURIComponent("$" + type)}`,
+      `${this.projectPrefix(project, collection)}/_apis/wit/workitems/${pathSegment("$" + type)}`,
       {
         method: "POST",
         body: JSON.stringify(ops),
@@ -204,18 +230,26 @@ export class AdoClient {
 
   /** Get comments on a work item. */
   async getWorkItemComments(id: number, project: string, collection?: string): Promise<AdoWorkItemCommentsPage> {
+    if (!["6.0", "7.0", "7.1"].includes(this.apiVersion)) {
+      throw new Error(`Work item comments are not supported by this client with ADO_API_VERSION=${this.apiVersion}.`);
+    }
     return this.request<AdoWorkItemCommentsPage>(
-      `${this.projectPrefix(project, collection)}/_apis/wit/workitems/${id}/comments`
+      `${this.projectPrefix(project, collection)}/_apis/wit/workitems/${id}/comments`,
+      { params: { "api-version": this.apiVersion === "7.1" ? "7.1-preview.4" : `${this.apiVersion}-preview.3` } }
     );
   }
 
   /** Add a comment to a work item. */
   async addWorkItemComment(id: number, project: string, text: string, collection?: string): Promise<void> {
+    if (!["6.0", "7.0", "7.1"].includes(this.apiVersion)) {
+      throw new Error(`Adding work item comments is not supported by this client with ADO_API_VERSION=${this.apiVersion}.`);
+    }
     await this.request(
       `${this.projectPrefix(project, collection)}/_apis/wit/workitems/${id}/comments`,
       {
         method: "POST",
         body: JSON.stringify({ text }),
+        params: { "api-version": this.apiVersion === "7.1" ? "7.0-preview.3" : `${this.apiVersion}-preview.3` },
       }
     );
   }
@@ -234,7 +268,7 @@ export class AdoClient {
   /** Get a single repository by name or ID. */
   async getRepository(project: string, repoNameOrId: string, collection?: string): Promise<AdoRepository> {
     return this.request<AdoRepository>(
-      `${this.projectPrefix(project, collection)}/_apis/git/repositories/${encodeURIComponent(repoNameOrId)}`
+      `${this.projectPrefix(project, collection)}/_apis/git/repositories/${pathSegment(repoNameOrId)}`
     );
   }
 
@@ -246,7 +280,7 @@ export class AdoClient {
   async listBranches(project: string, repoNameOrId: string, filter?: string, collection?: string): Promise<AdoGitRefList> {
     const params: Record<string, string> = { filterContains: filter ?? "" };
     return this.request<AdoGitRefList>(
-      `${this.projectPrefix(project, collection)}/_apis/git/repositories/${encodeURIComponent(repoNameOrId)}/refs`,
+      `${this.projectPrefix(project, collection)}/_apis/git/repositories/${pathSegment(repoNameOrId)}/refs`,
       { params }
     );
   }
@@ -267,7 +301,7 @@ export class AdoClient {
     collection?: string
   ): Promise<AdoGitItemList> {
     return this.request<AdoGitItemList>(
-      `${this.projectPrefix(project, collection)}/_apis/git/repositories/${encodeURIComponent(repoNameOrId)}/items`,
+      `${this.projectPrefix(project, collection)}/_apis/git/repositories/${pathSegment(repoNameOrId)}/items`,
       {
         params: {
           scopePath: path,
@@ -291,14 +325,13 @@ export class AdoClient {
     branch: string = "main",
     collection?: string
   ): Promise<string> {
-    const prefix = collection
-      ? `${encodeURIComponent(collection)}/${encodeURIComponent(project)}`
-      : encodeURIComponent(project);
+    const prefix = this.projectPrefix(project, collection);
     const url =
-      `${this.baseUrl}/${prefix}/_apis/git/repositories/${encodeURIComponent(repoNameOrId)}/items` +
+      `${this.baseUrl}/${prefix}/_apis/git/repositories/${pathSegment(repoNameOrId)}/items` +
       `?path=${encodeURIComponent(path)}&versionDescriptor=${encodeURIComponent(branch)}&versionType=branch&api-version=${this.apiVersion}`;
 
     const resp = await this.fetchFn(url, {
+      redirect: "error",
       headers: {
         Authorization: this.authHeader,
         Accept: "text/plain",
@@ -324,7 +357,7 @@ export class AdoClient {
     collection?: string
   ): Promise<AdoPullRequestList> {
     return this.request<AdoPullRequestList>(
-      `${this.projectPrefix(project, collection)}/_apis/git/repositories/${encodeURIComponent(repoNameOrId)}/pullrequests`,
+      `${this.projectPrefix(project, collection)}/_apis/git/repositories/${pathSegment(repoNameOrId)}/pullrequests`,
       {
         params: {
           "searchCriteria.status": status,
@@ -337,7 +370,7 @@ export class AdoClient {
   /** Get a single pull request by ID. */
   async getPullRequest(project: string, repoNameOrId: string, prId: number, collection?: string): Promise<AdoPullRequest> {
     return this.request<AdoPullRequest>(
-      `${this.projectPrefix(project, collection)}/_apis/git/repositories/${encodeURIComponent(repoNameOrId)}/pullrequests/${prId}`
+      `${this.projectPrefix(project, collection)}/_apis/git/repositories/${pathSegment(repoNameOrId)}/pullrequests/${prId}`
     );
   }
 
@@ -356,7 +389,7 @@ export class AdoClient {
     collection?: string
   ): Promise<AdoPullRequest> {
     return this.request<AdoPullRequest>(
-      `${this.projectPrefix(project, collection)}/_apis/git/repositories/${encodeURIComponent(repoNameOrId)}/pullrequests`,
+      `${this.projectPrefix(project, collection)}/_apis/git/repositories/${pathSegment(repoNameOrId)}/pullrequests`,
       {
         method: "POST",
         body: JSON.stringify(payload),
@@ -400,7 +433,7 @@ export class AdoClient {
   /** List team projects in a collection (or Cloud organization). */
   async listProjects(collection: string, top = 200): Promise<AdoProjectList> {
     const value = await this.listAllPages<AdoProject>(
-      `${encodeURIComponent(collection)}/_apis/projects?$top=${top}`
+      `${pathSegment(collection)}/_apis/projects?$top=${top}`
     );
     return { value, count: value.length };
   }

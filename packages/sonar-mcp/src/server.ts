@@ -17,7 +17,14 @@ const safeErr = (err: unknown) => pi.scrubText(err instanceof Error ? err.messag
 // Global config (server URL + global Sonar properties)
 // ---------------------------------------------------------------------------
 function getServerUrl(): string {
-  return process.env.SONARQUBE_URL || "https://sonarcloud.io";
+  const url = process.env.SONARQUBE_URL?.trim();
+  if (!url) throw new Error("SONARQUBE_URL is not set. Configure an explicit HTTPS SonarQube Cloud or Server URL.");
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:") throw new Error("SONARQUBE_URL must use HTTPS.");
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error("SONARQUBE_URL must not contain credentials, a query, or a fragment.");
+  }
+  return url;
 }
 function getToken(): string {
   const t = process.env.SONARQUBE_TOKEN;
@@ -65,7 +72,7 @@ export function createSonarServer(): McpServer {
     { name: "RAVEN SonarQube", version: "0.1.0" },
     {
       instructions:
-        "SonarQube tools for RAVEN. Defaults to SonarQube Cloud; set SONARQUBE_URL " +
+        "SonarQube tools for RAVEN. Set SONARQUBE_URL explicitly to the Cloud or Server HTTPS URL; " +
         "for a SonarQube Server instance. Branch-aware endpoints require branch support.",
     },
   );
