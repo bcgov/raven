@@ -24,7 +24,8 @@
     "packages/rfcbuddy-mcp",
     "packages/artifactory-mcp",
     "packages/sharepoint-mcp",
-    "packages/github-mcp"
+    "packages/github-mcp",
+    "packages/sysdig-mcp"
   ],
   "scripts": {
     "build": "tsc --build",

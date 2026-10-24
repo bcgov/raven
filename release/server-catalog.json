@@ -149,6 +149,14 @@
       "entrypoint": "packages/github-mcp/dist/index.js",
       "launcher": "raven-github",
       "access": "read-write"
+    },
+    {
+      "id": "sysdig-secure-mcp",
+      "package": "@nrs/sysdig-mcp",
+      "packageVersion": "0.2.0",
+      "entrypoint": "packages/sysdig-mcp/dist/index.js",
+      "launcher": "raven-sysdig-mcp",
+      "access": "read-only"
     }
   ]
 }

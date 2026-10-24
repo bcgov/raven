@@ -15,15 +15,16 @@
 
 | | Count |
 |---|---|
-| MCP servers | **17** |
+| MCP servers | **18** |
 | Tools registered locally (in-process) | **236** |
 | Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 236 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
-| **Tools advertised to the AI when everything is connected** | **~242** |
-| Mutating / write tools | **~82** (81 local + ~1 via Jarvis) |
-| Read-only tools | **~160** |
+| Tools dynamically proxied by Raven's Sysdig read-only wrapper | Dynamic filtered tool surface (excluded from fixed totals) |
+| **Known tools advertised to the AI when everything is connected** | **~242**, excluding dynamic Sysdig tools |
+| Mutating / write tools | **~82** (81 local + ~1 via Jarvis; Sysdig excluded) |
+| Read-only tools | **~160**, excluding dynamic Sysdig tools |
 | Non-server packages | `auth`, `pipeline`, `server-ui`, `raven-cli` |
 
-Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share one SiteMinder/Basic-Auth session; Server Monitor, IMIS, Azure DevOps / TFS, Sonar, Jenkins, Artifactory, RFC Buddy, and Jarvis authenticate separately via `~/.raven/.env`.
+Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share one SiteMinder/Basic-Auth session; Server Monitor, IMIS, Azure DevOps / TFS, Sonar, Jenkins, Artifactory, RFC Buddy, and Jarvis authenticate separately via `~/.raven/.env`. Sysdig uses the local `sysdig-mcp` read-only OAuth proxy and does not use a Sysdig API token.
 
 ## Read / write summary
 
@@ -47,7 +48,8 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 | GitHub | `github` | 19 | 15 | 34 |
 | **Subtotal (local)** | | **155** | **81** | **236** |
 | Jarvis (remote proxy) | `jarvis` | ~5 | ~1 | ~6 |
-| **Advertised total** | | **~160** | **~82** | **~242** |
+| Sysdig Secure (read-only OAuth proxy) | `sysdig-secure-mcp` | dynamic | 0 | not counted |
+| **Known advertised total** | | **~160** | **~82** | **~242** (excludes dynamic Sysdig tools) |
 
 ## Servers and tools
 
@@ -128,13 +130,18 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 - **Read:** `github_health`, `github_config`, `security_get_sarif_upload_status`, `security_list_code_scanning_alerts`, `security_get_code_scanning_alert`, `security_get_code_scanning_alert_instances`, `security_get_code_scanning_autofix_status`, `security_list_secret_scanning_alerts`, `security_get_secret_scanning_alert`, `security_list_dependabot_alerts`, `security_get_dependabot_alert`, `issue_search`, `pr_get`, `repo_get_security_configuration`, `repo_get_rulesets`, `repo_get_security_summary`, `org_list_security_alerts`, `org_security_summary`, `org_find_repositories_missing_security_controls`
 - **Write:** `security_publish_sarif`, `security_update_code_scanning_alert`, `security_create_code_scanning_autofix`, `security_commit_code_scanning_autofix`, `security_update_secret_scanning_alert`, `security_update_dependabot_alert`, `issue_create`, `issue_update`, `issue_close`, `issue_add_comment`, `pr_create`, `pr_update`, `pr_request_review`, `pr_comment`, `pr_merge`
 
-### Remote proxy (data egress)
+### Remote MCP servers (data egress)
 
 #### jarvis-mcp — dynamic remote proxy — **data egress**
 `jarvis-mcp` registers **zero tools in source**. It is a pass-through proxy: it forwards `tools/list`, `tools/call`, prompts, and resources straight to the remote Jarvis MCP endpoint (`JARVIS_BASE_URL`, required with `JARVIS_TOKEN`) with an `Authorization: Bearer <JARVIS_TOKEN>` header (`packages/jarvis-mcp/src/index.ts`, `config.ts`).
 
 - The tool list is **whatever the remote advertises at runtime** — currently ~6: `get_application`, `list_ministries`, `search_applications`, `list_technologies`, `get_application_provenance` (read) and `update_application` (write). Treat that count as a snapshot, not a fixed contract.
-- **This is the only server that proxies MCP traffic to a remote endpoint.** Every RAVEN server makes outbound calls to its upstream; what's unique to Jarvis is that it forwards opaque MCP requests/responses to a separately-hosted BC Gov API whose tool surface is defined remotely, rather than running a fixed local tool set. Relevant to the "local-only" framing and to FOIPPA/data-residency review — see `SYSTEM_DESIGN_AND_ARCHITECTURE.md`.
+- It forwards opaque MCP requests/responses to a separately-hosted BC Gov API whose tool surface is defined remotely.
+
+#### Sysdig Secure — Raven read-only OAuth proxy — **data egress**
+The local `sysdig-mcp` package connects to Sysdig's hosted `/mcp/secure` endpoint using Streamable HTTP and its own interactive OAuth flow. It filters the remote catalog to tools explicitly marked read-only or included in Raven's reviewed read-only allowlist, then rechecks the policy before forwarding every call. It does not expose prompts/resources or write-capable tools. OAuth client state and tokens remain in process memory and are not stored in `~/.raven/.env`; users may need to authenticate again after the wrapper process restarts. The default endpoint is US East (`us1`); set `SYSDIG_SECURE_MCP_URL` for another supported region.
+
+Both remote integrations send MCP requests to their configured upstream services. Review each provider's OAuth permissions, data handling, and tool surface for FOIPPA and data-residency requirements.
 
 <!-- GEN:END -->
 
@@ -243,6 +250,7 @@ If dedicated Jenkins credentials are omitted, the server falls back to the cache
 | `RATE_LIMIT_SPO_BURST` | optional | no | sharepoint | token-bucket burst capacity for the SPO host limiter (default 10) |
 | `RATE_LIMIT_SPO_RPS` | optional | no | sharepoint | token-bucket sustained requests/sec for the SPO host limiter (default 4) |
 
+
 ### Server UI + tuning
 | Variable | Required? | Sensitive | Used by | Purpose |
 |----------|-----------|:---------:|---------|---------|
@@ -264,4 +272,4 @@ npm run gen-inventory         # rewrite the GEN block in this file
 npm run gen-inventory:check   # CI gate: fails if the block is stale or any tool lacks a read/write hint
 ```
 
-`jarvis-mcp` is the exception — it registers no tools in source (it proxies a remote surface), so its row is described from a constant in the generator. The env-var table above is still hand-maintained; cross-check it with `grep -rhoE 'process\.env(\.[A-Z_0-9]+|\["[A-Z_0-9]+"\])' packages/*/src scripts`.
+`jarvis-mcp` is the exception among Raven-owned servers — it registers no tools in source (it proxies a remote surface), so its row is described from a constant in the generator. Hosted Sysdig is configured as a remote MCP server directly in `.mcp.json`; its OAuth-managed, dynamic tools are not part of the local generator or fixed tool totals. The env-var table above is still hand-maintained; cross-check it with `grep -rhoE 'process\.env(\.[A-Z_0-9]+|\["[A-Z_0-9]+"\])' packages/*/src scripts`.

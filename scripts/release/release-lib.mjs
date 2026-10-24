@@ -196,7 +196,27 @@ export function validateCatalog(catalog = readJson(catalogPath)) {
       throw new Error(`Catalog entry '${server.id}' does not match .mcp.json.`);
     }
   }
-  const configuredIds = Object.keys(mcp.mcpServers ?? {});
+  const configuredServers = Object.entries(mcp.mcpServers ?? {});
+  for (const [id, configured] of configuredServers) {
+    if (configured.command !== undefined) continue;
+    let url;
+    try {
+      url = new URL(configured.url);
+    } catch {
+      throw new Error(`Remote MCP entry '${id}' must have a valid HTTPS URL.`);
+    }
+    if (
+      configured.type !== "http" ||
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password
+    ) {
+      throw new Error(`Remote MCP entry '${id}' must use OAuth-capable HTTPS Streamable HTTP.`);
+    }
+  }
+  const configuredIds = configuredServers
+    .filter(([, configured]) => configured.command !== undefined)
+    .map(([id]) => id);
   const serverIds = new Set(catalog.servers.map((server) => server.id));
   if (
     configuredIds.some((id) => !serverIds.has(id)) ||

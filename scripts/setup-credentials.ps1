@@ -153,7 +153,6 @@ $githubMerge = Prompt-Value "GITHUB_ENABLE_MERGE" "Enable GitHub PR merge tool? 
 $githubTimeout = Prompt-Value "GITHUB_TIMEOUT_MS" "GitHub request timeout in ms (default 30000)"
 
 Write-Host ""
-
 if ($githubToken -and -not $githubAllowList) {
     Write-Host "Error: GITHUB_REPOSITORY_ALLOWLIST is required when configuring GITHUB_TOKEN." -ForegroundColor Red
     exit 1

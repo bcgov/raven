@@ -30,6 +30,19 @@ test("release catalog matches package metadata and MCP configuration", () => {
   assert.ok(releasedEntries(catalog).length > catalog.servers.length);
 });
 
+test("Sysdig read-only OAuth proxy is bundled as a local stdio server", () => {
+  const catalog = validateCatalog();
+  const mcp = readJson(new URL("../../.mcp.json", import.meta.url));
+  const sysdig = mcp.mcpServers["sysdig-secure-mcp"];
+
+  assert.deepEqual(sysdig, {
+    command: "node",
+    args: ["./packages/sysdig-mcp/dist/index.js"],
+  });
+  assert.equal(catalog.servers.some(({ id }) => id === "sysdig-secure-mcp"), true);
+  assert.equal(catalog.servers.find(({ id }) => id === "sysdig-secure-mcp")?.access, "read-only");
+});
+
 test("major version increases require independent approval", () => {
   assert.equal(requiresMajorApproval("0.2.0", ["0.1.0"]), false);
   assert.equal(requiresMajorApproval("1.0.0", ["0.9.0"]), true);

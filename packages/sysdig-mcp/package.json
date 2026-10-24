@@ -1,0 +1,19 @@
+{
+  "name": "@nrs/sysdig-mcp",
+  "version": "0.2.0",
+  "description": "Read-only OAuth proxy for the hosted Sysdig Secure MCP server",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "raven-sysdig-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.0",
+    "@nrs/auth": "*"
+  }
+}
