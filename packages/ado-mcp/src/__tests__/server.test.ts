@@ -133,6 +133,52 @@ describe("ADO work item history and comments", () => {
       expect(text).toContain("😀… (truncated)");
     });
 
+    it("registers later revision authors and field identities before truncating earlier values", async () => {
+      configure();
+      vi.stubEnv("RAVEN_SCRUB_PI", "true");
+      const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+        count: 2,
+        value: [
+          {
+            id: 1,
+            rev: 1,
+            revisedBy: { displayName: "First Editor" },
+            revisedDate: "2026-10-01T12:00:00Z",
+            fields: {
+              "System.Description": { newValue: `${"x".repeat(495)} Amara Boundary` },
+              "System.Title": { newValue: `${"y".repeat(495)} Nora Westfall` },
+              "System.Tags": { newValue: `${"z".repeat(495)} Elena Cedarwood` },
+            },
+          },
+          {
+            id: 2,
+            rev: 2,
+            revisedBy: { displayName: "Amara Boundary" },
+            revisedDate: "2026-10-02T12:00:00Z",
+            fields: {
+              "System.AssignedTo": {
+                oldValue: { displayName: "Nora Westfall" },
+                newValue: { displayName: "Elena Cedarwood" },
+              },
+            },
+          },
+        ],
+      })));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const result = await callAdoTool("get_work_item_history", { id: 42 });
+      expect(result.isError).not.toBe(true);
+      const text = JSON.stringify(result.content);
+      expect(text).not.toContain(" Amar…");
+      expect(text).not.toContain(" Nora…");
+      expect(text).not.toContain(" Elen…");
+      expect(text).not.toContain("Amara Boundary");
+      expect(text).not.toContain("Nora Westfall");
+      expect(text).not.toContain("Elena Cedarwood");
+      expect(text).toMatch(/System\.AssignedTo: Person-\d+ → Person-\d+/);
+      expect(text).toContain("Revision 2");
+    });
+
     it("posts the comment unchanged and reports success only after ADO accepts it", async () => {
       configure();
       const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ id: 7, text: "ᐊᓂ e\u0313" })));
@@ -292,7 +338,7 @@ describe("ADO Cloud and Server configuration", () => {
     expect(result.isError).not.toBe(true);
     const response = JSON.stringify(result.content);
     expect(response).toContain("Person-1");
-    expect(response).toContain("Person-2");
+    expect(response).toMatch(/Comments:.*Person-\d+/s);
     expect(response).toContain("[EMAIL]");
     expect(response).not.toContain("Jane Smith");
     expect(response).not.toContain("John Doe");

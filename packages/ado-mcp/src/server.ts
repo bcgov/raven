@@ -39,10 +39,17 @@ function formatWorkItem(item: AdoWorkItem): string {
   return pi.scrubText(lines.join("\n"));
 }
 
+function historyDisplayName(value: unknown): string | undefined {
+  return typeof value === "object" && value !== null && "displayName" in value && typeof value.displayName === "string"
+    ? value.displayName
+    : undefined;
+}
+
 function historyValue(value: unknown): string {
+  const displayName = historyDisplayName(value);
   const text = value === undefined ? "(unset)"
-    : typeof value === "object" && value !== null && "displayName" in value && typeof value.displayName === "string"
-      ? pi.scrub(value.displayName) ?? ""
+    : displayName !== undefined
+      ? pi.scrub(displayName) ?? ""
       : typeof value === "string" ? value : JSON.stringify(value);
   const plain = pi.scrubText(sanitizeHtml(text, { allowedTags: [], allowedAttributes: {} }).replace(/\s{2,}/g, " ").trim());
   let shown = "";
@@ -212,6 +219,16 @@ Returns the top matching work items with their titles, types, states, and priori
       try {
         const ado = getClient();
         const updates = await ado.getWorkItemUpdates(id, defaultProject(project), top, skip, defaultCollection(collection));
+        // Register every page identity before truncating any earlier field text.
+        for (const update of updates.value) {
+          pi.scrub(update.revisedBy.displayName);
+          for (const change of Object.values(update.fields ?? {})) {
+            for (const value of [change.oldValue, change.newValue]) {
+              const displayName = historyDisplayName(value);
+              if (displayName !== undefined) pi.scrub(displayName);
+            }
+          }
+        }
         const text = updates.value.length
           ? updates.value.map(formatWorkItemUpdate).join("\n\n")
           : "No updates in this page.";
