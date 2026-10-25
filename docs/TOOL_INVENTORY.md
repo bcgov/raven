@@ -16,11 +16,11 @@
 | | Count |
 |---|---|
 | MCP servers | **17** |
-| Tools registered locally (in-process) | **236** |
-| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 236 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
-| **Tools advertised to the AI when everything is connected** | **~242** |
+| Tools registered locally (in-process) | **237** |
+| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 237 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
+| **Tools advertised to the AI when everything is connected** | **~243** |
 | Mutating / write tools | **~82** (81 local + ~1 via Jarvis) |
-| Read-only tools | **~160** |
+| Read-only tools | **~161** |
 | Non-server packages | `auth`, `pipeline`, `server-ui`, `raven-cli` |
 
 Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share one SiteMinder/Basic-Auth session; Server Monitor, IMIS, Azure DevOps / TFS, Sonar, Jenkins, Artifactory, RFC Buddy, and Jarvis authenticate separately via `~/.raven/.env`.
@@ -38,16 +38,16 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 | Bug Classifier | `bug-classifier` | 1 | 0 | 1 |
 | Server Monitor | `server-monitor` | 7 | 0 | 7 |
 | IMIS | `imis` | 6 | 0 | 6 |
-| Azure DevOps / TFS | `ado` | 12 | 4 | 16 |
+| Azure DevOps / TFS | `ado` | 13 | 4 | 17 |
 | Sonar | `sonar` | 6 | 1 | 7 |
 | Jenkins | `jenkins` | 19 | 15 | 34 |
 | RFC Buddy | `rfcbuddy` | 0 | 1 | 1 |
 | Artifactory | `artifactory` | 12 | 7 | 19 |
 | SharePoint | `sharepoint` | 9 | 0 | 9 |
 | GitHub | `github` | 19 | 15 | 34 |
-| **Subtotal (local)** | | **155** | **81** | **236** |
+| **Subtotal (local)** | | **156** | **81** | **237** |
 | Jarvis (remote proxy) | `jarvis` | ~5 | ~1 | ~6 |
-| **Advertised total** | | **~160** | **~82** | **~242** |
+| **Advertised total** | | **~161** | **~82** | **~243** |
 
 ## Servers and tools
 
@@ -89,8 +89,8 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 
 ### Azure DevOps / TFS
 
-#### ado-mcp — 16 tools (12 read / 4 write)
-- **Read:** `search_work_items`, `get_work_item`, `list_repos`, `list_branches`, `browse_files`, `read_file`, `list_pull_requests`, `get_pull_request`, `list_projects`, `list_pipelines`, `list_build_pipelines`, `list_release_pipelines`
+#### ado-mcp — 17 tools (13 read / 4 write)
+- **Read:** `search_work_items`, `get_work_item`, `get_work_item_history`, `list_repos`, `list_branches`, `browse_files`, `read_file`, `list_pull_requests`, `get_pull_request`, `list_projects`, `list_pipelines`, `list_build_pipelines`, `list_release_pipelines`
 - **Write:** `create_work_item`, `update_work_item`, `add_work_item_comment`, `create_pull_request`
 
 ### Code quality

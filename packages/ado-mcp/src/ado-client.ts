@@ -2,6 +2,7 @@ import type {
   AdoWiqlResult,
   AdoWorkItem,
   AdoWorkItemCommentsPage,
+  AdoWorkItemUpdatesPage,
   AdoRepository,
   AdoRepositoryList,
   AdoGitRefList,
@@ -194,6 +195,16 @@ export class AdoClient {
     return this.request<AdoWorkItem>(
       `${this.projectPrefix(project, collection)}/_apis/wit/workitems/${id}`,
       { params: { "$expand": "all" } }
+    );
+  }
+
+  /** Get a page of work item field and relationship changes, in revision order. */
+  async getWorkItemUpdates(
+    id: number, project: string, top: number, skip: number, collection?: string
+  ): Promise<AdoWorkItemUpdatesPage> {
+    return this.request<AdoWorkItemUpdatesPage>(
+      `${this.projectPrefix(project, collection)}/_apis/wit/workitems/${id}/updates`,
+      { params: { "$top": String(top), "$skip": String(skip) } }
     );
   }
 

@@ -116,6 +116,26 @@ describe("AdoClient constructor", () => {
 // ---------------------------------------------------------------------------
 
 describe("URL path building with collection", () => {
+  it("reads paged work item updates with the configured API version and collection", async () => {
+    const updates = { count: 1, value: [{ id: 3, rev: 3, fields: { "System.State": { oldValue: "New", newValue: "Active" } } }] };
+    const mockFetch = createMockFetch({ ok: true, status: 200, body: updates });
+    const client = new AdoClient("https://ado.example.com/tfs", "pat", "6.0", mockFetch as typeof fetch);
+
+    expect(await client.getWorkItemUpdates(42, "My Project", 10, 20, "My Collection")).toEqual(updates);
+    const url = new URL(mockFetch.mock.calls[0][0]);
+    expect(url.pathname).toBe("/tfs/My%20Collection/My%20Project/_apis/wit/workitems/42/updates");
+    expect(url.searchParams.get("$top")).toBe("10");
+    expect(url.searchParams.get("$skip")).toBe("20");
+    expect(url.searchParams.get("api-version")).toBe("6.0");
+    expect(mockFetch.mock.calls[0][1].method).toBeUndefined();
+  });
+
+  it("propagates work item updates API errors", async () => {
+    const mockFetch = createMockFetch({ ok: false, status: 404, statusText: "Not Found" });
+    const client = new AdoClient("https://ado.example.com", "pat", "7.1", mockFetch as typeof fetch);
+    await expect(client.getWorkItemUpdates(42, "Proj", 20, 0)).rejects.toThrow("ADO API error 404 Not Found");
+  });
+
   it("rejects dot segments before building request URLs", async () => {
     const mockFetch = createMockFetch({ ok: true, status: 200, body: { value: [] } });
     const client = new AdoClient("https://ado.example.com/tfs", "pat", "7.1", mockFetch as any);

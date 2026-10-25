@@ -334,7 +334,7 @@ Query the Jira Assets (Insight) CMDB for ministry applications, environments, te
 
 **IMPORTANT — PR target branch:** Most BC Gov repos do NOT have a `main` branch. The default target for PRs should be the **release branch** you branched from (e.g., `release/2.0.3`), NOT `main`. Always set `toBranch` to the release branch.
 
-### Azure DevOps / TFS (16 tools)
+### Azure DevOps / TFS
 
 Azure DevOps Services and on-prem Server / TFS — work items (WIQL), repos, pull requests, YAML/designer pipelines, classic build pipelines, and Server classic release pipelines. Set `ADO_BASE_URL` explicitly to `https://dev.azure.com` for Cloud or the Server HTTPS base URL; set `ADO_DEFAULT_COLLECTION` to the Cloud organization or Server collection. Set `ADO_PAT` in `~/.raven/.env`. Tools except `list_projects` accept a `collection` override; Cloud `list_projects` requires `ADO_DEFAULT_COLLECTION`. Use Server tools for TFS URLs with collection/project paths and `/_build` or `/_release` routes.
 Classic release definitions on Azure DevOps Services use a separate `vsrm.dev.azure.com` host; `list_release_pipelines` does not switch hosts and is intended for Server.
@@ -343,6 +343,7 @@ Classic release definitions on Azure DevOps Services use a separate `vsrm.dev.az
 - `list_projects` — List projects in the configured Cloud organization or across all Server collections.
 - `search_work_items` — Search work items via WIQL.
 - `get_work_item` — Full work-item details by ID.
+- `get_work_item_history` — Paged field and relationship changes by work-item ID. Use `top` (1–100) and `skip` for pagination.
 - `list_repos` / `list_branches` — Repos and branches in a project.
 - `browse_files` / `read_file` — Browse and read repo files.
 - `list_pull_requests` / `get_pull_request` — PR list and details.

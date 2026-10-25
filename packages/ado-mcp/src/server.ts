@@ -3,9 +3,10 @@ import { z } from "zod";
 import sanitizeHtml from "sanitize-html";
 import { PiScrubber } from "@nrs/auth";
 import { AdoClient } from "./ado-client.js";
-import type { AdoWorkItem, AdoPatchOperation } from "./types.js";
+import type { AdoWorkItem, AdoWorkItemUpdate, AdoPatchOperation } from "./types.js";
 
 const pi = new PiScrubber();
+const historySegmenter = new Intl.Segmenter("und", { granularity: "grapheme" });
 
 // ---------------------------------------------------------------------------
 // Formatting helpers
@@ -36,6 +37,30 @@ function formatWorkItem(item: AdoWorkItem): string {
   if (desc) lines.push(`\n**Description:**\n${desc.slice(0, 1500)}`);
   if (repro) lines.push(`\n**Repro Steps:**\n${repro.slice(0, 1500)}`);
   return pi.scrubText(lines.join("\n"));
+}
+
+function historyValue(value: unknown): string {
+  const text = value === undefined ? "(unset)"
+    : typeof value === "object" && value !== null && "displayName" in value && typeof value.displayName === "string"
+      ? pi.scrub(value.displayName) ?? ""
+      : typeof value === "string" ? value : JSON.stringify(value);
+  const plain = pi.scrubText(sanitizeHtml(text, { allowedTags: [], allowedAttributes: {} }).replace(/\s{2,}/g, " ").trim());
+  let shown = "";
+  let count = 0;
+  for (const { segment } of historySegmenter.segment(plain)) {
+    if (count++ === 500) return `${shown}… (truncated)`;
+    shown += segment;
+  }
+  return shown;
+}
+
+function formatWorkItemUpdate(update: AdoWorkItemUpdate): string {
+  const revisedBy = pi.scrub(update.revisedBy.displayName);
+  const fields = Object.entries(update.fields ?? {}).map(
+    ([name, change]) => `- ${name}: ${historyValue(change.oldValue)} → ${historyValue(change.newValue)}`
+  );
+  if (update.relations) fields.push(`- Relations: ${historyValue(update.relations)}`);
+  return `**Revision ${update.rev}** (${update.revisedDate}, ${revisedBy})\n${fields.join("\n") || "- No field or relationship changes"}`;
 }
 
 function refNameToBranch(refName: string): string {
@@ -173,6 +198,33 @@ Returns the top matching work items with their titles, types, states, and priori
   );
 
   server.tool(
+    "get_work_item_history",
+    "Read a page of work item revision history (field and relationship changes) in chronological order. Use skip to read subsequent pages; individual long values are truncated.",
+    {
+      id: z.number().int().positive().describe("Work item ID"),
+      project: z.string().optional().describe("Project name (uses ADO_DEFAULT_PROJECT if omitted)"),
+      collection: z.string().optional().describe("Cloud organization or on-prem collection (uses ADO_DEFAULT_COLLECTION if omitted)"),
+      top: z.number().int().min(1).max(100).default(20).describe("Maximum revisions in this page (1-100)"),
+      skip: z.number().int().min(0).default(0).describe("Number of earlier revisions to skip"),
+    },
+    { readOnlyHint: true },
+    async ({ id, project, collection, top, skip }) => {
+      try {
+        const ado = getClient();
+        const updates = await ado.getWorkItemUpdates(id, defaultProject(project), top, skip, defaultCollection(collection));
+        const text = updates.value.length
+          ? updates.value.map(formatWorkItemUpdate).join("\n\n")
+          : "No updates in this page.";
+        return {
+          content: [{ type: "text", text: pi.scrubText(`Work item #${id} history (skip ${skip}, ${updates.value.length} update(s)):\n\n${text}`) }],
+        };
+      } catch (err) {
+        return { content: [{ type: "text", text: `Error: ${safeErr(err)}` }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
     "create_work_item",
     `Create a new work item in Azure DevOps.
 
@@ -261,7 +313,7 @@ Priority values: 1 (Critical), 2 (High), 3 (Medium), 4 (Low).`,
     "Add a comment to an Azure DevOps work item. HTML is supported.",
     {
       id: z.number().int().describe("Work item ID"),
-      text: z.string().describe("Comment text (HTML allowed)"),
+      text: z.string().refine((value) => value.trim().length > 0, "Comment must not be empty").describe("Non-empty comment text (HTML allowed)"),
       project: z.string().optional().describe("Project name (uses ADO_DEFAULT_PROJECT if omitted)"),
       collection: z.string().optional().describe("Cloud organization or on-prem collection (uses ADO_DEFAULT_COLLECTION if omitted)"),
     },

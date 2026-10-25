@@ -36,6 +36,138 @@ describe("ADO Cloud and Server configuration", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+});
+
+describe("ADO work item history and comments", () => {
+    function configure() {
+      vi.stubEnv("ADO_BASE_URL", "https://dev.azure.com");
+      vi.stubEnv("ADO_DEFAULT_COLLECTION", "my-org");
+      vi.stubEnv("ADO_PAT", "test-pat");
+      vi.stubEnv("ADO_DEFAULT_PROJECT", "MyProject");
+    }
+
+    it("returns paged changes with revised identity and scrubbed multilingual text", async () => {
+      configure();
+      vi.stubEnv("RAVEN_SCRUB_PI", "true");
+      const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+        count: 1,
+        value: [{
+          id: 2,
+          rev: 2,
+          revisedBy: { displayName: "Jane Smith" },
+          revisedDate: "2026-10-01T12:00:00Z",
+          fields: {
+            "System.Title": { oldValue: "Old", newValue: "<p>ᐊᓂ  e\u0313 Jane Smith jane.smith@example.com</p>" },
+            "System.State": { oldValue: "New", newValue: "Active" },
+          },
+          relations: { added: [{ rel: "System.LinkTypes.Related", url: "https://example.com/42" }] },
+        }],
+      })));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const result = await callAdoTool("get_work_item_history", { id: 42, top: 5, skip: 1 });
+      expect(result.isError).not.toBe(true);
+      const text = JSON.stringify(result.content);
+      expect(text).toContain("Revision 2");
+      expect(text).toContain("System.State");
+      expect(text).toContain("New");
+      expect(text).toContain("Active");
+      expect(text).toContain("System.LinkTypes.Related");
+      expect(text).toContain("ᐊᓂ");
+      expect(text).toContain("e\u0313");
+      expect(text).toContain("Person-1");
+      expect(text).toContain("[EMAIL]");
+      expect(text).not.toContain("Jane Smith");
+      expect(text).not.toContain("jane.smith@example.com");
+      expect(text).not.toContain("<p>");
+      const url = new URL(String(fetchMock.mock.calls[0][0]));
+      expect(url.pathname).toBe("/my-org/MyProject/_apis/wit/workitems/42/updates");
+      expect(url.searchParams.get("$top")).toBe("5");
+      expect(url.searchParams.get("$skip")).toBe("1");
+    });
+
+    it("reports upstream history errors instead of an empty history", async () => {
+      configure();
+      const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response("Not Found", { status: 404 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const result = await callAdoTool("get_work_item_history", { id: 42 });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain("ADO API error 404");
+    });
+
+    it("returns a genuine empty history page without a false total", async () => {
+      configure();
+      const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ count: 0, value: [] })));
+      vi.stubGlobal("fetch", fetchMock);
+      const result = await callAdoTool("get_work_item_history", { id: 42, skip: 100 });
+      expect(result.isError).not.toBe(true);
+      expect(JSON.stringify(result.content)).toContain("No updates in this page.");
+    });
+
+    it("scrubs PI before truncating values and preserves Unicode graphemes", async () => {
+      configure();
+      vi.stubEnv("RAVEN_SCRUB_PI", "true");
+      const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+        count: 1,
+        value: [{
+          id: 3,
+          rev: 3,
+          revisedBy: { displayName: "Jane Smith" },
+          revisedDate: "2026-10-01T12:00:00Z",
+          fields: {
+            "System.Description": { newValue: `${"x".repeat(475)} Jane Smith jane.smith@example.com` },
+            "System.Title": { newValue: `${"y".repeat(499)}e\u0313 end` },
+            "System.Tags": { newValue: `${"z".repeat(499)}😀 end` },
+          },
+        }],
+      })));
+      vi.stubGlobal("fetch", fetchMock);
+      const result = await callAdoTool("get_work_item_history", { id: 42 });
+      expect(result.isError).not.toBe(true);
+      const text = JSON.stringify(result.content);
+      expect(text).toContain("Person-1");
+      expect(text).toContain("[EMAIL]");
+      expect(text).not.toContain("jane.smith@");
+      expect(text).not.toContain("Jane Smi");
+      expect(text).toContain("e\u0313… (truncated)");
+      expect(text).toContain("😀… (truncated)");
+    });
+
+    it("posts the comment unchanged and reports success only after ADO accepts it", async () => {
+      configure();
+      const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ id: 7, text: "ᐊᓂ e\u0313" })));
+      vi.stubGlobal("fetch", fetchMock);
+      const result = await callAdoTool("add_work_item_comment", { id: 42, text: "ᐊᓂ e\u0313" });
+      expect(result.isError).not.toBe(true);
+      expect(JSON.stringify(result.content)).toContain("Comment added to work item #42");
+      const [rawUrl, options] = fetchMock.mock.calls[0];
+      const url = new URL(String(rawUrl));
+      expect(url.pathname).toBe("/my-org/MyProject/_apis/wit/workitems/42/comments");
+      expect(url.searchParams.get("api-version")).toBe("7.0-preview.3");
+      expect(options?.method).toBe("POST");
+      expect(options?.body).toBe(JSON.stringify({ text: "ᐊᓂ e\u0313" }));
+    });
+
+    it("rejects an empty comment before posting", async () => {
+      configure();
+      const fetchMock = vi.fn<typeof fetch>();
+      vi.stubGlobal("fetch", fetchMock);
+      const result = await callAdoTool("add_work_item_comment", { id: 42, text: " \n " });
+      expect(result.isError).toBe(true);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("reports comment write failures", async () => {
+      configure();
+      const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response("Forbidden", { status: 403 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const result = await callAdoTool("add_work_item_comment", { id: 42, text: "hello" });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain("ADO API error 403");
+    });
+});
+
+describe("ADO Cloud and Server configuration", () => {
   it("uses the configured organization for Cloud projects and repository requests", async () => {
     vi.stubEnv("ADO_BASE_URL", "https://dev.azure.com");
     vi.stubEnv("ADO_DEFAULT_COLLECTION", "my-org");

@@ -154,6 +154,8 @@ ADO_DEFAULT_PROJECT=<default team project name>
 
 For Cloud, keep `ADO_BASE_URL` at the host root; put the organization only in `ADO_DEFAULT_COLLECTION` (or a tool's `collection` argument). Supplying it in both places duplicates the path. Work-item comments use the documented preview API on 6.0/7.0/7.1; older API versions do not support comment operations in this client.
 
+Use `get_work_item_history` with a work item `id` to read field and relationship changes in revision order. It returns 20 updates by default (up to 100); use `skip` to page forward. Long individual values are truncated in the tool output. Use `add_work_item_comment` with `id` and non-empty `text` to post a comment; confirm this write action with the user first. Both tools accept optional `project` and `collection` overrides.
+
 Classic release definitions on Azure DevOps Services use a separate `vsrm.dev.azure.com` host; `list_release_pipelines` supports Server only and reports an explicit error for Cloud rather than switching hosts.
 
 Optional Jarvis API settings:

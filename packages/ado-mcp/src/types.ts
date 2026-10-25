@@ -40,6 +40,21 @@ export interface AdoWorkItemCommentsPage {
   totalCount: number;
 }
 
+/** A work item revision's changed fields (values may be identities or HTML). */
+export interface AdoWorkItemUpdate {
+  id: number;
+  rev: number;
+  revisedBy: AdoIdentityRef;
+  revisedDate: string;
+  fields?: Record<string, { oldValue?: unknown; newValue?: unknown }>;
+  relations?: Record<string, unknown>;
+}
+
+export interface AdoWorkItemUpdatesPage {
+  value: AdoWorkItemUpdate[];
+  count: number;
+}
+
 /** Identity reference used across ADO types. */
 export interface AdoIdentityRef {
   displayName: string;
