@@ -27,6 +27,7 @@ RAVEN gives your local LLM direct access to our Atlassian tools via [MCP (Model 
 | **Artifactory** | Repositories, artifacts, checksums, properties, AQL searches, build-info, protected transfers, and guarded copy/move/delete operations |
 | **Jenkins** | Inspect and configure jobs; run and monitor builds; manage queue items, artifacts, promotions, and credential metadata/lifecycle |
 | **GitHub** | GHAS security: publish SARIF findings to code scanning; triage code/secret/Dependabot alerts; issues, PRs, and org security posture — all gated by a repository allow-list |
+| **Sysdig Secure** | Sysdig's US-East-hosted MCP server, connected directly by your MCP client with browser OAuth; tools and permissions are managed by Sysdig |
 | **RFC Buddy** | Filter and search RFCs from current/completed schedule; updates/advances the API-side baseline |
 | **Health** | Sprint velocity, issue aging, composite health scores, workload, portfolio comparison |
 | **Overview** | One-shot cross-system project summary (Jira + Confluence + Bitbucket) |
@@ -34,6 +35,8 @@ RAVEN gives your local LLM direct access to our Atlassian tools via [MCP (Model 
 | **Jarvis** | Query the central Jarvis application inventory (dynamic proxy to a BC Gov API) |
 
 See **[`docs/TOOL_INVENTORY.md`](docs/TOOL_INVENTORY.md)** for the complete tool catalog, per-server counts, and the read/write split. The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share a single authentication session — log in once, use everywhere. Server Monitor, IMIS, Azure DevOps, Jarvis, Sonar, Jenkins, Artifactory, RFC Buddy, SharePoint, and GitHub authenticate separately via credentials in `~/.raven/.env`.
+
+Sysdig Secure is configured in [`.mcp.json`](.mcp.json) as a remote `type: "http"` MCP server at `https://secure.sysdig.com/mcp/secure`. Raven runs no Sysdig code and stores no Sysdig credentials: sign in through your MCP client (in VS Code, choose **Sign in** for `sysdig-secure-mcp` in the MCP servers panel) and the client handles OAuth. The available tools and what they may change are defined by Sysdig and limited by your Sysdig role; Sysdig responses do not pass through Raven's PI scrubber. Sysdig Secure MCP is a US-East-hosted third-party service; its Security Threat and Risk Assessment (STRA) has been completed and data sovereignty has been acknowledged. For another Sysdig region, change the URL to that region's `/mcp/secure` endpoint. Copilot cloud agent and code review do not support remote OAuth MCP servers. See [Sysdig's hosted MCP documentation](https://docs.sysdig.com/en/sysdig-secure/secure-ai/sysdig-mcp-server/).
 
 ### Autonomous Pipeline (`@nrs/pipeline`)
 

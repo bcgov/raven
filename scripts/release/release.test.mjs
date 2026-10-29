@@ -20,6 +20,7 @@ import {
   requiresMajorApproval,
   smokeTest,
   validateCatalog,
+  validateRemoteMcpEntry,
   writeLaunchers,
 } from "./release-lib.mjs";
 
@@ -28,6 +29,42 @@ test("release catalog matches package metadata and MCP configuration", () => {
   assert.equal(isSemVerCore(catalog.suiteVersion), true);
   assert.ok(catalog.servers.length > 0);
   assert.ok(releasedEntries(catalog).length > catalog.servers.length);
+});
+
+test("hosted Sysdig OAuth MCP uses remote HTTP and is excluded from bundled servers", () => {
+  const catalog = validateCatalog();
+  const mcp = readJson(new URL("../../.mcp.json", import.meta.url));
+  const sysdig = mcp.mcpServers["sysdig-secure-mcp"];
+
+  assert.deepEqual(sysdig, {
+    type: "http",
+    url: "https://secure.sysdig.com/mcp/secure",
+  });
+  assert.equal(catalog.servers.some(({ id }) => id === "sysdig-secure-mcp"), false);
+});
+
+test("remote MCP entries must be approved, credential-free HTTPS endpoints", () => {
+  const ok = { type: "http", url: "https://secure.sysdig.com/mcp/secure" };
+  assert.doesNotThrow(() => validateRemoteMcpEntry("sysdig-secure-mcp", ok));
+  assert.doesNotThrow(() =>
+    validateRemoteMcpEntry("sysdig-secure-mcp", { ...ok, url: "https://eu1.app.sysdig.com/mcp/secure" }),
+  );
+  const rejected = [
+    ["unreviewed", ok, /not an approved remote server/],
+    ["__proto__", ok, /not an approved remote server/],
+    ["sysdig-secure-mcp", { ...ok, headers: { Authorization: "Bearer x" } }, /only "type": "http" and "url"/],
+    ["sysdig-secure-mcp", { ...ok, type: "sse" }, /only "type": "http" and "url"/],
+    ["sysdig-secure-mcp", { ...ok, url: "not a url" }, /valid HTTPS URL/],
+    ["sysdig-secure-mcp", { ...ok, url: "http://secure.sysdig.com/mcp/secure" }, /approved HTTPS endpoint/],
+    ["sysdig-secure-mcp", { ...ok, url: "https://attacker.example/mcp/secure" }, /approved HTTPS endpoint/],
+    ["sysdig-secure-mcp", { ...ok, url: "https://sysdig.com.attacker.example/mcp/secure" }, /approved HTTPS endpoint/],
+    ["sysdig-secure-mcp", { ...ok, url: "https://user:pw@secure.sysdig.com/mcp/secure" }, /approved HTTPS endpoint/],
+    ["sysdig-secure-mcp", { ...ok, url: "https://secure.sysdig.com/mcp/secure?token=x" }, /approved HTTPS endpoint/],
+    ["sysdig-secure-mcp", { ...ok, url: "https://secure.sysdig.com/other" }, /approved HTTPS endpoint/],
+  ];
+  for (const [id, entry, message] of rejected) {
+    assert.throws(() => validateRemoteMcpEntry(id, entry), message, `${id} ${JSON.stringify(entry)}`);
+  }
 });
 
 test("major version increases require independent approval", () => {

@@ -8,15 +8,20 @@ export const END = "<!-- GEN:END -->";
 // is described from a constant rather than introspected. Counts are approximate.
 export const JARVIS = { display: "Jarvis", mcpKey: "jarvis", read: 5, write: 1, total: 6 };
 
-export const JARVIS_SECTION = `### Remote proxy (data egress)
+export const JARVIS_SECTION = `### Remote MCP servers (data egress)
 
 #### jarvis-mcp — dynamic remote proxy — **data egress**
 \`jarvis-mcp\` registers **zero tools in source**. It is a pass-through proxy: it forwards \`tools/list\`, \`tools/call\`, prompts, and resources straight to the remote Jarvis MCP endpoint (\`JARVIS_BASE_URL\`, required with \`JARVIS_TOKEN\`) with an \`Authorization: Bearer <JARVIS_TOKEN>\` header (\`packages/jarvis-mcp/src/index.ts\`, \`config.ts\`).
 
 - The tool list is **whatever the remote advertises at runtime** — currently ~6: \`get_application\`, \`list_ministries\`, \`search_applications\`, \`list_technologies\`, \`get_application_provenance\` (read) and \`update_application\` (write). Treat that count as a snapshot, not a fixed contract.
-- **This is the only server that proxies MCP traffic to a remote endpoint.** Every RAVEN server makes outbound calls to its upstream; what's unique to Jarvis is that it forwards opaque MCP requests/responses to a separately-hosted BC Gov API whose tool surface is defined remotely, rather than running a fixed local tool set. Relevant to the "local-only" framing and to FOIPPA/data-residency review — see \`SYSTEM_DESIGN_AND_ARCHITECTURE.md\`.`;
+- It forwards opaque MCP requests/responses to a separately-hosted BC Gov API whose tool surface is defined remotely.
 
-export const INTRO = `Servers map 1:1 to the keys in [\`../.mcp.json\`](../.mcp.json). The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share one SiteMinder/Basic-Auth session; Server Monitor, IMIS, Azure DevOps / TFS, Sonar, Jenkins, Artifactory, RFC Buddy, and Jarvis authenticate separately via \`~/.raven/.env\`.`;
+#### Sysdig Secure — hosted OAuth MCP — **data egress**
+Sysdig is configured directly as the remote \`sysdig-secure-mcp\` in \`.mcp.json\` using Streamable HTTP and interactive OAuth handled by the MCP client. Raven runs no Sysdig package and stores no Sysdig credentials. The tool catalog, including any write-capable tools, is defined by Sysdig and limited by the signed-in user's Sysdig role; responses do **not** pass through Raven's \`PiScrubber\`. Sysdig Secure MCP is a US-East-hosted third-party service; its STRA has been completed and data sovereignty acknowledged. The checked-in URL is US East (\`us1\`); change it to the tenant's regional \`/mcp/secure\` URL if needed. Copilot cloud agent and code review do not support remote OAuth MCP servers.
+
+Both remote integrations send MCP requests to their configured upstream services. Review each provider's OAuth permissions, data handling, and tool surface for FOIPPA and data-residency requirements.`;
+
+export const INTRO = `Servers map 1:1 to the keys in [\`../.mcp.json\`](../.mcp.json). The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share one SiteMinder/Basic-Auth session; Server Monitor, IMIS, Azure DevOps / TFS, Sonar, Jenkins, Artifactory, RFC Buddy, and Jarvis authenticate separately via \`~/.raven/.env\`. Sysdig is a hosted OAuth MCP server and uses no Raven-local credentials.`;
 
 /** Split a server's tools into read / write / missing by their readOnlyHint annotation. */
 export function classify(tools, ctx) {
@@ -48,12 +53,13 @@ export function render(data, opts = {}) {
   const atAGlance = [
     "## At a glance", "",
     "| | Count |", "|---|---|",
-    `| MCP servers | **${data.length + 1}** |`,
+    `| MCP servers | **${data.length + 2}** |`,
     `| Tools registered locally (in-process) | **${localTotal}** |`,
     `| Tools dynamically proxied from the remote Jarvis API | **~${jarvis.total}** (not part of the ${localTotal} — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |`,
-    `| **Tools advertised to the AI when everything is connected** | **~${advertised}** |`,
-    `| Mutating / write tools | **~${localWrite + jarvis.write}** (${localWrite} local + ~${jarvis.write} via Jarvis) |`,
-    `| Read-only tools | **~${localRead + jarvis.read}** |`,
+    "| Tools dynamically hosted by Sysdig Secure | Dynamic OAuth tool surface (excluded from totals) |",
+    `| **Known tools advertised to the AI when everything is connected** | **~${advertised}**, excluding dynamic Sysdig tools |`,
+    `| Mutating / write tools | **~${localWrite + jarvis.write}** (${localWrite} local + ~${jarvis.write} via Jarvis; Sysdig excluded) |`,
+    `| Read-only tools | **~${localRead + jarvis.read}**, excluding dynamic Sysdig tools |`,
     "| Non-server packages | `auth`, `pipeline`, `server-ui`, `raven-cli` |",
     "", intro,
   ];
@@ -65,7 +71,8 @@ export function render(data, opts = {}) {
     ...data.map((s) => `| ${s.display} | \`${s.mcpKey}\` | ${s.read.length} | ${s.write.length} | ${s.total} |`),
     `| **Subtotal (local)** | | **${localRead}** | **${localWrite}** | **${localTotal}** |`,
     `| Jarvis (remote proxy) | \`jarvis\` | ~${jarvis.read} | ~${jarvis.write} | ~${jarvis.total} |`,
-    `| **Advertised total** | | **~${localRead + jarvis.read}** | **~${localWrite + jarvis.write}** | **~${advertised}** |`,
+    "| Sysdig Secure (hosted OAuth) | `sysdig-secure-mcp` | dynamic | dynamic | not counted |",
+    `| **Known advertised total** | | **~${localRead + jarvis.read}** | **~${localWrite + jarvis.write}** | **~${advertised}** (excludes dynamic Sysdig tools) |`,
   ];
 
   const sections = ["## Servers and tools"];

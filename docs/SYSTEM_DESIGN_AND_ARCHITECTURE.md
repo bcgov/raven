@@ -34,7 +34,7 @@
 
 ## 1. Executive Summary
 
-RAVEN (Resource Analytics, Visibility & Enterprise Navigator) is a suite of locally-run MCP servers that connect BC Gov enterprise systems — Jira, Confluence, Bitbucket, Jenkins, and application servers — to AI assistants such as GitHub Copilot. It is designed with security as a primary concern.
+RAVEN (Resource Analytics, Visibility & Enterprise Navigator) is a suite of locally-run MCP servers that connect BC Gov enterprise systems — Jira, Confluence, Bitbucket, Jenkins, and application servers — to AI assistants such as GitHub Copilot. The `.mcp.json` registry also lists Sysdig Secure's hosted MCP server, which the MCP client connects to directly with OAuth (see [TOOL_INVENTORY.md](TOOL_INVENTORY.md)). It is designed with security as a primary concern.
 
 **Key security properties:**
 
@@ -162,7 +162,7 @@ When the AI connects to RAVEN, it receives a tool manifest — a list of availab
 
 | Decision | Rationale |
 |----------|-----------|
-| **Local-only execution** | MCP servers run as local processes — no cloud deployment, no exposed ports |
+| **Local-only execution** | Raven-owned MCP servers run as local processes — no cloud deployment, no exposed ports. Hosted Sysdig Secure is a client-managed remote OAuth MCP server, not a Raven process |
 | **stdio transport** | No HTTP listeners, no WebSocket endpoints — eliminates remote attack surface |
 | **Separate credential store** | `~/.raven/.env` with `chmod 600` — credentials never in code or MCP responses |
 | **Per-tool schema validation** | Zod schemas enforce parameter types, ranges, and enums at the boundary |
@@ -629,6 +629,7 @@ RAVEN does not expose arbitrary HTTP or filesystem access. Tool output passes th
 - Jenkins (`JENKINS_URL` / `JENKINS_BASE_URL`), Azure DevOps Services or Server (explicit `ADO_BASE_URL`; `ADO_DEFAULT_COLLECTION` selects the Cloud organization or Server collection), SonarQube Cloud or Server (explicit `SONARQUBE_URL`), JFrog Artifactory (`ARTIFACTORY_URL`), and RFC Buddy (`RFCBUDDY_URL`), when configured
 - HTTPS object-storage hosts explicitly allowlisted for Artifactory direct downloads (`RAVEN_ARTIFACTORY_DOWNLOAD_REDIRECT_HOSTS`); these receive no Raven credentials
 - **The Jarvis application-inventory API** (`JARVIS_BASE_URL`, required when `JARVIS_TOKEN` is set; no default endpoint). `jarvis-mcp` is a dynamic proxy: any Jarvis tool call is forwarded to the configured endpoint with a Personal Access Token. Unlike the other servers, which implement a fixed set of tools locally against the systems above, `jarvis-mcp` forwards opaque MCP requests to a remote MCP endpoint — its tool surface is defined remotely. That makes it the most relevant server to the "local-only" framing and to FOIPPA / data-residency review. The destination is fixed by configuration, not chosen by the AI.
+- **Sysdig Secure** — `sysdig-secure-mcp` in `.mcp.json` is a remote `type: "http"` entry for Sysdig's US-East-hosted `/mcp/secure` endpoint. The MCP client (not Raven) performs OAuth and connects directly; Raven runs no Sysdig code and stores no Sysdig credentials. The tool surface, including any write-capable tools, is defined by Sysdig and limited by the signed-in user's Sysdig role, and responses do not pass through Raven's `PiScrubber`. The release tooling only accepts this entry as a credential-free HTTPS URL on an approved Sysdig host. Sysdig is a third-party service; its STRA has been completed and data sovereignty acknowledged.
 
 The AI cannot instruct RAVEN to choose an arbitrary destination per call. Configuration explicitly selects the upstream hosts. Azure DevOps Services and SonarQube Cloud are external to BC Gov infrastructure and opt-in; their use with enterprise data requires a privacy and data-residency check. SonarQube Cloud currently offers EU (`sonarcloud.io`) and US (`sonarqube.us`) regions, not a Canadian region. Review third-party destinations, including Jarvis, before enabling them.
 
@@ -674,7 +675,7 @@ The MCP protocol architecture makes this structurally difficult:
 | Requirement | How RAVEN Complies |
 |-------------|-------------------|
 | **FOIPPA s.30 (Protection of PI)** | PI scrubber anonymizes personal information before it reaches the AI. `RAVEN_SCRUB_PI=true` controls this globally. |
-| **Data residency review** | Local MCP execution does not establish Canadian storage for connected services. Cloud services (including Azure DevOps Services and SonarQube Cloud) are opt-in and require an approved privacy/data-residency assessment before enterprise data is sent. SonarQube Cloud offers EU and US regions only. |
+| **Data residency review** | Local MCP execution does not establish Canadian storage for connected services. Cloud services (including Azure DevOps Services and SonarQube Cloud) are opt-in and require an approved privacy/data-residency assessment before enterprise data is sent. SonarQube Cloud offers EU and US regions only. Sysdig Secure MCP is a US-East-hosted third-party service; its STRA has been completed and data sovereignty acknowledged. |
 | **BC Gov ISP (Information Security Policy)** | Credentials stored with restricted permissions (`chmod 600`). Authentication via SiteMinder SSO or Basic Auth. TLS for all network communication. |
 | **OWASP Top 10 — Injection** | Zod schema validation on all tool parameters. SSH command allowlist prevents shell injection. |
 | **OWASP Top 10 — Broken Access Control** | All operations use the authenticated user's permissions. No privilege escalation. |

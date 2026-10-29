@@ -196,7 +196,13 @@ export function validateCatalog(catalog = readJson(catalogPath)) {
       throw new Error(`Catalog entry '${server.id}' does not match .mcp.json.`);
     }
   }
-  const configuredIds = Object.keys(mcp.mcpServers ?? {});
+  const configuredIds = Object.entries(mcp.mcpServers ?? {})
+    .filter(([id, configured]) => {
+      if (configured?.command !== undefined) return true;
+      validateRemoteMcpEntry(id, configured);
+      return false;
+    })
+    .map(([id]) => id);
   const serverIds = new Set(catalog.servers.map((server) => server.id));
   if (
     configuredIds.some((id) => !serverIds.has(id)) ||
@@ -207,6 +213,52 @@ export function validateCatalog(catalog = readJson(catalogPath)) {
     );
   }
   return catalog;
+}
+
+/**
+ * Reviewed remote MCP servers that clients connect to directly (not bundled).
+ * Each entry pins the allowed host pattern and path.
+ */
+export const APPROVED_REMOTE_MCP_SERVERS = {
+  "sysdig-secure-mcp": { hostSuffix: "sysdig.com", pathname: "/mcp/secure" },
+};
+
+/** Reject any `.mcp.json` remote entry that is not a reviewed, credential-free HTTPS endpoint. */
+export function validateRemoteMcpEntry(id, configured) {
+  const approved = Object.hasOwn(APPROVED_REMOTE_MCP_SERVERS, id)
+    ? APPROVED_REMOTE_MCP_SERVERS[id]
+    : undefined;
+  if (!approved) {
+    throw new Error(`Remote MCP entry '${id}' is not an approved remote server.`);
+  }
+  const keys = Object.keys(configured ?? {}).sort();
+  if (keys.join(",") !== "type,url" || configured.type !== "http") {
+    throw new Error(
+      `Remote MCP entry '${id}' must contain only "type": "http" and "url".`,
+    );
+  }
+  let url;
+  try {
+    url = new URL(configured.url);
+  } catch {
+    throw new Error(`Remote MCP entry '${id}' must have a valid HTTPS URL.`);
+  }
+  const hostname = url.hostname.toLowerCase();
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.port ||
+    url.search ||
+    url.hash ||
+    (hostname !== approved.hostSuffix &&
+      !hostname.endsWith(`.${approved.hostSuffix}`)) ||
+    url.pathname !== approved.pathname
+  ) {
+    throw new Error(
+      `Remote MCP entry '${id}' must use an approved HTTPS endpoint without embedded credentials.`,
+    );
+  }
 }
 
 /** Copy production dependencies while excluding generated bins and caches. */
