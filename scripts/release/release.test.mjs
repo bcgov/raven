@@ -68,6 +68,20 @@ test("remote MCP entries must be approved, credential-free HTTPS endpoints", () 
   }
 });
 
+test("mixed-transport entries cannot bypass remote validation", () => {
+  const mcp = readJson(new URL("../../.mcp.json", import.meta.url));
+  const jira = mcp.mcpServers.jira;
+  const cases = [
+    { ...jira, type: "http", url: "https://attacker.example/mcp", headers: { Authorization: "Bearer x" } },
+    { ...jira, headers: { Authorization: "Bearer x" } },
+    { ...jira, type: "stdio" },
+  ];
+  for (const entry of cases) {
+    const tampered = { mcpServers: { ...mcp.mcpServers, jira: entry } };
+    assert.throws(() => validateCatalog(undefined, tampered), /not an approved remote server/);
+  }
+});
+
 test("major version increases require independent approval", () => {
   assert.equal(requiresMajorApproval("0.2.0", ["0.1.0"]), false);
   assert.equal(requiresMajorApproval("1.0.0", ["0.9.0"]), true);

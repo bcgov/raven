@@ -119,10 +119,12 @@ export function assertMajorReleaseApproval(version) {
 }
 
 /** Validate catalog, workspace, runtime, and MCP configuration consistency. */
-export function validateCatalog(catalog = readJson(catalogPath)) {
+export function validateCatalog(
+  catalog = readJson(catalogPath),
+  mcp = readJson(join(repoRoot, ".mcp.json")),
+) {
   const rootPackage = readJson(join(repoRoot, "package.json"));
   const packageLock = readJson(join(repoRoot, "package-lock.json"));
-  const mcp = readJson(join(repoRoot, ".mcp.json"));
   const pinnedNodeVersion = readFileSync(nodeVersionPath, "utf8").trim();
   if (
     catalog.schemaVersion !== 1 ||
@@ -198,7 +200,8 @@ export function validateCatalog(catalog = readJson(catalogPath)) {
   }
   const configuredIds = Object.entries(mcp.mcpServers ?? {})
     .filter(([id, configured]) => {
-      if (configured?.command !== undefined) return true;
+      const keys = Object.keys(configured ?? {}).sort().join(",");
+      if (keys === "args,command") return true;
       validateRemoteMcpEntry(id, configured);
       return false;
     })
