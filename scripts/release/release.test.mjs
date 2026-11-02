@@ -59,6 +59,7 @@ test("remote MCP entries must be approved, credential-free HTTPS endpoints", () 
     ["sysdig-secure-mcp", { ...ok, url: "https://attacker.example/mcp/secure" }, /approved HTTPS endpoint/],
     ["sysdig-secure-mcp", { ...ok, url: "https://sysdig.com.attacker.example/mcp/secure" }, /approved HTTPS endpoint/],
     ["sysdig-secure-mcp", { ...ok, url: "https://user:pw@secure.sysdig.com/mcp/secure" }, /approved HTTPS endpoint/],
+    ["sysdig-secure-mcp", { ...ok, url: ["https://secure.sysdig.com/mcp/secure"] }, /only "type": "http" and "url"/],
     ["sysdig-secure-mcp", { ...ok, url: "https://secure.sysdig.com/mcp/secure?token=x" }, /approved HTTPS endpoint/],
     ["sysdig-secure-mcp", { ...ok, url: "https://secure.sysdig.com/other" }, /approved HTTPS endpoint/],
   ];

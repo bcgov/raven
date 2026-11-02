@@ -232,7 +232,10 @@ export function validateRemoteMcpEntry(id, configured) {
     throw new Error(`Remote MCP entry '${id}' is not an approved remote server.`);
   }
   const keys = Object.keys(configured ?? {}).sort();
-  if (keys.join(",") !== "type,url" || configured.type !== "http") {
+  if (
+  keys.join(",") !== "type,url" ||
+  configured.type !== "http" ||
+  typeof configured.url !== "string") {
     throw new Error(
       `Remote MCP entry '${id}' must contain only "type": "http" and "url".`,
     );
