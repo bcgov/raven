@@ -4,7 +4,7 @@ Local-first AI analysis suite for BC Gov NR Sector. Connects Jira, Confluence, a
 
 Built by the Epsilon team at Connected Services BC (NR Sector Digital Services).
 
-> **Docs:** setup & usage (this file) · [tool catalog & env vars](docs/TOOL_INVENTORY.md) · [architecture & security](docs/SYSTEM_DESIGN_AND_ARCHITECTURE.md)
+> **Docs:** setup & usage (this file) · [tool catalog & env vars](docs/TOOL_INVENTORY.md) · [architecture & security](docs/SYSTEM_DESIGN_AND_ARCHITECTURE.md) · [RFC/RFD playbook](docs/RFD_PLAYBOOK.md)
 
 > **Releases:** signed bundled runtimes, verification, and the transitional
 > pinned-source model are documented in [Packaging and Releases](docs/RELEASES.md).
@@ -15,7 +15,7 @@ RAVEN gives your local LLM direct access to our Atlassian tools via [MCP (Model 
 
 | Server | What You Can Do |
 |--------|-----------------|
-| **Jira** | Search by JQL; read/create/update/comment/transition issues (Epic Link aware); log time; manage watchers, versions, and the sprint lifecycle; link issues |
+| **Jira** | Search by JQL; read/create/update/comment/transition issues (Epic Link aware); log time; manage watchers, versions, and the sprint lifecycle; link issues; create RFCs, RFDs and RFD-subtasks (custom fields, field metadata) and book deployment-calendar slots |
 | **Confluence** | Search (CQL + filtered); navigate the space tree; read/create/update/delete/move pages as Markdown; manage attachments, labels, and comments |
 | **Bitbucket** | Browse/search code; review PRs end-to-end (diff, comment, approve, merge, decline); commit history and blame; tags; CI build status; create branches, repos, and PRs; commit single files server-side; push local branches (host-pinned, never forced) |
 | **SharePoint** | Search, browse, and read BC Gov SharePoint Online project documentation — sites, document libraries, files (Word/PDF/images), and site pages (read-only) |
@@ -35,6 +35,8 @@ RAVEN gives your local LLM direct access to our Atlassian tools via [MCP (Model 
 | **Jarvis** | Query the central Jarvis application inventory (dynamic proxy to a BC Gov API) |
 
 See **[`docs/TOOL_INVENTORY.md`](docs/TOOL_INVENTORY.md)** for the complete tool catalog, per-server counts, and the read/write split. The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share a single authentication session — log in once, use everywhere. Server Monitor, IMIS, Azure DevOps, Jarvis, Sonar, Jenkins, Artifactory, RFC Buddy, SharePoint, and GitHub authenticate separately via credentials in `~/.raven/.env`.
+
+**Release paperwork (RFCs and RFDs):** there is no separate RFC/RFD server. The Jira tools create the tickets and book deployment slots. Ask for it with `/rfd`: the Claude Code skill in [`.claude/skills/rfd/`](.claude/skills/rfd/SKILL.md) or the VS Code Copilot prompt in [`.github/prompts/rfd.prompt.md`](.github/prompts/rfd.prompt.md). Both follow the [RFC/RFD playbook](docs/RFD_PLAYBOOK.md). RFC Buddy is a separate tool for searching RFC schedules.
 
 Sysdig Secure is configured in [`.mcp.json`](.mcp.json) as a remote `type: "http"` MCP server at `https://secure.sysdig.com/mcp/secure`. Raven runs no Sysdig code and stores no Sysdig credentials: sign in through your MCP client (in VS Code, choose **Sign in** for `sysdig-secure-mcp` in the MCP servers panel) and the client handles OAuth. The available tools and what they may change are defined by Sysdig and limited by your Sysdig role; Sysdig responses do not pass through Raven's PI scrubber. The BC Gov Sysdig account is configured for US East; the completed Security Threat and Risk Assessment (STRA) and data-sovereignty acknowledgement cover that deployment, not other regions. Do not change the endpoint for this account to another region. Copilot cloud agent and code review do not support remote OAuth MCP servers. See [Sysdig's hosted MCP documentation](https://docs.sysdig.com/en/sysdig-secure/secure-ai/sysdig-mcp-server/).
 
