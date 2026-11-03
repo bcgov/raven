@@ -75,10 +75,24 @@ test("mixed-transport entries cannot bypass remote validation", () => {
     { ...jira, type: "http", url: "https://attacker.example/mcp", headers: { Authorization: "Bearer x" } },
     { ...jira, headers: { Authorization: "Bearer x" } },
     { ...jira, type: "stdio" },
+    { ...jira, env: { EXAMPLE: "value" } },
+    { ...jira, cwd: "." },
   ];
   for (const entry of cases) {
     const tampered = { mcpServers: { ...mcp.mcpServers, jira: entry } };
-    assert.throws(() => validateCatalog(undefined, tampered), /not an approved remote server/);
+    assert.throws(() => validateCatalog(undefined, tampered), /Local MCP entry 'jira' may contain only command and args/);
+  }
+});
+
+test("catalog validates the approved Sysdig entry, not just unapproved entries", () => {
+  const mcp = readJson(new URL("../../.mcp.json", import.meta.url));
+  const sysdig = mcp.mcpServers["sysdig-secure-mcp"];
+  for (const entry of [
+    { ...sysdig, headers: { Authorization: "******" } },
+    { ...sysdig, url: "https://attacker.example/mcp/secure" },
+  ]) {
+    const tampered = { mcpServers: { ...mcp.mcpServers, "sysdig-secure-mcp": entry } };
+    assert.throws(() => validateCatalog(undefined, tampered), /Remote MCP entry 'sysdig-secure-mcp'/);
   }
 });
 

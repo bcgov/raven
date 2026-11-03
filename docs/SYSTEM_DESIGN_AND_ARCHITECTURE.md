@@ -40,7 +40,7 @@ RAVEN (Resource Analytics, Visibility & Enterprise Navigator) is a suite of loca
 
 - **The AI can only do what the tools explicitly allow.** There are no open-ended system commands, no database access, and no arbitrary API calls. Each tool is a narrow, purpose-built function with validated parameters.
 - **No data is retained by the AI.** Under a GitHub Copilot Business license with data exclusion enabled, prompts and responses are not stored, not used for training, and not logged by GitHub or any third party.
-- **Personal information is scrubbed before it reaches the AI.** A FOIPPA-compliant PI scrubber replaces names, emails, phone numbers, IDIR usernames, SINs, and tokens with anonymized placeholders.
+- **Raven-owned servers that use `PiScrubber` scrub personal information before it reaches the AI.** The scrubber replaces names, emails, phone numbers, IDIR usernames, SINs, and tokens with anonymized placeholders. The Jarvis proxy and hosted Sysdig return responses without Raven PI scrubbing (§11.3).
 - **Credentials never leave the local machine.** Authentication tokens are held in process memory and attached to outbound HTTP requests. They are never included in MCP responses and never sent to the AI.
 - **All server monitoring is read-only.** SSH commands are validated against an allowlist of safe, read-only binaries. Shell injection is structurally impossible.
 
@@ -82,11 +82,11 @@ MCP (Model Context Protocol) is an open standard created by Anthropic and adopte
 
 3. **Responses are text-only.** The MCP server returns plain text (formatted as Markdown). There is no mechanism for returning executable code, binary data, or system commands.
 
-4. **Transport is local stdio.** The MCP server runs as a child process on the developer's machine. Communication happens over stdin/stdout — there is no network listener, no open port, and no remote access.
+4. **Raven-owned servers use local stdio transport.** They run as child processes on the developer's machine with no inbound network listener or open port. The Jarvis proxy forwards to a configured remote API; hosted Sysdig instead connects directly to the MCP client over HTTPS (§11.3).
 
 ### 2.3 What the AI Sees
 
-When the AI connects to RAVEN, it receives a tool manifest — a list of available tools with their names, descriptions, and parameter schemas. This is the **complete boundary** of what the AI can do. The AI cannot:
+When the AI connects to an MCP server, it receives a tool manifest — a list of available tools with their names, descriptions, and parameter schemas. This is the **complete boundary** of what the AI can do with the tools currently advertised. Raven-owned tools are registered locally; Jarvis and Sysdig advertise remote-controlled tool surfaces (§11.3). The AI cannot:
 
 - Call tools that are not in the manifest
 - Pass parameters that do not match the schema
@@ -163,10 +163,10 @@ When the AI connects to RAVEN, it receives a tool manifest — a list of availab
 | Decision | Rationale |
 |----------|-----------|
 | **Local-only execution** | Raven-owned MCP servers run as local processes — no cloud deployment, no exposed ports. Hosted Sysdig Secure is a client-managed remote OAuth MCP server, not a Raven process |
-| **stdio transport** | No HTTP listeners, no WebSocket endpoints — eliminates remote attack surface |
+| **stdio transport for Raven-owned servers** | No inbound HTTP listeners or WebSocket endpoints; the Jarvis proxy has an outbound connection, and hosted Sysdig connects directly over HTTPS |
 | **Separate credential store** | `~/.raven/.env` with `chmod 600` — credentials never in code or MCP responses |
 | **Per-tool schema validation** | Zod schemas enforce parameter types, ranges, and enums at the boundary |
-| **PI scrubbing layer** | FOIPPA-compliant anonymization before data reaches the AI |
+| **PI scrubbing layer** | Raven-owned servers that use `PiScrubber` anonymize output; the Jarvis proxy and hosted Sysdig do not pass responses through it |
 | **Read-only by default** | 121 of 181 locally-registered tools are read-only; 60 are writes. Jenkins and Artifactory writes include protected local transfers and guarded upstream mutations. See [TOOL_INVENTORY.md](TOOL_INVENTORY.md) for the authoritative split |
 | **SSH command allowlist** | Server monitoring permits only a fixed set of read-only shell commands |
 
@@ -198,7 +198,7 @@ packages/
   github-mcp/           # GitHub GHAS security (SARIF, alerts), issues, PRs; allow-list gated
 ```
 
-Every MCP server follows the same pattern:
+Raven-owned MCP servers (apart from the Jarvis proxy's dynamic tool registration) follow this local stdio pattern; hosted Sysdig is not a Raven package:
 
 ```typescript
 // index.ts — Entry point
@@ -218,7 +218,7 @@ This section directly addresses the core concern: **can the AI "go rogue" and pe
 
 The MCP protocol enforces a strict contract:
 
-1. **Tool registration is static.** When a server starts, it registers a fixed set of tools. These cannot be modified at runtime by the AI or by any external input.
+1. **Raven-owned tools are registered locally.** These servers register a fixed set of tools at startup; the AI cannot modify them. The Jarvis proxy and hosted Sysdig obtain their tool lists from remote services (§11.3), which can change them.
 
 2. **The AI can only call registered tools.** There is no `eval()`, no `exec()`, no arbitrary code execution path. The AI sends a JSON-RPC message with a tool name and parameters. If the tool name doesn't match a registered tool, the call is rejected.
 
@@ -252,7 +252,7 @@ RAVEN excludes broad administrative and arbitrary-execution capabilities. The re
 | Modify server configurations | **No** | Server monitor tools are strictly read-only. |
 | Create user accounts | **No** | No user management tools exist. |
 | Change permissions | **No** | No IAM or permission tools exist. |
-| Access other systems | **No** | Tools connect only to fixed, configured endpoints: Jira, Confluence, Bitbucket, Jira Assets, Jenkins, application servers, and — when configured — Azure DevOps, SonarQube, Artifactory, RFC Buddy, and the Jarvis proxy (§11.3). |
+| Access other systems | **No, except configured services** | Tools connect only to configured endpoints: Jira, Confluence, Bitbucket, Jira Assets, Jenkins, application servers, and — when configured — Azure DevOps, SonarQube, Artifactory, RFC Buddy, and the Jarvis proxy. The MCP client connects directly to hosted Sysdig Secure (§11.3). |
 
 ### 4.3 Write Tools Are Narrow and Auditable
 
@@ -373,7 +373,7 @@ Both methods authenticate the **individual developer** — the MCP server operat
 
 ### 7.1 The PI Scrubber
 
-RAVEN includes a personal information scrubber (`PiScrubber`) that is applied to all data before it is returned to the AI. This ensures compliance with the BC Freedom of Information and Protection of Privacy Act (FOIPPA).
+RAVEN includes a personal information scrubber (`PiScrubber`) used by its locally implemented servers to reduce personal information in responses before they reach the AI. The Jarvis proxy forwards remote responses without Raven scrubbing, and hosted Sysdig is connected directly by the MCP client. Do not rely on Raven scrubbing for either of those tool surfaces; assess their data handling separately for FOIPPA (§11.3).
 
 ### 7.2 What Is Scrubbed
 
@@ -390,14 +390,14 @@ RAVEN includes a personal information scrubber (`PiScrubber`) that is applied to
 
 ### 7.3 Two-Layer Scrubbing
 
-The scrubber applies two layers to every text field:
+Where used, the scrubber applies two layers to text fields:
 
 1. **Regex pattern matching** — catches PI by format (emails, phones, SINs, tokens)
 2. **Known name replacement** — replaces previously seen display names, sorted by length (longest first) to prevent partial matches
 
 ### 7.4 Scrubbing Coverage
 
-Every MCP server instantiates a `PiScrubber` and applies it consistently:
+Raven-owned servers that implement `PiScrubber` apply it to their tool output, including:
 
 - **Jira:** Assignee names, reporter names, comment authors, description text, comment text
 - **Confluence:** Page authors, last-modified-by names, page body content
@@ -408,6 +408,8 @@ Every MCP server instantiates a `PiScrubber` and applies it consistently:
 - **Server Monitor:** No PI expected in logs/configs, but credential patterns are scrubbed
 - **GitHub:** Issue/PR titles and bodies, advisory summaries, reviewer and resolver names; secret scanning tools never return secret values at all
 
+The Jarvis proxy does not instantiate `PiScrubber`; hosted Sysdig runs outside Raven. Their responses are not covered by this list or the `RAVEN_SCRUB_PI` setting.
+
 ### 7.5 Enabling PI Scrubbing
 
 PI scrubbing is controlled by the `RAVEN_SCRUB_PI` environment variable in `~/.raven/.env`:
@@ -416,7 +418,7 @@ PI scrubbing is controlled by the `RAVEN_SCRUB_PI` environment variable in `~/.r
 RAVEN_SCRUB_PI=true
 ```
 
-When set to `true` or `1`, all scrubbing is active. When unset or any other value, scrubbing is bypassed (pass-through mode for local-only LLMs where FOIPPA does not apply).
+Scrubbing is enabled by default, including when the setting is unset. Set `RAVEN_SCRUB_PI=false` or `0` to disable it for servers that use `PiScrubber`. This setting has no effect on the Jarvis proxy or hosted Sysdig.
 
 ---
 
@@ -438,7 +440,7 @@ Source: [GitHub Copilot Trust Center](https://resources.github.com/copilot-trust
 
 ### 8.2 What This Means for RAVEN
 
-The data flow when using RAVEN with GitHub Copilot Business is:
+For a Raven-owned Jira tool that uses `PiScrubber`, the data flow with GitHub Copilot Business is:
 
 ```
 1. Developer asks a question in Copilot Chat
@@ -454,7 +456,7 @@ The data flow when using RAVEN with GitHub Copilot Business is:
 
 **Combined with PI scrubbing, this means:**
 
-- Even in the transient moment when data is processed by the LLM, personal information has already been replaced with anonymized placeholders
+- For this scrubbed Jira flow, personal information is replaced with anonymized placeholders before the LLM processes it. This does not apply to the Jarvis proxy or hosted Sysdig (§11.3).
 - After the response is delivered, nothing persists — not the prompt, not the tool outputs, not the AI response
 - There is no database, no log, no archive where this data could later be retrieved
 
@@ -462,18 +464,18 @@ The data flow when using RAVEN with GitHub Copilot Business is:
 
 | Deployment | Data Retention | PI Risk | FOIPPA Compliance |
 |-----------|---------------|---------|-------------------|
-| **RAVEN + Copilot Business (data exclusion on)** | Zero retention | Minimal (PI scrubbed) | Compliant |
+| **RAVEN scrubbed tool + Copilot Business (data exclusion on)** | Zero retention | Reduced (PI scrubbed) | Depends on the data and applicable assessment |
 | **RAVEN + Local LLM (e.g., LM Studio)** | Zero (all local) | None (no cloud) | Compliant |
-| **RAVEN + Copilot Individual** | Prompts may be retained | Moderate (PI scrubbed) | Requires review |
+| **RAVEN scrubbed tool + Copilot Individual** | Prompts may be retained | Moderate (PI scrubbed) | Requires review |
 | **Manual copy-paste into ChatGPT** | Retained by OpenAI | High (no scrubbing) | Non-compliant |
 
-RAVEN with GitHub Copilot Business provides strictly better privacy than any manual alternative.
+The Jarvis proxy and hosted Sysdig are not covered by the scrubbed-tool comparisons; assess their responses and data handling separately.
 
 ---
 
 ## 9. Data Flow — End to End
 
-### 9.1 Per-Request Lifecycle
+### 9.1 Per-Request Lifecycle (Jira Example)
 
 ```
 ┌──────────────────────────────────────────────────┐
@@ -617,7 +619,7 @@ To address specific fears directly:
 
 ### 11.2 "Can the AI steal sensitive information?"
 
-RAVEN does not expose arbitrary HTTP or filesystem access. Tool output passes through the PI scrubber before the AI sees it. The Artifactory MCP is the deliberate exception for file transfer: it may read or write only beneath configured, mode-restricted transfer directories and may send uploads only to the configured internal HTTPS Artifactory endpoint. Direct downloads may follow bounded HTTPS redirects only to the configured Artifactory context or exact storage hostnames in `RAVEN_ARTIFACTORY_DOWNLOAD_REDIRECT_HOSTS`; external storage requests receive no Artifactory credentials.
+RAVEN does not expose arbitrary HTTP or filesystem access. Raven-owned servers that use `PiScrubber` scrub their output before the AI sees it; the Jarvis proxy and hosted Sysdig return responses without Raven PI scrubbing (§11.3). The Artifactory MCP is the deliberate exception for file transfer: it may read or write only beneath configured, mode-restricted transfer directories and may send uploads only to the configured internal HTTPS Artifactory endpoint. Direct downloads may follow bounded HTTPS redirects only to the configured Artifactory context or exact storage hostnames in `RAVEN_ARTIFACTORY_DOWNLOAD_REDIRECT_HOSTS`; external storage requests receive no Artifactory credentials.
 
 ### 11.3 "Can the AI send data to a remote location?"
 
@@ -629,7 +631,7 @@ RAVEN does not expose arbitrary HTTP or filesystem access. Tool output passes th
 - Jenkins (`JENKINS_URL` / `JENKINS_BASE_URL`), Azure DevOps Services or Server (explicit `ADO_BASE_URL`; `ADO_DEFAULT_COLLECTION` selects the Cloud organization or Server collection), SonarQube Cloud or Server (explicit `SONARQUBE_URL`), JFrog Artifactory (`ARTIFACTORY_URL`), and RFC Buddy (`RFCBUDDY_URL`), when configured
 - HTTPS object-storage hosts explicitly allowlisted for Artifactory direct downloads (`RAVEN_ARTIFACTORY_DOWNLOAD_REDIRECT_HOSTS`); these receive no Raven credentials
 - **The Jarvis application-inventory API** (`JARVIS_BASE_URL`, required when `JARVIS_TOKEN` is set; no default endpoint). `jarvis-mcp` is a dynamic proxy: any Jarvis tool call is forwarded to the configured endpoint with a Personal Access Token. Unlike the other servers, which implement a fixed set of tools locally against the systems above, `jarvis-mcp` forwards opaque MCP requests to a remote MCP endpoint — its tool surface is defined remotely. That makes it the most relevant server to the "local-only" framing and to FOIPPA / data-residency review. The destination is fixed by configuration, not chosen by the AI.
-- **Sysdig Secure** — `sysdig-secure-mcp` in `.mcp.json` is a remote `type: "http"` entry for Sysdig's US-East-hosted `/mcp/secure` endpoint. The MCP client (not Raven) performs OAuth and connects directly; Raven runs no Sysdig code and stores no Sysdig credentials. The tool surface, including any write-capable tools, is defined by Sysdig and limited by the signed-in user's Sysdig role, and responses do not pass through Raven's `PiScrubber`. The release tooling only accepts this entry as a credential-free HTTPS URL on an approved Sysdig host. Sysdig is a third-party service; its STRA has been completed and data sovereignty acknowledged.
+- **Sysdig Secure** — `sysdig-secure-mcp` in `.mcp.json` is a remote `type: "http"` entry for Sysdig's US-East-hosted `/mcp/secure` endpoint. The MCP client (not Raven) performs OAuth and connects directly; Raven runs no Sysdig code and stores no Sysdig credentials. The tool surface, including any write-capable tools, is defined by Sysdig and limited by the signed-in user's Sysdig role, and responses do not pass through Raven's `PiScrubber`. The release tooling currently accepts credential-free HTTPS URLs on Sysdig subdomains, although the BC Gov account is configured for US East only. The completed STRA and data-sovereignty acknowledgement cover that deployment; the URL allowlist does not extend the assessment to other regions.
 
 The AI cannot instruct RAVEN to choose an arbitrary destination per call. Configuration explicitly selects the upstream hosts. Azure DevOps Services and SonarQube Cloud are external to BC Gov infrastructure and opt-in; their use with enterprise data requires a privacy and data-residency check. SonarQube Cloud currently offers EU (`sonarcloud.io`) and US (`sonarqube.us`) regions, not a Canadian region. Review third-party destinations, including Jarvis, before enabling them.
 
@@ -649,7 +651,7 @@ The MCP protocol architecture makes this structurally difficult:
 
 2. **Tools have fixed behavior.** The `search_issues` tool always calls the Jira search API. It cannot be redirected to call a different API or perform a different operation, regardless of what the AI "wants."
 
-3. **The AI cannot create new tools.** The tool manifest is fixed at server startup. No amount of prompt engineering can add capabilities that don't exist.
+3. **The AI cannot create new tools.** The tool manifest for Raven-owned servers is fixed at startup; the Jarvis proxy and hosted Sysdig expose tool lists controlled by their remote providers. The AI cannot add tools itself, but those remote manifests can change.
 
 ---
 
@@ -659,7 +661,7 @@ The MCP protocol architecture makes this structurally difficult:
 |--------|-----------|--------|-----------|
 | **AI calls a destructive tool incorrectly** | Low | High | Artifactory copy/move default to dry-run; live operations require exact confirmation; deletion additionally requires the current SHA-256 and refuses folders |
 | **Credential leakage via tool response** | Very Low | High | Credentials are in HTTP headers, never in response text; `quiet: true` prevents env output |
-| **PI leakage to AI provider** | Low | Medium | PI scrubber anonymizes all personal data; Copilot Business has zero retention |
+| **PI leakage to AI provider** | Low | Medium | Raven-owned servers that use `PiScrubber` anonymize output; Jarvis and hosted Sysdig do not, so their data handling needs separate assessment. Copilot Business has zero retention |
 | **SSH command injection** | Impossible | N/A | Command allowlist + shell metacharacter rejection makes injection structurally impossible |
 | **Path traversal on servers** | Impossible | N/A | Paths validated: must be absolute, no `..`, no metacharacters |
 | **Unauthorized system access** | Very Low | Medium | Uses authenticated user's permissions; no privilege escalation |
@@ -674,8 +676,8 @@ The MCP protocol architecture makes this structurally difficult:
 
 | Requirement | How RAVEN Complies |
 |-------------|-------------------|
-| **FOIPPA s.30 (Protection of PI)** | PI scrubber anonymizes personal information before it reaches the AI. `RAVEN_SCRUB_PI=true` controls this globally. |
-| **Data residency review** | Local MCP execution does not establish Canadian storage for connected services. Cloud services (including Azure DevOps Services and SonarQube Cloud) are opt-in and require an approved privacy/data-residency assessment before enterprise data is sent. SonarQube Cloud offers EU and US regions only. Sysdig Secure MCP is a US-East-hosted third-party service; its STRA has been completed and data sovereignty acknowledged. |
+| **FOIPPA s.30 (Protection of PI)** | Raven-owned servers that use `PiScrubber` anonymize output by default; `RAVEN_SCRUB_PI=false` disables that scrubbing. Jarvis and hosted Sysdig do not pass through Raven's scrubber and require separate data-handling review (§11.3). |
+| **Data residency review** | Local MCP execution does not establish Canadian storage for connected services. Cloud services (including Azure DevOps Services and SonarQube Cloud) are opt-in and require an approved privacy/data-residency assessment before enterprise data is sent. SonarQube Cloud offers EU and US regions only. The BC Gov Sysdig account is configured for US East; its STRA and data-sovereignty acknowledgement cover that deployment, not other regions. |
 | **BC Gov ISP (Information Security Policy)** | Credentials stored with restricted permissions (`chmod 600`). Authentication via SiteMinder SSO or Basic Auth. TLS for all network communication. |
 | **OWASP Top 10 — Injection** | Zod schema validation on all tool parameters. SSH command allowlist prevents shell injection. |
 | **OWASP Top 10 — Broken Access Control** | All operations use the authenticated user's permissions. No privilege escalation. |
@@ -791,7 +793,7 @@ Stored in `~/.raven/.env` (not committed to version control). The table below li
 | `ATLASSIAN_BASE_URL` | Internal Atlassian URL | Jira, Confluence, Bitbucket, Assets |
 | `ATLASSIAN_EMAIL` | User's gov.bc.ca email | Basic Auth |
 | `ATLASSIAN_PASSWORD` | User's IDIR password | Basic Auth |
-| `RAVEN_SCRUB_PI` | Enable PI scrubbing (`true`/`1`) | All servers |
+| `RAVEN_SCRUB_PI` | PI scrubbing defaults to enabled; `false`/`0` disables it | Raven-owned servers using `PiScrubber`; not Jarvis or hosted Sysdig |
 | `SERVER_A_PASSWORD` | SSH and sudo password for servers | Server Monitor, IMIS |
 | `ADO_BASE_URL` | Required Azure DevOps HTTPS base URL (`https://dev.azure.com` for Cloud or on-prem Server URL) | Azure DevOps |
 | `ADO_DEFAULT_COLLECTION` | Default Azure DevOps Server collection or Services organization | Azure DevOps |

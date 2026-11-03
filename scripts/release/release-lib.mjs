@@ -198,15 +198,20 @@ export function validateCatalog(
       throw new Error(`Catalog entry '${server.id}' does not match .mcp.json.`);
     }
   }
+  const serverIds = new Set(catalog.servers.map((server) => server.id));
   const configuredIds = Object.entries(mcp.mcpServers ?? {})
     .filter(([id, configured]) => {
       const keys = Object.keys(configured ?? {}).sort().join(",");
-      if (keys === "args,command") return true;
+      if (serverIds.has(id)) {
+        if (keys !== "args,command") {
+          throw new Error(`Local MCP entry '${id}' may contain only command and args.`);
+        }
+        return true;
+      }
       validateRemoteMcpEntry(id, configured);
       return false;
     })
     .map(([id]) => id);
-  const serverIds = new Set(catalog.servers.map((server) => server.id));
   if (
     configuredIds.some((id) => !serverIds.has(id)) ||
     serverIds.size !== configuredIds.length
@@ -220,7 +225,7 @@ export function validateCatalog(
 
 /**
  * Reviewed remote MCP servers that clients connect to directly (not bundled).
- * Each entry pins the allowed host pattern and path.
+ * Each entry specifies the allowed host suffix and path.
  */
 export const APPROVED_REMOTE_MCP_SERVERS = {
   "sysdig-secure-mcp": { hostSuffix: "sysdig.com", pathname: "/mcp/secure" },
@@ -236,9 +241,10 @@ export function validateRemoteMcpEntry(id, configured) {
   }
   const keys = Object.keys(configured ?? {}).sort();
   if (
-  keys.join(",") !== "type,url" ||
-  configured.type !== "http" ||
-  typeof configured.url !== "string") {
+    keys.join(",") !== "type,url" ||
+    configured.type !== "http" ||
+    typeof configured.url !== "string"
+  ) {
     throw new Error(
       `Remote MCP entry '${id}' must contain only "type": "http" and "url".`,
     );

@@ -1,6 +1,6 @@
 # RAVEN - Resource Analytics, Visibility & Enterprise Navigator
 
-Local-first AI analysis suite for BC Gov NR Sector. Connects Jira, Confluence, and Bitbucket behind SiteMinder SSO to any LLM — running locally, with personal information scrubbed by default before anything reaches the model.
+Local-first AI analysis suite for BC Gov NR Sector. Connects Jira, Confluence, and Bitbucket behind SiteMinder SSO to an AI client via locally run MCP servers. Raven-owned servers that use `PiScrubber` scrub personal information by default; the Jarvis proxy and hosted Sysdig Secure do not.
 
 Built by the Epsilon team at Connected Services BC (NR Sector Digital Services).
 
@@ -36,7 +36,7 @@ RAVEN gives your local LLM direct access to our Atlassian tools via [MCP (Model 
 
 See **[`docs/TOOL_INVENTORY.md`](docs/TOOL_INVENTORY.md)** for the complete tool catalog, per-server counts, and the read/write split. The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share a single authentication session — log in once, use everywhere. Server Monitor, IMIS, Azure DevOps, Jarvis, Sonar, Jenkins, Artifactory, RFC Buddy, SharePoint, and GitHub authenticate separately via credentials in `~/.raven/.env`.
 
-Sysdig Secure is configured in [`.mcp.json`](.mcp.json) as a remote `type: "http"` MCP server at `https://secure.sysdig.com/mcp/secure`. Raven runs no Sysdig code and stores no Sysdig credentials: sign in through your MCP client (in VS Code, choose **Sign in** for `sysdig-secure-mcp` in the MCP servers panel) and the client handles OAuth. The available tools and what they may change are defined by Sysdig and limited by your Sysdig role; Sysdig responses do not pass through Raven's PI scrubber. Sysdig Secure MCP is a US-East-hosted third-party service; its Security Threat and Risk Assessment (STRA) has been completed and data sovereignty has been acknowledged. For another Sysdig region, change the URL to that region's `/mcp/secure` endpoint. Copilot cloud agent and code review do not support remote OAuth MCP servers. See [Sysdig's hosted MCP documentation](https://docs.sysdig.com/en/sysdig-secure/secure-ai/sysdig-mcp-server/).
+Sysdig Secure is configured in [`.mcp.json`](.mcp.json) as a remote `type: "http"` MCP server at `https://secure.sysdig.com/mcp/secure`. Raven runs no Sysdig code and stores no Sysdig credentials: sign in through your MCP client (in VS Code, choose **Sign in** for `sysdig-secure-mcp` in the MCP servers panel) and the client handles OAuth. The available tools and what they may change are defined by Sysdig and limited by your Sysdig role; Sysdig responses do not pass through Raven's PI scrubber. The BC Gov Sysdig account is configured for US East; the completed Security Threat and Risk Assessment (STRA) and data-sovereignty acknowledgement cover that deployment, not other regions. Do not change the endpoint for this account to another region. Copilot cloud agent and code review do not support remote OAuth MCP servers. See [Sysdig's hosted MCP documentation](https://docs.sysdig.com/en/sysdig-secure/secure-ai/sysdig-mcp-server/).
 
 ### Autonomous Pipeline (`@nrs/pipeline`)
 
@@ -86,7 +86,7 @@ Read-only access to BC Gov SharePoint Online for project documentation, design d
 
 See [Configure Authentication](#2-configure-authentication) for the SharePoint login flow and env vars.
 
-**FOIPPA note:** inlined image content (diagrams, mock-ups, screenshots) returned by `read_document` may contain personal information visible to the AI and cannot be PI-scrubbed. Text-based results (search, document text, pages) go through the same PI scrubber as every other server.
+**FOIPPA note:** inlined image content (diagrams, mock-ups, screenshots) returned by `read_document` may contain personal information visible to the AI and cannot be PI-scrubbed. Text-based SharePoint results use Raven's PI scrubber; the Jarvis proxy and hosted Sysdig do not.
 
 ## Prerequisites
 
@@ -846,7 +846,7 @@ npm run clean
 
 - **All data stays local.** No Atlassian data is sent to external LLM providers.
 - **FOIPPA compliant.** Personal information from Jira/Confluence is processed locally only.
-- **PI scrubbing.** Set `RAVEN_SCRUB_PI=true` in `~/.raven/.env` to automatically anonymize personal information (names, usernames) before it reaches the LLM. One setting controls all servers.
+- **PI scrubbing.** Enabled by default for Raven-owned servers that use `PiScrubber`; set `RAVEN_SCRUB_PI=false` in `~/.raven/.env` to disable it for those servers. The Jarvis proxy and hosted Sysdig Secure return responses without Raven PI scrubbing; this setting does not control them.
 - **Your IDIR credentials.** RAVEN authenticates as you — it sees exactly what you can see, nothing more.
 - **No secrets in code.** Credentials are loaded from `~/.raven/.env` at server startup — never passed through MCP client configs, never exposed to the LLM, never logged or stored in the repo.
 
