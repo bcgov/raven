@@ -6,8 +6,10 @@
 
 One **RFC** per release per application (the change record). One **RFD** per target environment (the deployment event). Each RFD follows one of two workflows, set by its **Deployment Type**:
 
-- **Single-Resource:** one person completes the whole deployment from instructions in the RFD itself. No subtasks.
-- **Coordinated:** several people or activities. RFD-subtasks assign, approve and track each piece of work.
+- **Single-Resource:** one person completes the whole deployment from instructions in the RFD itself, even when it has several ordered steps (for example a DBA's backup followed by a script run). No subtasks.
+- **Coordinated:** more than one person or team must act, so each piece of assigned work needs its own review and approval. RFD-subtasks assign, approve and track that work.
+
+The deciding question is who does the work, not how many steps there are.
 
 All tickets live in the application's own Jira project. The simplified screens (the Deployment Type field and a shorter RFC create screen) are being rolled out project by project; `get_field_meta` shows which screens a project has (recipe step 3).
 
@@ -16,8 +18,8 @@ All tickets live in the application's own Jira project. The simplified screens (
 | Release shape | Workflow | Create |
 |---|---|---|
 | The project team deploys an application-only change itself, through a fully automated platform that records its own deploy history | Project team deployment | RFC only — no RFDs |
-| One internal staff member can complete the whole deployment | Single-Resource | RFC + one RFD per environment with Deployment Type `Single-Resource`. The deployment instructions go in the RFD description. No subtasks |
-| Several people or activities that must happen in order (DB scripts, infra changes, stop/start) | Coordinated | RFC + one RFD per environment with Deployment Type `Coordinated` + one RFD-subtask per piece of assigned work |
+| One internal staff member can complete the whole deployment, including several ordered steps | Single-Resource | RFC + one RFD per environment with Deployment Type `Single-Resource`. The deployment instructions, in order, go in the RFD description. No subtasks |
+| More than one person or team must act, in a set order (for example one team stops and restarts the application while the DBA team runs scripts) | Coordinated | RFC + one RFD per environment with Deployment Type `Coordinated` + one RFD-subtask per piece of assigned work |
 | The team deploys its code through an automated platform, but the release also needs DB or configuration changes by internal staff | Coordinated | As above. The team's own platform deploy is a regular `Sub-task` under the RFD, not an RFD-subtask |
 | Release spans multiple applications, deployments bundled together | Usually Coordinated | RFC per application, with each secondary RFC linked to the primary app's RFC — but only ONE set of RFDs/RFD-subtasks for the whole release (per environment, subtasks covering every app), all linked to the primary app's RFC. Secondary RFCs get no RFDs |
 
@@ -27,7 +29,7 @@ All tickets live in the application's own Jira project. The simplified screens (
 2. Duplicate check: `search_issues` for an open RFC with the same project + fix version. Reuse it rather than creating a second.
 3. `get_field_meta` for RFC and RFD in the target project (plus `RFD-subtask` and `Sub-task` for Coordinated deployments). Required fields and option values vary per project — never guess them, and trust this over any documentation.
    - The RFD screen has **Deployment Type**: the project is on the simplified workflow. Set it on every RFD.
-   - No Deployment Type: the project still has the older screens. Leave the field out, and before creating a Single-Resource-style RFD ask the user whether the project's deployments still need an RFD-subtask for every step (the older pattern).
+   - No Deployment Type: the project still has the older screens. Leave the field out. Before creating a Single-Resource-style RFD, ask the user whether the project's deployments still need an RFD-subtask for every step (the older pattern). If they do, run `get_field_meta` for `RFD-subtask` and follow the Coordinated steps in step 7, still without Deployment Type.
 4. Fix Version: `list_versions`; `create_version` if missing.
 5. Create the RFC (`create_issue` with `customFields`). If the RFC Category is New Product or Enhancement Release, the RFC must be linked to its PMO ticket before Submit — ask the user for the PMO key and link type, then `link_issues`.
 6. Create one RFD per environment, then link each: `link_issues` with linkType `RFC-RFD`, outward = the RFC, inward = the RFD.
@@ -70,7 +72,7 @@ All tickets live in the application's own Jira project. The simplified screens (
 - RFD summary: `Deploy <APP> <version> to <ENV>` — e.g. `Deploy MYAPP 6.3 to TEST`. No abbreviations like D2T/D2P.
 - RFD-subtask summary: the activity — e.g. `Back up database and apply database changes`.
 - RFC description: one short plain-language paragraph — what's changing, why, and the impact — readable by a business person. No changelogs, ticket lists, deployment steps, Jira markup, or bare version numbers.
-- Deployment detail (build links, script paths, run order) belongs in the Single-Resource RFD's description or in RFD-subtask descriptions, not the RFC.
+- Deployment detail (build links, script paths, run order) belongs in the Single-Resource RFD's description or in RFD-subtask descriptions, never the RFC. A Coordinated RFD's description carries the overall run order across its subtasks.
 
 ## Common mistakes
 
@@ -78,6 +80,7 @@ All tickets live in the application's own Jira project. The simplified screens (
 - Linking RFC↔RFD with `blocks`/`relates to` — the link type is `RFC-RFD`.
 - Setting invented date fields ("Planned Start/End") on RFDs — scheduling is the calendar booking.
 - Choosing Single-Resource when another person or team must act — use Coordinated, with one RFD-subtask per piece of assigned work.
+- Choosing Coordinated only because one person's deployment has several steps — that is still Single-Resource.
 - Setting Deployment Category on an RFD — it exists only on RFD-subtasks.
 - Using an RFD-subtask for project-team work that needs no technical approval — use a regular `Sub-task`.
 - Cloning RFDs without releasing the copied booking — a cloned RFD double-books the slot (`cancel_deployment_booking` on the clone releases it).
