@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { classify, render, spliceRegion, START, END } from "./gen-inventory.lib.mjs";
+import { classify, render, spliceRegion, validateInventoryMcpServers, START, END } from "./gen-inventory.lib.mjs";
 
 describe("classify", () => {
   it("buckets tools by readOnlyHint and flags any without an explicit hint", () => {
@@ -24,6 +24,7 @@ describe("render", () => {
     jarvis: { display: "Jarvis", mcpKey: "jarvis", read: 5, write: 1, total: 6 },
     jarvisSection: "### Remote proxy (data egress)\n\njarvis text",
     intro: "intro text",
+    serverCount: 4,
   });
 
   it("pluralizes tool vs tools", () => {
@@ -41,6 +42,28 @@ describe("render", () => {
   it("computes local subtotal and advertised totals incl. jarvis", () => {
     expect(out).toContain("| **Subtotal (local)** | | **2** | **1** | **3** |");
     expect(out).toContain("**~9**"); // 3 local + 6 jarvis = 9 advertised
+    expect(out).toContain("| MCP servers | **4** |");
+  });
+});
+
+describe("validateInventoryMcpServers", () => {
+  const data = [{ mcpKey: "jira" }];
+  const remoteIds = ["sysdig-secure-mcp"];
+  const entries = {
+    jira: { command: "node", args: ["./packages/jira-mcp/dist/index.js"] },
+    jarvis: { command: "node", args: ["./packages/jarvis-mcp/dist/index.js"] },
+    "sysdig-secure-mcp": { type: "http", url: "https://secure.sysdig.com/mcp/secure" },
+  };
+  it("counts exactly the configured local, proxy and approved remote entries", () => {
+    expect(validateInventoryMcpServers(data, { mcpServers: entries }, "jarvis", remoteIds)).toBe(3);
+  });
+  it("rejects additions, omissions and changed remote configuration", () => {
+    expect(() => validateInventoryMcpServers(data, { mcpServers: { ...entries, extra: {} } }, "jarvis", remoteIds)).toThrow(/inventory.*MCP/i);
+    const { "sysdig-secure-mcp": _unused, ...withoutSysdig } = entries;
+    expect(() => validateInventoryMcpServers(data, { mcpServers: withoutSysdig }, "jarvis", remoteIds)).toThrow(/inventory.*MCP/i);
+    expect(() => validateInventoryMcpServers(data, {
+      mcpServers: { ...entries, "sysdig-secure-mcp": { ...entries["sysdig-secure-mcp"], headers: {} } },
+    }, "jarvis", remoteIds)).toThrow(/only "type": "http" and "url"/);
   });
 });
 

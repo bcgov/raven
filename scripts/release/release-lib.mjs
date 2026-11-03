@@ -119,10 +119,12 @@ export function assertMajorReleaseApproval(version) {
 }
 
 /** Validate catalog, workspace, runtime, and MCP configuration consistency. */
-export function validateCatalog(catalog = readJson(catalogPath)) {
+export function validateCatalog(
+  catalog = readJson(catalogPath),
+  mcp = readJson(join(repoRoot, ".mcp.json")),
+) {
   const rootPackage = readJson(join(repoRoot, "package.json"));
   const packageLock = readJson(join(repoRoot, "package-lock.json"));
-  const mcp = readJson(join(repoRoot, ".mcp.json"));
   const pinnedNodeVersion = readFileSync(nodeVersionPath, "utf8").trim();
   if (
     catalog.schemaVersion !== 1 ||
@@ -196,8 +198,20 @@ export function validateCatalog(catalog = readJson(catalogPath)) {
       throw new Error(`Catalog entry '${server.id}' does not match .mcp.json.`);
     }
   }
-  const configuredIds = Object.keys(mcp.mcpServers ?? {});
   const serverIds = new Set(catalog.servers.map((server) => server.id));
+  const configuredIds = Object.entries(mcp.mcpServers ?? {})
+    .filter(([id, configured]) => {
+      const keys = Object.keys(configured ?? {}).sort().join(",");
+      if (serverIds.has(id)) {
+        if (keys !== "args,command") {
+          throw new Error(`Local MCP entry '${id}' may contain only command and args.`);
+        }
+        return true;
+      }
+      validateRemoteMcpEntry(id, configured);
+      return false;
+    })
+    .map(([id]) => id);
   if (
     configuredIds.some((id) => !serverIds.has(id)) ||
     serverIds.size !== configuredIds.length
@@ -207,6 +221,56 @@ export function validateCatalog(catalog = readJson(catalogPath)) {
     );
   }
   return catalog;
+}
+
+/**
+ * Reviewed remote MCP servers that clients connect to directly (not bundled).
+ * Each entry specifies the allowed host suffix and path.
+ */
+export const APPROVED_REMOTE_MCP_SERVERS = {
+  "sysdig-secure-mcp": { hostSuffix: "sysdig.com", pathname: "/mcp/secure" },
+};
+
+/** Reject any `.mcp.json` remote entry that is not a reviewed, credential-free HTTPS endpoint. */
+export function validateRemoteMcpEntry(id, configured) {
+  const approved = Object.hasOwn(APPROVED_REMOTE_MCP_SERVERS, id)
+    ? APPROVED_REMOTE_MCP_SERVERS[id]
+    : undefined;
+  if (!approved) {
+    throw new Error(`Remote MCP entry '${id}' is not an approved remote server.`);
+  }
+  const keys = Object.keys(configured ?? {}).sort();
+  if (
+    keys.join(",") !== "type,url" ||
+    configured.type !== "http" ||
+    typeof configured.url !== "string"
+  ) {
+    throw new Error(
+      `Remote MCP entry '${id}' must contain only "type": "http" and "url".`,
+    );
+  }
+  let url;
+  try {
+    url = new URL(configured.url);
+  } catch {
+    throw new Error(`Remote MCP entry '${id}' must have a valid HTTPS URL.`);
+  }
+  const hostname = url.hostname.toLowerCase();
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.port ||
+    url.search ||
+    url.hash ||
+    (hostname !== approved.hostSuffix &&
+      !hostname.endsWith(`.${approved.hostSuffix}`)) ||
+    url.pathname !== approved.pathname
+  ) {
+    throw new Error(
+      `Remote MCP entry '${id}' must use an approved HTTPS endpoint without embedded credentials.`,
+    );
+  }
 }
 
 /** Copy production dependencies while excluding generated bins and caches. */

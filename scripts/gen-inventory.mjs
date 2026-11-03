@@ -13,7 +13,8 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { classify, render, spliceRegion } from "./gen-inventory.lib.mjs";
+import { JARVIS, classify, render, spliceRegion, validateInventoryMcpServers } from "./gen-inventory.lib.mjs";
+import { APPROVED_REMOTE_MCP_SERVERS } from "./release/release-lib.mjs";
 
 import { createJiraServer } from "../packages/jira-mcp/dist/server.js";
 import { createConfluenceServer } from "../packages/confluence-mcp/dist/server.js";
@@ -33,6 +34,7 @@ import { createSharePointServer } from "../packages/sharepoint-mcp/dist/server.j
 import { createGitHubServer } from "../packages/github-mcp/dist/server.js";
 
 const INVENTORY = fileURLToPath(new URL("../docs/TOOL_INVENTORY.md", import.meta.url));
+const MCP_CONFIG = fileURLToPath(new URL("../.mcp.json", import.meta.url));
 
 // Display order + grouping for the static (locally-registered) servers.
 const SERVERS = [
@@ -97,10 +99,12 @@ if (missing.length) {
   process.exit(1);
 }
 
+const mcp = JSON.parse(readFileSync(MCP_CONFIG, "utf8"));
+const serverCount = validateInventoryMcpServers(data, mcp, JARVIS.mcpKey, Object.keys(APPROVED_REMOTE_MCP_SERVERS));
 const file = readFileSync(INVENTORY, "utf8");
 let next;
 try {
-  next = spliceRegion(file, render(data));
+  next = spliceRegion(file, render(data, { serverCount }));
 } catch (e) {
   console.error(`ERROR: ${e.message} in ${INVENTORY}`);
   process.exit(1);
