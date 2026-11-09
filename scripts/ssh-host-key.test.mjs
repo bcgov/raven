@@ -10,6 +10,43 @@ import { buildConnectOpts as imisOptions } from "../packages/imis-mcp/src/ssh-ex
 const { DEFAULT_SERVER_HOST_KEY } = createRequire(import.meta.url)("ssh2/lib/protocol/constants.js");
 const defaultAlgorithms = [...DEFAULT_SERVER_HOST_KEY];
 
+/**
+ * Generate a synthetic key pair that ssh2 itself can parse.
+ *
+ * ssh2 1.17.0 produces an ed25519 key it cannot parse about once in 256 tries:
+ * keygen.js strips every leading zero byte from the public key, not only the
+ * BIT STRING padding byte (mscdex/ssh2#1390, #1513). A random fixture key would
+ * make this suite fail on that chance, so regenerate until both halves parse.
+ */
+function generateParseableKeyPair(type, options, generate = utils.generateKeyPairSync, attempts = 20) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const pair = generate(type, options);
+    if (!(utils.parseKey(pair.private) instanceof Error) && !(utils.parseKey(pair.public) instanceof Error)) {
+      return pair;
+    }
+  }
+  throw new Error(`ssh2 generated no parseable ${type} key in ${attempts} attempts`);
+}
+
+describe("generateParseableKeyPair", () => {
+  it("regenerates until ssh2 can parse both halves of the key pair", () => {
+    const good = generateParseableKeyPair("ed25519");
+    const generate = vi.fn()
+      .mockReturnValueOnce({ ...good, private: "not a key" })
+      .mockReturnValueOnce({ ...good, public: "not a key" })
+      .mockReturnValueOnce(good);
+    expect(generateParseableKeyPair("ed25519", undefined, generate)).toBe(good);
+    expect(generate).toHaveBeenCalledTimes(3);
+  });
+
+  it("fails after the attempt limit instead of looping forever", () => {
+    const generate = vi.fn(() => ({ private: "not a key", public: "not a key" }));
+    expect(() => generateParseableKeyPair("ed25519", undefined, generate, 3))
+      .toThrow("ssh2 generated no parseable ed25519 key in 3 attempts");
+    expect(generate).toHaveBeenCalledTimes(3);
+  });
+});
+
 // Exercise the production connection builders against a loopback SSH fixture.
 // All keys and credentials are synthetic; no commands are executed.
 describe("SSH host-key negotiation with the production connection options", () => {
@@ -26,8 +63,8 @@ describe("SSH host-key negotiation with the production connection options", () =
     knownHosts = join(dir, "known_hosts");
     vi.stubEnv("RAVEN_KNOWN_HOSTS_PATH", knownHosts);
     vi.stubEnv("RAVEN_SSH_INSECURE_HOST_KEYS", "");
-    rsa = utils.generateKeyPairSync("rsa", { bits: 2048 });
-    ed25519 = utils.generateKeyPairSync("ed25519");
+    rsa = generateParseableKeyPair("rsa", { bits: 2048 });
+    ed25519 = generateParseableKeyPair("ed25519");
     server = new Server({ hostKeys: [ed25519.private, rsa.private] }, (connection) => {
       connections.add(connection);
       connection.on("error", () => {});
@@ -103,7 +140,7 @@ describe("SSH host-key negotiation with the production connection options", () =
     });
 
     it("rejects a replacement key even when its algorithm is preferred", async () => {
-      const replacement = utils.generateKeyPairSync("ed25519");
+      const replacement = generateParseableKeyPair("ed25519");
       writeFileSync(knownHosts, `127.0.0.1 ${replacement.public}\n`);
       expect(await connect(buildOptions)).toMatchObject({
         ready: false, error: "Host denied (verification failed)",
