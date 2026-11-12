@@ -10,6 +10,7 @@ export interface SonarIssue {
   resolution?: string;
   effort?: string;
   tags?: string[];
+  assignee?: string;
   creationDate: string;
   updateDate: string;
 }
