@@ -57,7 +57,32 @@ describe("Sonar MCP project listing", () => {
     });
   });
 
+  it("sonar_list_issues omits assignee filters by default and scrubs assignees when filtering", async () => {
+    const body = {
+      total: 2, p: 1, ps: 200,
+      issues: [
+        { key: "K1", severity: "MAJOR", type: "BUG", component: "a.cs", line: 1, message: "m", rule: "r", assignee: "jane.doe@gov.bc.ca" },
+        { key: "K2", severity: "MAJOR", type: "BUG", component: "b.cs", message: "m", rule: "r" },
+      ],
+    };
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify(body)));
+
+    const base = { projectKey: "P", branch: "dev", scope: "overall" };
+    const dflt = await client.callTool({ name: "sonar_list_issues", arguments: base });
+    const defaultUrl = new URL(String(fetchMock.mock.calls.at(-1)?.[0]));
+    expect(defaultUrl.searchParams.has("assignees")).toBe(false);
+    expect(defaultUrl.searchParams.has("assigned")).toBe(false);
+    const text = (dflt.content as Array<{ text: string }>)[0].text;
+    expect(text).toContain("assignee: unassigned");
+    expect(text).not.toContain("jane.doe@gov.bc.ca");
+
+    await client.callTool({ name: "sonar_list_issues", arguments: { ...base, assignees: ["jane.doe"] } });
+    const filtered = new URL(String(fetchMock.mock.calls.at(-1)?.[0]));
+    expect(filtered.searchParams.get("assignees")).toBe("jane.doe");
+  });
+
   it("surfaces an upstream authorization error", async () => {
+    fetchMock.mockReset();
     fetchMock.mockResolvedValueOnce(new Response("Forbidden", { status: 403 }));
     const result = await client.callTool({ name: "sonar_list_projects", arguments: {} });
     expect(result.isError).toBe(true);

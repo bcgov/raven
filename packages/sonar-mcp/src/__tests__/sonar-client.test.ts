@@ -164,6 +164,16 @@ describe("SonarClient API operations", () => {
     const second = new URL(mockFetch.mock.calls[1][0]);
     expect(first.searchParams.get("assigned")).toBe("false");
     expect(second.searchParams.has("assigned")).toBe(false);
+    expect(second.searchParams.has("assignees")).toBe(false);
+  });
+
+  it("searchIssues joins assignees logins", async () => {
+    const mockFetch = createMockFetch({ ok: true, status: 200, body: { total: 0, p: 1, ps: 1, issues: [] } });
+    const client = new SonarClient("https://sonar.example.com", "token", mockFetch as any);
+
+    await client.searchIssues("proj-key", "main", { assignees: ["a", "b"] });
+
+    expect(new URL(mockFetch.mock.calls[0][0]).searchParams.get("assignees")).toBe("a,b");
   });
 
   it("getQualityGate queries project status", async () => {

@@ -45,7 +45,7 @@ function fmtIssue(i: SonarIssue): string {
   const loc = i.line ? `:${i.line}` : "";
   return (
     `- **[${i.severity}/${i.type}]** ${i.component}${loc} — ${i.message} _(${i.rule})_` +
-    ` \`${i.key}\` assignee: ${i.assignee ?? "unassigned"}`
+    ` \`${i.key}\` assignee: ${(i.assignee ? pi.scrub(i.assignee) : null) ?? "unassigned"}`
   );
 }
 function fmtHotspot(h: SonarHotspot): string {
@@ -96,10 +96,12 @@ export function createSonarServer(): McpServer {
       types:      z.array(z.enum(["BUG", "VULNERABILITY", "CODE_SMELL"])).optional(),
       assigned:   z.enum(["any", "assigned", "unassigned"]).default("any")
         .describe("Filter by assignment: 'unassigned' returns only issues with no assignee"),
+      assignees:  z.array(z.string().min(1)).optional()
+        .describe("Only issues assigned to these SonarQube logins (not display names)"),
       pageSize:   z.number().int().min(1).max(500).default(200),
     },
     { readOnlyHint: true },
-    async ({ projectKey, branch, scope, severities, types, assigned, pageSize }) => {
+    async ({ projectKey, branch, scope, severities, types, assigned, assignees, pageSize }) => {
       try {
         const c = getClient();
         const sections: string[] = [];
@@ -107,7 +109,7 @@ export function createSonarServer(): McpServer {
 
         if (scope === "overall" || scope === "both") {
           const r = await c.searchIssues(projectKey, branch, {
-            severities, types, pageSize, assigned: assignedFilter,
+            severities, types, pageSize, assigned: assignedFilter, assignees,
           });
           sections.push(
             `**Overall code — ${r.total} issue(s)**\n` +
@@ -116,7 +118,7 @@ export function createSonarServer(): McpServer {
         }
         if (scope === "new" || scope === "both") {
           const r = await c.searchIssues(projectKey, branch, {
-            severities, types, pageSize, inNewCodePeriod: true, assigned: assignedFilter,
+            severities, types, pageSize, inNewCodePeriod: true, assigned: assignedFilter, assignees,
           });
           sections.push(
             `**New code — ${r.total} issue(s)**\n` +

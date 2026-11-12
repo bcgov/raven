@@ -116,6 +116,7 @@ export class SonarClient {
       types?: string[];           // BUG,VULNERABILITY,CODE_SMELL
       statuses?: string[];        // OPEN,CONFIRMED,REOPENED (default: open-ish)
       assigned?: boolean;         // true = assigned only, false = unassigned only, undefined = all
+      assignees?: string[];       // SonarQube logins
       pageSize?: number;          // max 500
       page?: number;
     } = {},
@@ -130,6 +131,7 @@ export class SonarClient {
         types: opts.types?.join(","),
         sinceLeakPeriod: opts.inNewCodePeriod ? "true" : undefined,
         assigned: opts.assigned,
+        assignees: opts.assignees?.length ? opts.assignees.join(",") : undefined,
         ps: opts.pageSize ?? 500,
         p: opts.page ?? 1,
         s: "SEVERITY",
