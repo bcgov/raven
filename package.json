@@ -44,7 +44,7 @@
     "@modelcontextprotocol/sdk": "^1.32.2",
     "@types/node": "^26.6.6",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.5"
+    "vitest": "^5.1.0"
   },
   "overrides": {
     "@github/copilot-sdk": {
