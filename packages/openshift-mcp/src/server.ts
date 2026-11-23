@@ -46,8 +46,38 @@ const continueSchema = z.string().max(4096).optional().describe("`continue` toke
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
+// Cluster-generated identifiers: scrubbing them corrupts names such as
+// "app-5d6b1bbf5c-x" or 10-digit pod-template hashes that resemble phone numbers.
+const IDENTIFIER_KEYS = new Set([
+  "name",
+  "generateName",
+  "namespace",
+  "uid",
+  "resourceVersion",
+  "image",
+  "imageID",
+  "containerID",
+  "nodeName",
+  "node",
+  "object",
+  "pod-template-hash",
+  "controller-revision-hash",
+  "statefulset.kubernetes.io/pod-name",
+]);
+
+/** Scrub PI from string values only, so keys and JSON structure stay intact. */
+function scrubStructured(value: unknown, key?: string): unknown {
+  if (typeof value === "string") return key !== undefined && IDENTIFIER_KEYS.has(key) ? value : pi.scrubText(value);
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map((item) => scrubStructured(item, key));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubStructured(v, k)]));
+  }
+  return value;
+}
+
 function respond(value: unknown): ToolResult {
-  let text = pi.scrubText(typeof value === "string" ? value : JSON.stringify(value, null, 2));
+  let text = typeof value === "string" ? pi.scrubText(value) : JSON.stringify(scrubStructured(value), null, 2);
   if (text.length > MAX_OUTPUT_CHARS) {
     text = `${text.slice(0, MAX_OUTPUT_CHARS)}\n\n[truncated at ${MAX_OUTPUT_CHARS} characters; narrow the request]`;
   }

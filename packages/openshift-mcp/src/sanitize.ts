@@ -17,6 +17,7 @@ export function sanitizeObject<T>(value: T): T {
 }
 
 function walk(value: unknown): unknown {
+  if (value instanceof Date) return value.toISOString();
   if (Array.isArray(value)) return value.map(walk);
   if (!isRecord(value)) return value;
   const out: Record<string, unknown> = {};

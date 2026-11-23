@@ -162,6 +162,25 @@ describe("OpenShift MCP server", () => {
     expect(output).toContain("debug");
   });
 
+  it("returns valid JSON that keeps identifiers, field names and dates intact", async () => {
+    const created = new Date("2026-11-17T21:59:45Z");
+    const object = pod("app-5-status-6559871234-srj72", "app-dev", "registry/status:1", "id");
+    (object.metadata as Record<string, unknown>)["creationTimestamp"] = created;
+    (object.metadata as Record<string, unknown>)["labels"] = { "pod-template-hash": "6559871234" };
+    (object.metadata as Record<string, unknown>)["annotations"] = { contact: "call 250-555-0199" };
+    (object["spec"] as Record<string, unknown>)["automountServiceAccountToken"] = false;
+    reader.get.mockResolvedValueOnce(object);
+
+    const output = text(await client.callTool({ name: "openshift_get_pod", arguments: { namespace: "app-dev", name: "api" } }));
+    const parsed = JSON.parse(output);
+
+    expect(parsed.metadata.name).toBe("app-5-status-6559871234-srj72");
+    expect(parsed.metadata.labels["pod-template-hash"]).toBe("6559871234");
+    expect(parsed.metadata.creationTimestamp).toBe(created.toISOString());
+    expect(parsed.spec.automountServiceAccountToken).toBe(false);
+    expect(output).not.toContain("250-555-0199");
+  });
+
   it("caps log requests and scrubs log output", async () => {
     reader.podLog.mockResolvedValueOnce("ERROR contact admin@example.com\n");
     const output = text(
