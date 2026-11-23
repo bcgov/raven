@@ -32,6 +32,7 @@ import { createRfcBuddyServer } from "../packages/rfcbuddy-mcp/dist/server.js";
 import { createArtifactoryServer } from "../packages/artifactory-mcp/dist/server.js";
 import { createSharePointServer } from "../packages/sharepoint-mcp/dist/server.js";
 import { createGitHubServer } from "../packages/github-mcp/dist/server.js";
+import { createOpenShiftServer } from "../packages/openshift-mcp/dist/server.js";
 
 const INVENTORY = fileURLToPath(new URL("../docs/TOOL_INVENTORY.md", import.meta.url));
 const MCP_CONFIG = fileURLToPath(new URL("../.mcp.json", import.meta.url));
@@ -54,6 +55,7 @@ const SERVERS = [
   { display: "Artifactory", pkg: "artifactory-mcp", mcpKey: "artifactory", group: "Build and artifact infrastructure", factory: createArtifactoryServer },
   { display: "SharePoint", pkg: "sharepoint-mcp", mcpKey: "sharepoint", group: "Microsoft 365", factory: createSharePointServer },
   { display: "GitHub", pkg: "github-mcp", mcpKey: "github", group: "GitHub platform / security", factory: createGitHubServer },
+  { display: "OpenShift", pkg: "openshift-mcp", mcpKey: "openshift", group: "Container platform", factory: createOpenShiftServer },
 ];
 
 async function listTools(factory) {

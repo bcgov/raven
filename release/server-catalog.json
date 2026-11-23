@@ -149,6 +149,14 @@
       "entrypoint": "packages/github-mcp/dist/index.js",
       "launcher": "raven-github",
       "access": "read-write"
+    },
+    {
+      "id": "openshift",
+      "package": "@nrs/openshift-mcp",
+      "packageVersion": "0.3.0",
+      "entrypoint": "packages/openshift-mcp/dist/index.js",
+      "launcher": "raven-openshift",
+      "access": "read-only"
     }
   ]
 }

@@ -70,6 +70,7 @@ raven/
     ├── sonar-mcp/      — @nrs/sonar-mcp (SonarQube issues/quality gate/hotspots/metrics + local scan)
     ├── artifactory-mcp/ — @nrs/artifactory-mcp (Artifactory artifacts, build-info, guarded transfers)
     ├── jenkins-mcp/    — @nrs/jenkins-mcp (Jenkins jobs/builds/config/queue/artifacts/promotions/credentials)
+    ├── openshift-mcp/  — @nrs/openshift-mcp (OpenShift projects/pods/logs/events/workloads — READ-ONLY). Exports `./client`.
     ├── server-mcp/     — @nrs/server-mcp: in-process ssh2 + log search. Exports `./client`.
     ├── imis-mcp/       — @nrs/imis-mcp: SSH explorer for IMIS-tracked servers. Exports `./client`.
     ├── server-ui/      — @nrs/server-ui (Express dashboard, port 3777)
@@ -401,6 +402,16 @@ For US Cloud scans (`sonarqube.us`), pass `-Dsonar.region=us` in `extraArgs`; sc
 - `sonar_list_security_hotspots` — List security hotspots for a project/branch (optionally include acknowledged hotspots).
 - `sonar_get_project_metrics` — Retrieve headline metrics for the project’s main branch (ratings, coverage, duplications, LOC, etc.).
 - `sonar_run_scan` — Run a local sonar-scanner analysis for a given working directory.
+
+### OpenShift (READ-ONLY)
+
+Uses the kubeconfig written by `oc login` (optional `KUBECONFIG`, `OPENSHIFT_CONTEXT`). Set `OPENSHIFT_ALLOWED_NAMESPACES` to restrict reads to named projects. Secrets, ServiceAccounts, RBAC and identity resources are always refused; credential-like env values are redacted.
+- `openshift_list_projects` / `openshift_list_pods` / `openshift_get_pod` — Project and pod inventory with container images and resolved digests.
+- `openshift_find_pods_by_image` — Map a Sysdig image digest or reference to the running pods and their owners.
+- `openshift_list_events` / `openshift_get_pod_logs` — Diagnose rollouts and crashes (logs are tail-capped and PI-scrubbed).
+- `openshift_list_resources` / `openshift_get_resource` — Read any other permitted kind (Deployment, BuildConfig, Build, ImageStream, Route, …).
+
+Sysdig → code chain: Sysdig finding (image digest) → `openshift_find_pods_by_image` → `openshift_get_resource` on the owning Deployment/Build → source repo and commit.
 
 ---
 

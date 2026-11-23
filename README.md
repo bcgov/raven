@@ -222,6 +222,19 @@ Replace the illustrative `octo-org` entries with repositories you actually inten
 
 All GitHub tools refuse to run without `GITHUB_REPOSITORY_ALLOWLIST`; mutating tools additionally require a `confirm: true` argument per call.
 
+Optional OpenShift settings (read-only; uses your existing `oc login` kubeconfig — no token goes in `~/.raven/.env`):
+
+```env
+# Optional: kubeconfig context to use (default: the current `oc` context)
+# OPENSHIFT_CONTEXT=app-dev/api-silver-devops-gov-bc-ca:6443/jdoe
+# Recommended: comma-separated projects the tools may read; requests elsewhere are refused
+# OPENSHIFT_ALLOWED_NAMESPACES=abc123-dev,abc123-test
+# Discouraged: accept a kubeconfig that sets insecure-skip-tls-verify
+# OPENSHIFT_ALLOW_INSECURE_TLS=true
+```
+
+All OpenShift tools are read-only (HTTP GET only). Secrets, ServiceAccounts, RBAC, OAuth and user/identity resources are always blocked, and credential-like environment values are redacted. The cluster's RBAC is the real boundary: use an identity bound to the built-in `view` role in only the projects you need. See [`packages/openshift-mcp/README.md`](packages/openshift-mcp/README.md).
+
 Optional RFC Buddy settings:
 
 ```env
@@ -814,6 +827,7 @@ raven/                           ← RAVEN root (run npm commands here)
     jenkins-mcp/       Jenkins MCP server (jobs, builds, queue, artifacts, promotions, credentials)
     rfcbuddy-mcp/      RFC Buddy MCP server (RFC schedules search and baseline tracking)
     artifactory-mcp/   JFrog Artifactory MCP server (artifacts, build-info, guarded transfers)
+    openshift-mcp/     OpenShift MCP server (projects, pods, logs, events, workloads, image-to-pod mapping — read-only)
     pipeline/          Autonomous DevOps pipeline CLI (GitHub Copilot SDK + MCP tools)
     raven-cli/         CLI interface (coming soon)
     server-ui/         Web UI for server monitoring (see SERVER_MONITOR_UI.md)
