@@ -162,6 +162,22 @@ describe("OpenShift MCP server", () => {
     expect(output).toContain("debug");
   });
 
+  it("shrinks oversized resource pages instead of returning truncated JSON", async () => {
+    const bulky = (i: number) => ({ metadata: { name: `obj-${i}` }, data: "setting: value\n".repeat(2_000) });
+    reader.list.mockImplementation(async (_v: string, _k: string, opts: { limit: number }) => ({
+      items: Array.from({ length: opts.limit }, (_, i) => bulky(i)),
+      continueToken: `after-${opts.limit}`,
+    }));
+
+    const result = JSON.parse(
+      text(await client.callTool({ name: "openshift_list_resources", arguments: { apiVersion: "v1", kind: "ConfigMap", namespace: "app-dev", limit: 10 } })),
+    );
+
+    expect(reader.list.mock.calls.map((c) => c[2].limit)).toEqual([10, 5, 2]);
+    expect(result.items).toHaveLength(2);
+    expect(result.continue).toBe("after-2");
+  });
+
   it("returns valid JSON that keeps identifiers, field names and dates intact", async () => {
     const created = new Date("2026-11-17T21:59:45Z");
     const object = pod("app-5-status-6559871234-srj72", "app-dev", "registry/status:1", "id");

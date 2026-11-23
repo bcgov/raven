@@ -287,14 +287,24 @@ export function createOpenShiftServer(options: OpenShiftServerOptions = {}): Mcp
     ({ apiVersion, kind, namespace, labelSelector, fieldSelector, limit, continue: continueToken }) =>
       run(async () => {
         assertAllowedKind(apiVersion, kind);
-        const page = await client().list(apiVersion, kind, {
-          namespace: resolveNamespace(namespace),
-          labelSelector,
-          fieldSelector,
-          limit,
-          continueToken,
-        });
-        return { items: page.items.map((item) => sanitizeObject(item)), continue: page.continueToken };
+        const ns = resolveNamespace(namespace);
+        // Re-request smaller pages instead of slicing JSON, so output stays parseable
+        // and the continue token still points at the first unreturned object.
+        for (let pageSize = limit; ; pageSize = Math.max(1, Math.floor(pageSize / 2))) {
+          const page = await client().list(apiVersion, kind, {
+            namespace: ns,
+            labelSelector,
+            fieldSelector,
+            limit: pageSize,
+            continueToken,
+          });
+          const result = {
+            items: page.items.map((item) => sanitizeObject(item)),
+            continue: page.continueToken,
+            ...(pageSize < limit ? { note: `Page reduced to ${pageSize} item(s) to fit the output limit.` } : {}),
+          };
+          if (pageSize === 1 || JSON.stringify(scrubStructured(result), null, 2).length <= MAX_OUTPUT_CHARS) return result;
+        }
       }),
   );
 
