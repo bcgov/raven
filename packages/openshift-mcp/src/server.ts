@@ -12,7 +12,7 @@ import {
   isValidNamespace,
   resolveNamespace,
 } from "./policy.js";
-import { podUsesImage, sanitizeObject, summarizeEvent, summarizePod } from "./sanitize.js";
+import { podUsesImage, redactPrivateKeys, sanitizeObject, summarizeEvent, summarizePod } from "./sanitize.js";
 
 const pi = new PiScrubber();
 
@@ -26,6 +26,8 @@ const MAX_TAIL_LINES = 2_000;
 const MAX_LOG_BYTES = 256 * 1024;
 const IMAGE_SCAN_PAGE = 500;
 const IMAGE_SCAN_MAX_PODS = 5_000;
+const EVENT_SCAN_PAGE = 500;
+const EVENT_SCAN_MAX = 5_000;
 const READ_ONLY = { readOnlyHint: true } as const;
 
 const namespaceSchema = z.string().refine(isValidNamespace, "must be a valid OpenShift project/namespace name");
@@ -46,40 +48,61 @@ const continueSchema = z.string().max(4096).optional().describe("`continue` toke
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
-// Cluster-generated identifiers: scrubbing them corrupts names such as
-// "app-5d6b1bbf5c-x" or 10-digit pod-template hashes that resemble phone numbers.
-const IDENTIFIER_KEYS = new Set([
-  "name",
-  "generateName",
-  "namespace",
-  "uid",
-  "resourceVersion",
-  "image",
-  "imageID",
-  "containerID",
-  "nodeName",
-  "node",
-  "object",
-  "pod-template-hash",
-  "controller-revision-hash",
-  "statefulset.kubernetes.io/pod-name",
+// Cluster-generated identifiers, keyed by the field that contains them. Scrubbing
+// them corrupts names such as "app-5d6b1bbf5c-x" or 10-digit pod-template hashes
+// that resemble phone numbers. Matching on the parent field keeps user-controlled
+// payloads (ConfigMap data, annotations, …) scrubbed even when keys collide.
+const IDENTIFIER_FIELDS = new Map<string, Set<string>>([
+  ["", new Set(["image"])],
+  ["metadata", new Set(["name", "generateName", "namespace", "uid", "resourceVersion"])],
+  ["ownerReferences", new Set(["kind", "name", "uid"])],
+  ["owners", new Set(["kind", "name"])],
+  ["spec", new Set(["nodeName"])],
+  ["labels", new Set(["pod-template-hash", "controller-revision-hash", "statefulset.kubernetes.io/pod-name"])],
+  ["pods", new Set(["name", "namespace", "node"])],
+  ["matches", new Set(["name", "namespace", "node"])],
+  ["projects", new Set(["name"])],
+  ["events", new Set(["object"])],
+  ...["containers", "initContainers", "ephemeralContainers"].map(
+    (field) => [field, new Set(["name", "image", "imageID"])] as const,
+  ),
+  ...["containerStatuses", "initContainerStatuses", "ephemeralContainerStatuses"].map(
+    (field) => [field, new Set(["name", "image", "imageID", "containerID"])] as const,
+  ),
 ]);
 
+function scrubText(text: string): string {
+  return pi.scrubText(redactPrivateKeys(text));
+}
+
 /** Scrub PI from string values only, so keys and JSON structure stay intact. */
-function scrubStructured(value: unknown, key?: string): unknown {
-  if (typeof value === "string") return key !== undefined && IDENTIFIER_KEYS.has(key) ? value : pi.scrubText(value);
+function scrubStructured(value: unknown, parent = "", key?: string): unknown {
+  if (typeof value === "string") {
+    return key !== undefined && IDENTIFIER_FIELDS.get(parent)?.has(key) ? value : scrubText(value);
+  }
   if (value instanceof Date) return value.toISOString();
-  if (Array.isArray(value)) return value.map((item) => scrubStructured(item, key));
+  if (Array.isArray(value)) return value.map((item) => scrubStructured(item, parent, key));
   if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubStructured(v, k)]));
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubStructured(v, key ?? "", k)]));
   }
   return value;
 }
 
 function respond(value: unknown): ToolResult {
-  let text = typeof value === "string" ? pi.scrubText(value) : JSON.stringify(scrubStructured(value), null, 2);
+  if (typeof value !== "string") {
+    const text = JSON.stringify(scrubStructured(value), null, 2);
+    if (text.length > MAX_OUTPUT_CHARS) {
+      throw new Error(
+        `OpenShift response is ${text.length} characters, over the ${MAX_OUTPUT_CHARS}-character limit; ` +
+          "narrow the request (namespace, selector) or lower the page limit.",
+      );
+    }
+    return { content: [{ type: "text", text }] };
+  }
+  let text = scrubText(value);
   if (text.length > MAX_OUTPUT_CHARS) {
-    text = `${text.slice(0, MAX_OUTPUT_CHARS)}\n\n[truncated at ${MAX_OUTPUT_CHARS} characters; narrow the request]`;
+    const suffix = `\n\n[truncated at ${MAX_OUTPUT_CHARS} characters; narrow the request]`;
+    text = text.slice(0, MAX_OUTPUT_CHARS - suffix.length) + suffix;
   }
   return { content: [{ type: "text", text }] };
 }
@@ -108,23 +131,35 @@ function safeParse(text: string): unknown {
 function fail(err: unknown): ToolResult {
   const message =
     err instanceof ApiException ? apiErrorMessage(err) : err instanceof Error ? err.message : String(err);
-  return { content: [{ type: "text", text: pi.scrubText(message) }], isError: true };
+  return { content: [{ type: "text", text: scrubText(message) }], isError: true };
 }
 
 export interface OpenShiftServerOptions {
-  /** Injected reader for tests; defaults to the kubeconfig-backed client, created on first use. */
+  /** Injected reader for tests; never replaced. */
   reader?: OpenShiftReader;
+  /** Creates the kubeconfig-backed reader on first use and again after a 401, so a fresh `oc login` takes effect. */
+  readerFactory?: () => OpenShiftReader;
 }
 
 export function createOpenShiftServer(options: OpenShiftServerOptions = {}): McpServer {
   const server = new McpServer({ name: "raven-openshift", version: "0.3.0" });
+  const createReader = options.readerFactory ?? (() => new KubeOpenShiftReader());
   let reader = options.reader;
-  const client = (): OpenShiftReader => (reader ??= new KubeOpenShiftReader());
+  const client = (): OpenShiftReader => (reader ??= createReader());
   const run = async (fn: () => Promise<unknown>): Promise<ToolResult> => {
     try {
       return respond(await fn());
     } catch (err) {
+      if (!options.reader && err instanceof ApiException && err.code === 401) reader = undefined;
       return fail(err);
+    }
+  };
+  /** With an allowlist, a namespace argument must not unlock cluster-scoped kinds such as Node. */
+  const assertNamespaceScoped = async (apiVersion: string, kind: string): Promise<void> => {
+    if (allowedNamespaces() && !(await client().isNamespaced(apiVersion, kind))) {
+      throw new Error(
+        `${kind} (${apiVersion}) is cluster-scoped; cluster-scoped reads are disabled while OPENSHIFT_ALLOWED_NAMESPACES is set.`,
+      );
     }
   };
 
@@ -196,35 +231,51 @@ export function createOpenShiftServer(options: OpenShiftServerOptions = {}): Mcp
         const scopes: (string | undefined)[] = namespace
           ? [resolveNamespace(namespace, allowed)]
           : allowed ?? [undefined];
+        const label = (scope: string | undefined) => scope ?? "(all namespaces)";
         const matches: ReturnType<typeof summarizePod>[] = [];
+        const incompleteNamespaces: string[] = [];
         let scanned = 0;
-        let truncated = false;
-        for (const scope of scopes) {
+        for (const [index, scope] of scopes.entries()) {
+          if (scanned >= IMAGE_SCAN_MAX_PODS) {
+            incompleteNamespaces.push(...scopes.slice(index).map(label));
+            break;
+          }
           let continueToken: string | undefined;
           do {
-            const page = await client().list("v1", "Pod", { namespace: scope, limit: IMAGE_SCAN_PAGE, continueToken });
+            const limit = Math.min(IMAGE_SCAN_PAGE, IMAGE_SCAN_MAX_PODS - scanned);
+            const page = await client().list("v1", "Pod", { namespace: scope, limit, continueToken });
             scanned += page.items.length;
             matches.push(...page.items.filter((p) => podUsesImage(p, image)).map(summarizePod));
             continueToken = page.continueToken;
-            if (scanned >= IMAGE_SCAN_MAX_PODS && continueToken) {
-              truncated = true;
-              break;
-            }
-          } while (continueToken);
-          if (truncated) break;
+          } while (continueToken && scanned < IMAGE_SCAN_MAX_PODS);
+          if (continueToken) incompleteNamespaces.push(label(scope));
         }
-        return { image, scannedPods: scanned, truncated, matches };
+        return {
+          image,
+          scannedPods: scanned,
+          truncated: incompleteNamespaces.length > 0,
+          ...(incompleteNamespaces.length
+            ? { incompleteNamespaces, note: `Stopped after scanning ${IMAGE_SCAN_MAX_PODS} pods; pass a namespace to search the rest.` }
+            : {}),
+          matches,
+        };
       }),
   );
 
   server.tool(
     "openshift_list_events",
-    "List recent events in a project, newest first. Filter by involved object name or Warning type to diagnose rollouts and crashes.",
+    "List the most recent events in a project, newest first. Filter by involved object name or Warning type to diagnose rollouts and crashes.",
     {
       namespace: namespaceSchema,
       involvedObjectName: nameSchema.optional().describe("Only events about this object (pod, deployment, …)."),
       type: z.enum(["Normal", "Warning"]).optional(),
-      limit: limitSchema(DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(MAX_LIST_LIMIT)
+        .default(DEFAULT_LIST_LIMIT)
+        .describe(`Maximum events to return after sorting newest first (default ${DEFAULT_LIST_LIMIT}, max ${MAX_LIST_LIMIT}).`),
     },
     READ_ONLY,
     ({ namespace, involvedObjectName, type, limit }) =>
@@ -235,13 +286,32 @@ export function createOpenShiftServer(options: OpenShiftServerOptions = {}): Mcp
         ]
           .filter(Boolean)
           .join(",");
-        const page = await client().list("v1", "Event", {
-          namespace: resolveNamespace(namespace),
-          fieldSelector: fieldSelector || undefined,
-          limit,
-        });
-        const events = page.items.map(summarizeEvent).sort((a, b) => (b.last ?? "").localeCompare(a.last ?? ""));
-        return { events };
+        const ns = resolveNamespace(namespace);
+        // The API returns events in name order, so read every page before choosing the newest.
+        const items: KubeObject[] = [];
+        let continueToken: string | undefined;
+        do {
+          const page = await client().list("v1", "Event", {
+            namespace: ns,
+            fieldSelector: fieldSelector || undefined,
+            limit: Math.min(EVENT_SCAN_PAGE, EVENT_SCAN_MAX - items.length),
+            continueToken,
+          });
+          items.push(...page.items);
+          continueToken = page.continueToken;
+        } while (continueToken && items.length < EVENT_SCAN_MAX);
+        const time = (value: string | undefined) => (value ? Date.parse(value) || 0 : 0);
+        const events = items
+          .map(summarizeEvent)
+          .sort((a, b) => time(b.last) - time(a.last))
+          .slice(0, limit);
+        return {
+          events,
+          scannedEvents: items.length,
+          ...(continueToken
+            ? { truncated: true, note: `Only the first ${EVENT_SCAN_MAX} events were scanned; filter by object or type for complete results.` }
+            : {}),
+        };
       }),
   );
 
@@ -288,6 +358,7 @@ export function createOpenShiftServer(options: OpenShiftServerOptions = {}): Mcp
       run(async () => {
         assertAllowedKind(apiVersion, kind);
         const ns = resolveNamespace(namespace);
+        await assertNamespaceScoped(apiVersion, kind);
         // Re-request smaller pages instead of slicing JSON, so output stays parseable
         // and the continue token still points at the first unreturned object.
         for (let pageSize = limit; ; pageSize = Math.max(1, Math.floor(pageSize / 2))) {
@@ -322,7 +393,9 @@ export function createOpenShiftServer(options: OpenShiftServerOptions = {}): Mcp
     ({ apiVersion, kind, name, namespace }) =>
       run(async () => {
         assertAllowedKind(apiVersion, kind);
-        const object: KubeObject = await client().get(apiVersion, kind, name, resolveNamespace(namespace));
+        const ns = resolveNamespace(namespace);
+        await assertNamespaceScoped(apiVersion, kind);
+        const object: KubeObject = await client().get(apiVersion, kind, name, ns);
         return sanitizeObject(object);
       }),
   );

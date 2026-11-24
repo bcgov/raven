@@ -405,7 +405,7 @@ For US Cloud scans (`sonarqube.us`), pass `-Dsonar.region=us` in `extraArgs`; sc
 
 ### OpenShift (READ-ONLY)
 
-Uses the kubeconfig written by `oc login` (optional `KUBECONFIG`, `OPENSHIFT_CONTEXT`). Set `OPENSHIFT_ALLOWED_NAMESPACES` to restrict reads to named projects. Secrets, ServiceAccounts, RBAC and identity resources are always refused; credential-like env values are redacted.
+Uses the kubeconfig written by `oc login` (optional `KUBECONFIG`, `OPENSHIFT_CONTEXT`). Set `OPENSHIFT_ALLOWED_NAMESPACES` to restrict reads to named projects. Secrets, ServiceAccounts, RBAC and identity resources are always refused; credential-like fields and private keys are redacted. With an allowlist, cluster-scoped kinds are refused.
 - `openshift_list_projects` / `openshift_list_pods` / `openshift_get_pod` — Project and pod inventory with container images and resolved digests.
 - `openshift_find_pods_by_image` — Map a Sysdig image digest or reference to the running pods and their owners.
 - `openshift_list_events` / `openshift_get_pod_logs` — Diagnose rollouts and crashes (logs are tail-capped and PI-scrubbed).

@@ -261,7 +261,7 @@ If dedicated Jenkins credentials are omitted, the server falls back to the cache
 |----------|-----------|:---------:|---------|---------|
 | `KUBECONFIG` | optional | **yes** (file holds tokens) | openshift | kubeconfig path(s); default `~/.kube/config` as written by `oc login` |
 | `OPENSHIFT_CONTEXT` | optional | no | openshift | kubeconfig context to use instead of the current context |
-| `OPENSHIFT_ALLOWED_NAMESPACES` | recommended | no | openshift | comma-separated projects the tools may read; when set, every read must name one of them |
+| `OPENSHIFT_ALLOWED_NAMESPACES` | recommended | no | openshift | comma-separated projects the tools may read; when set, every read must name one of them and cluster-scoped kinds are refused |
 | `OPENSHIFT_ALLOW_INSECURE_TLS` | optional | no | openshift | `true` accepts a kubeconfig with `insecure-skip-tls-verify` (refused by default) |
 
 ### Server UI + tuning

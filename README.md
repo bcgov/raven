@@ -233,7 +233,7 @@ Optional OpenShift settings (read-only; uses your existing `oc login` kubeconfig
 # OPENSHIFT_ALLOW_INSECURE_TLS=true
 ```
 
-All OpenShift tools are read-only (HTTP GET only). Secrets, ServiceAccounts, RBAC, OAuth and user/identity resources are always blocked, and credential-like environment values are redacted. The cluster's RBAC is the real boundary: use an identity bound to the built-in `view` role in only the projects you need. See [`packages/openshift-mcp/README.md`](packages/openshift-mcp/README.md).
+All OpenShift tools are read-only (HTTP GET only). Secrets, ServiceAccounts, RBAC, OAuth and user/identity resources are always blocked, and credential-like fields (environment values, ConfigMap data, Route TLS keys) and private keys are redacted. The cluster's RBAC is the real boundary: use an identity bound to the built-in `view` role in only the projects you need. See [`packages/openshift-mcp/README.md`](packages/openshift-mcp/README.md).
 
 Optional RFC Buddy settings:
 

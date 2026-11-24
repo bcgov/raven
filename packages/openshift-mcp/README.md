@@ -32,8 +32,12 @@ All tools are annotated `readOnlyHint: true` and issue only HTTP GET requests.
 
 - No create, update, patch, delete, exec, port-forward or scale tools exist.
 - Secrets, ServiceAccounts and the RBAC, OAuth, user, authentication and security-context-constraint API groups are always refused before any cluster call.
-- `managedFields`, last-applied annotations and environment values whose names look like credentials are removed from output.
-- All output passes through `PiScrubber` and is truncated at 100,000 characters.
+- With `OPENSHIFT_ALLOWED_NAMESPACES` set, cluster-scoped kinds (Node, Project, …) are refused by `openshift_list_resources` and `openshift_get_resource`, even when an allowed namespace is supplied.
+- `managedFields`, last-applied annotations, PEM private keys, and values of credential-like fields (environment variables, ConfigMap `data.password`, Route `spec.tls.key`, annotations, …) are removed from output.
+- All output passes through `PiScrubber`. Only cluster-generated identifiers (object names, UIDs, images, digests) are exempt; user-controlled fields such as ConfigMap data and annotations are always scrubbed.
+- Structured results over 100,000 characters return an error instead of partial JSON; logs are truncated at that size.
+- `openshift_find_pods_by_image` scans at most 5,000 pods in total and lists the namespaces it did not finish. `openshift_list_events` scans up to 5,000 events before choosing the newest.
+- After a 401, the next call reloads the kubeconfig, so a fresh `oc login` takes effect without restarting the server.
 
 MCP-side filtering is defence in depth, not authorization. Use an identity bound to the built-in `view` role in only the projects you need, for example:
 

@@ -1,5 +1,5 @@
-import { CoreV1Api, KubeConfig, KubernetesObjectApi } from "@kubernetes/client-node";
-import type { KubernetesObject } from "@kubernetes/client-node";
+import { ApiException, CoreV1Api, KubeConfig, KubernetesObjectApi } from "@kubernetes/client-node";
+import type { KubernetesObject, ResponseContext } from "@kubernetes/client-node";
 
 export type KubeObject = KubernetesObject & Record<string, unknown>;
 
@@ -32,6 +32,8 @@ export interface OpenShiftReader {
   list(apiVersion: string, kind: string, options: ListOptions): Promise<ListResult>;
   get(apiVersion: string, kind: string, name: string, namespace?: string): Promise<KubeObject>;
   podLog(namespace: string, name: string, options: PodLogOptions): Promise<string>;
+  /** Whether the kind lives inside a namespace (false for cluster-scoped kinds such as Node). */
+  isNamespaced(apiVersion: string, kind: string): Promise<boolean>;
 }
 
 /**
@@ -59,12 +61,38 @@ export function loadKubeConfig(context = process.env["OPENSHIFT_CONTEXT"]): Kube
   return kc;
 }
 
+/**
+ * Generic object API that returns responses as plain JSON. The stock
+ * deserializer maps list metadata of non-built-in kinds (RouteList, BuildList,
+ * ProjectList, …) to V1ObjectMeta, which drops the `continue` pagination token.
+ */
+class RawObjectApi extends KubernetesObjectApi {
+  static create(kc: KubeConfig): RawObjectApi {
+    const api = kc.makeApiClient(RawObjectApi);
+    api.setDefaultNamespace(kc);
+    return api;
+  }
+
+  async isNamespaced(apiVersion: string, kind: string): Promise<boolean> {
+    const resource = await this.resource(apiVersion, kind);
+    if (!resource) throw new Error(`Unrecognized API version and kind: ${apiVersion} ${kind}`);
+    return resource.namespaced;
+  }
+
+  protected override async processResponse<T extends KubernetesObject>(response: ResponseContext): Promise<T> {
+    if (response.httpStatusCode >= 200 && response.httpStatusCode <= 299) {
+      return JSON.parse(await response.body.text()) as T;
+    }
+    throw new ApiException(response.httpStatusCode, "Unsuccessful HTTP Request", await response.getBodyAsAny(), response.headers);
+  }
+}
+
 export class KubeOpenShiftReader implements OpenShiftReader {
-  private readonly objects: KubernetesObjectApi;
+  private readonly objects: RawObjectApi;
   private readonly core: CoreV1Api;
 
   constructor(kc: KubeConfig = loadKubeConfig()) {
-    this.objects = KubernetesObjectApi.makeApiClient(kc);
+    this.objects = RawObjectApi.create(kc);
     this.core = kc.makeApiClient(CoreV1Api);
   }
 
@@ -81,7 +109,12 @@ export class KubeOpenShiftReader implements OpenShiftReader {
       options.limit,
       options.continueToken,
     );
-    return { items: result.items, continueToken: result.metadata?._continue || undefined };
+    const metadata = result.metadata as { continue?: string } | undefined;
+    return { items: result.items ?? [], continueToken: metadata?.continue || undefined };
+  }
+
+  isNamespaced(apiVersion: string, kind: string): Promise<boolean> {
+    return this.objects.isNamespaced(apiVersion, kind);
   }
 
   async get(apiVersion: string, kind: string, name: string, namespace?: string): Promise<KubeObject> {
