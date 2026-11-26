@@ -167,7 +167,7 @@ When the AI connects to an MCP server, it receives a tool manifest — a list of
 | **Separate credential store** | `~/.raven/.env` with `chmod 600` — credentials never in code or MCP responses |
 | **Per-tool schema validation** | Zod schemas enforce parameter types, ranges, and enums at the boundary |
 | **PI scrubbing layer** | Raven-owned servers that use `PiScrubber` anonymize output; the Jarvis proxy and hosted Sysdig do not pass responses through it |
-| **Read-only by default** | 121 of 181 locally-registered tools are read-only; 60 are writes. Jenkins and Artifactory writes include protected local transfers and guarded upstream mutations. See [TOOL_INVENTORY.md](TOOL_INVENTORY.md) for the authoritative split |
+| **Read-only by default** | 164 of 245 locally-registered tools are read-only; 81 are writes. Jenkins and Artifactory writes include protected local transfers and guarded upstream mutations. See [TOOL_INVENTORY.md](TOOL_INVENTORY.md) for the authoritative split |
 | **SSH command allowlist** | Server monitoring permits only a fixed set of read-only shell commands |
 
 ### 3.3 Package Structure
@@ -196,6 +196,7 @@ packages/
   rfcbuddy-mcp/         # RFC Buddy (RFC search)
   artifactory-mcp/      # JFrog Artifactory artifacts, build-info, and guarded transfers
   github-mcp/           # GitHub GHAS security (SARIF, alerts), issues, PRs; allow-list gated
+  openshift-mcp/        # OpenShift projects, pods, logs, events, workloads (read-only; RBAC + namespace allowlist)
 ```
 
 Raven-owned MCP servers (apart from the Jarvis proxy's dynamic tool registration) follow this local stdio pattern; hosted Sysdig is not a Raven package:
@@ -249,14 +250,14 @@ RAVEN excludes broad administrative and arbitrary-execution capabilities. The re
 | Send data to arbitrary external URLs | **No** | Tools call only fixed, configured endpoints (§11.3), never URLs the AI chooses. (`jarvis-mcp` proxies to one such endpoint — the Jarvis API — not an arbitrary-URL capability.) |
 | Execute arbitrary commands | **No** | No `exec` or `eval` tool exists. Server monitoring validates commands against an allowlist. |
 | Access arbitrary local files | **No** | Artifactory uploads and downloads are confined to mode-restricted configured directories; paths cannot escape those roots. |
-| Modify server configurations | **No** | Server monitor tools are strictly read-only. |
+| Modify server configurations | **No** | Server monitor tools are strictly read-only. OpenShift tools issue only HTTP GETs; there is no exec, scale, apply or delete tool. |
 | Create user accounts | **No** | No user management tools exist. |
 | Change permissions | **No** | No IAM or permission tools exist. |
-| Access other systems | **No, except configured services** | Tools connect only to configured endpoints: Jira, Confluence, Bitbucket, Jira Assets, Jenkins, application servers, and — when configured — Azure DevOps, SonarQube, Artifactory, RFC Buddy, and the Jarvis proxy. The MCP client connects directly to hosted Sysdig Secure (§11.3). |
+| Access other systems | **No, except configured services** | Tools connect only to configured endpoints: Jira, Confluence, Bitbucket, Jira Assets, Jenkins, application servers, and — when configured — Azure DevOps, SonarQube, Artifactory, RFC Buddy, the OpenShift API server from the user's kubeconfig, and the Jarvis proxy. The MCP client connects directly to hosted Sysdig Secure (§11.3). |
 
 ### 4.3 Write Tools Are Narrow and Auditable
 
-Of the 221 locally-registered tools, 78 are conservatively classified as writes (the rest are read-only). The table below is illustrative; see [TOOL_INVENTORY.md](TOOL_INVENTORY.md) for the complete read/write split. Jenkins config exports, Jenkins artifact downloads, and Artifactory downloads count as writes because they create protected local files.
+Of the 245 locally-registered tools, 81 are conservatively classified as writes (the rest are read-only). The table below is illustrative; see [TOOL_INVENTORY.md](TOOL_INVENTORY.md) for the complete read/write split. Jenkins config exports, Jenkins artifact downloads, and Artifactory downloads count as writes because they create protected local files.
 
 | Tool | What It Does | What It Cannot Do |
 |------|-------------|------------------|

@@ -15,13 +15,13 @@
 
 | | Count |
 |---|---|
-| MCP servers | **18** |
-| Tools registered locally (in-process) | **237** |
-| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 237 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
+| MCP servers | **19** |
+| Tools registered locally (in-process) | **245** |
+| Tools dynamically proxied from the remote Jarvis API | **~6** (not part of the 245 — see [jarvis-mcp](#jarvis-mcp--dynamic-remote-proxy--data-egress)) |
 | Tools dynamically hosted by Sysdig Secure | Dynamic OAuth tool surface (excluded from totals) |
-| **Known tools advertised to the AI when everything is connected** | **~243**, excluding dynamic Sysdig tools |
+| **Known tools advertised to the AI when everything is connected** | **~251**, excluding dynamic Sysdig tools |
 | Mutating / write tools | **~82** (81 local + ~1 via Jarvis; Sysdig excluded) |
-| Read-only tools | **~161**, excluding dynamic Sysdig tools |
+| Read-only tools | **~169**, excluding dynamic Sysdig tools |
 | Non-server packages | `auth`, `pipeline`, `server-ui`, `raven-cli` |
 
 Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-backed servers (Jira, Confluence, Bitbucket, Assets, Overview, Health, Bug Classifier) share one SiteMinder/Basic-Auth session; Server Monitor, IMIS, Azure DevOps / TFS, Sonar, Jenkins, Artifactory, RFC Buddy, and Jarvis authenticate separately via `~/.raven/.env`. Sysdig is a hosted OAuth MCP server and uses no Raven-local credentials.
@@ -46,10 +46,11 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 | Artifactory | `artifactory` | 12 | 7 | 19 |
 | SharePoint | `sharepoint` | 9 | 0 | 9 |
 | GitHub | `github` | 19 | 15 | 34 |
-| **Subtotal (local)** | | **156** | **81** | **237** |
+| OpenShift | `openshift` | 8 | 0 | 8 |
+| **Subtotal (local)** | | **164** | **81** | **245** |
 | Jarvis (remote proxy) | `jarvis` | ~5 | ~1 | ~6 |
 | Sysdig Secure (hosted OAuth) | `sysdig-secure-mcp` | dynamic | dynamic | not counted |
-| **Known advertised total** | | **~161** | **~82** | **~243** (excludes dynamic Sysdig tools) |
+| **Known advertised total** | | **~169** | **~82** | **~251** (excludes dynamic Sysdig tools) |
 
 ## Servers and tools
 
@@ -129,6 +130,11 @@ Servers map 1:1 to the keys in [`../.mcp.json`](../.mcp.json). The Atlassian-bac
 #### github-mcp — 34 tools (19 read / 15 write)
 - **Read:** `github_health`, `github_config`, `security_get_sarif_upload_status`, `security_list_code_scanning_alerts`, `security_get_code_scanning_alert`, `security_get_code_scanning_alert_instances`, `security_get_code_scanning_autofix_status`, `security_list_secret_scanning_alerts`, `security_get_secret_scanning_alert`, `security_list_dependabot_alerts`, `security_get_dependabot_alert`, `issue_search`, `pr_get`, `repo_get_security_configuration`, `repo_get_rulesets`, `repo_get_security_summary`, `org_list_security_alerts`, `org_security_summary`, `org_find_repositories_missing_security_controls`
 - **Write:** `security_publish_sarif`, `security_update_code_scanning_alert`, `security_create_code_scanning_autofix`, `security_commit_code_scanning_autofix`, `security_update_secret_scanning_alert`, `security_update_dependabot_alert`, `issue_create`, `issue_update`, `issue_close`, `issue_add_comment`, `pr_create`, `pr_update`, `pr_request_review`, `pr_comment`, `pr_merge`
+
+### Container platform
+
+#### openshift-mcp — 8 tools (read-only)
+`openshift_list_projects`, `openshift_list_pods`, `openshift_get_pod`, `openshift_find_pods_by_image`, `openshift_list_events`, `openshift_get_pod_logs`, `openshift_list_resources`, `openshift_get_resource`
 
 ### Remote MCP servers (data egress)
 
@@ -249,6 +255,14 @@ If dedicated Jenkins credentials are omitted, the server falls back to the cache
 | `RAVEN_SHAREPOINT_MAX_DOWNLOAD_BYTES` | optional | no | sharepoint | maximum `download_file` size (default 512 MiB) |
 | `RATE_LIMIT_SPO_BURST` | optional | no | sharepoint | token-bucket burst capacity for the SPO host limiter (default 10) |
 | `RATE_LIMIT_SPO_RPS` | optional | no | sharepoint | token-bucket sustained requests/sec for the SPO host limiter (default 4) |
+
+### OpenShift
+| Variable | Required? | Sensitive | Used by | Purpose |
+|----------|-----------|:---------:|---------|---------|
+| `KUBECONFIG` | optional | **yes** (file holds tokens) | openshift | kubeconfig path(s); default `~/.kube/config` as written by `oc login` |
+| `OPENSHIFT_CONTEXT` | optional | no | openshift | kubeconfig context to use instead of the current context |
+| `OPENSHIFT_ALLOWED_NAMESPACES` | recommended | no | openshift | comma-separated projects the tools may read; when set, every read must name one of them and cluster-scoped kinds are refused |
+| `OPENSHIFT_ALLOW_INSECURE_TLS` | optional | no | openshift | `true` accepts a kubeconfig with `insecure-skip-tls-verify` (refused by default) |
 
 ### Server UI + tuning
 | Variable | Required? | Sensitive | Used by | Purpose |

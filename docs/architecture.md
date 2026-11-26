@@ -125,6 +125,7 @@ raven/
     ├── artifactory-mcp/          # Repositories, artifacts, builds
     ├── sharepoint-mcp/           # Sites, documents, lists (read-only)
     ├── github-mcp/               # GHAS alerts, SARIF, PRs, issues
+├── openshift-mcp/            # OpenShift workloads, pods, logs, events (read-only)
     ├── rfcbuddy-mcp/             # RFC schedule search
     ├── jarvis-mcp/               # Dynamic remote MCP proxy
     ├── server-ui/                # Express dashboard on 127.0.0.1:3777
