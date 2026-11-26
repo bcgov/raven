@@ -34,11 +34,27 @@ export function sanitizeObject<T>(value: T): T {
   return walk(value) as T;
 }
 
+/**
+ * Secrets embedded in other objects (Template objects, List items) keep only
+ * their identity; their payload fields are dropped wholesale.
+ */
+function redactEmbeddedSecret(secret: Record<string, unknown>): Record<string, unknown> {
+  const metadata = isRecord(secret["metadata"]) ? secret["metadata"] : {};
+  return {
+    apiVersion: secret["apiVersion"],
+    kind: secret["kind"],
+    metadata: { name: metadata["name"], namespace: metadata["namespace"] },
+    type: secret["type"],
+    content: REDACTED,
+  };
+}
+
 function walk(value: unknown, parent?: string): unknown {
   if (value instanceof Date) return value.toISOString();
   if (typeof value === "string") return redactPrivateKeys(value);
   if (Array.isArray(value)) return value.map((item) => walk(item, parent));
   if (!isRecord(value)) return value;
+  if (typeof value["kind"] === "string" && value["kind"].toLowerCase() === "secret") return redactEmbeddedSecret(value);
   const out: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value)) {
     if (key === "managedFields") continue;
@@ -46,7 +62,8 @@ function walk(value: unknown, parent?: string): unknown {
       out[key] = REDACTED;
       continue;
     }
-    if (key === "env" && Array.isArray(child)) {
+    // Container env and Template parameters share the { name, value } shape.
+    if ((key === "env" || key === "parameters") && Array.isArray(child)) {
       out[key] = child.map((entry) =>
         isRecord(entry) && typeof entry["name"] === "string" && "value" in entry && SENSITIVE_ENV_NAME.test(entry["name"])
           ? { ...entry, value: REDACTED }
@@ -79,10 +96,12 @@ export function summarizePod(pod: KubeObject) {
   const statuses = [
     ...((status["initContainerStatuses"] as ContainerStatus[] | undefined) ?? []),
     ...((status["containerStatuses"] as ContainerStatus[] | undefined) ?? []),
+    ...((status["ephemeralContainerStatuses"] as ContainerStatus[] | undefined) ?? []),
   ];
   const specContainers = [
     ...((spec["initContainers"] as { name?: string; image?: string }[] | undefined) ?? []),
     ...((spec["containers"] as { name?: string; image?: string }[] | undefined) ?? []),
+    ...((spec["ephemeralContainers"] as { name?: string; image?: string }[] | undefined) ?? []),
   ];
   return {
     name: metadata?.name,
@@ -90,7 +109,7 @@ export function summarizePod(pod: KubeObject) {
     phase: status["phase"],
     node: spec["nodeName"],
     startTime: status["startTime"],
-    labels: metadata?.labels ?? {},
+    labels: walk(metadata?.labels ?? {}, "labels"),
     owners: (metadata?.ownerReferences ?? []).map((o) => ({ kind: o.kind, name: o.name })),
     containers: specContainers.map((c) => {
       const s = statuses.find((st) => st.name === c.name);

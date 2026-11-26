@@ -19,11 +19,18 @@ const DENIED_KINDS = new Set(["secret", "serviceaccount"]);
 
 const DNS_SUBDOMAIN = /^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/;
 const DNS_LABEL = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
+/** Generic object names: also allows ImageStreamTag "api:latest" and ImageStreamImage "api@sha256:…". */
+const RESOURCE_NAME = /^[A-Za-z0-9][-A-Za-z0-9._:@]*$/;
 const API_VERSION = /^([a-z0-9]([-a-z0-9.]*[a-z0-9])?\/)?v[0-9]+((alpha|beta)[0-9]+)?$/;
 const KIND = /^[A-Z][A-Za-z0-9]*$/;
 
 export function isValidName(value: string): boolean {
   return value.length <= 253 && DNS_SUBDOMAIN.test(value);
+}
+
+/** Path-segment-safe name for any kind; never contains "/", "%", ".." or whitespace. */
+export function isValidResourceName(value: string): boolean {
+  return value.length <= 253 && RESOURCE_NAME.test(value) && !value.includes("..");
 }
 
 export function isValidNamespace(value: string): boolean {

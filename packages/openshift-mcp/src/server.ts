@@ -10,6 +10,7 @@ import {
   isValidKind,
   isValidName,
   isValidNamespace,
+  isValidResourceName,
   resolveNamespace,
 } from "./policy.js";
 import { podUsesImage, redactPrivateKeys, sanitizeObject, summarizeEvent, summarizePod } from "./sanitize.js";
@@ -32,6 +33,9 @@ const READ_ONLY = { readOnlyHint: true } as const;
 
 const namespaceSchema = z.string().refine(isValidNamespace, "must be a valid OpenShift project/namespace name");
 const nameSchema = z.string().refine(isValidName, "must be a valid Kubernetes object name");
+const resourceNameSchema = z
+  .string()
+  .refine(isValidResourceName, "must be a valid object name, e.g. \"api\", \"api:latest\" or \"api@sha256:…\"");
 const apiVersionSchema = z
   .string()
   .refine(isValidApiVersion, 'must look like "v1" or "apps/v1"')
@@ -386,7 +390,7 @@ export function createOpenShiftServer(options: OpenShiftServerOptions = {}): Mcp
     {
       apiVersion: apiVersionSchema,
       kind: kindSchema,
-      name: nameSchema,
+      name: resourceNameSchema,
       namespace: namespaceSchema.optional().describe("Project/namespace; omit for cluster-scoped kinds."),
     },
     READ_ONLY,

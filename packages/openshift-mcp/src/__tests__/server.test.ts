@@ -295,6 +295,82 @@ describe("OpenShift MCP server", () => {
     expect(JSON.parse(output).metadata.name).toBe("owner-6559871234");
   });
 
+  it("redacts Secrets and credential parameters embedded in Templates", async () => {
+    const dockerConfig = Buffer.from('{"auths":{"registry.example":{"auth":"dXNlcjpwYXNz"}}}').toString("base64");
+    reader.get.mockResolvedValueOnce({
+      apiVersion: "template.openshift.io/v1",
+      kind: "Template",
+      metadata: { name: "app", namespace: "app-dev" },
+      parameters: [
+        { name: "DATABASE_PASSWORD", value: "tmpl-hunter2" },
+        { name: "APP_NAME", value: "api" },
+      ],
+      objects: [
+        { apiVersion: "v1", kind: "Secret", metadata: { name: "pull" }, type: "kubernetes.io/dockerconfigjson", data: { ".dockerconfigjson": dockerConfig } },
+        { apiVersion: "v1", kind: "ConfigMap", metadata: { name: "cfg" }, data: { LOG_LEVEL: "debug" } },
+      ],
+    });
+
+    const output = text(
+      await client.callTool({
+        name: "openshift_get_resource",
+        arguments: { apiVersion: "template.openshift.io/v1", kind: "Template", name: "app", namespace: "app-dev" },
+      }),
+    );
+    const template = JSON.parse(output);
+
+    expect(output).not.toContain(dockerConfig);
+    expect(output).not.toContain("tmpl-hunter2");
+    expect(template.objects[0]).toEqual({
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: { name: "pull" },
+      type: "kubernetes.io/dockerconfigjson",
+      content: "[REDACTED]",
+    });
+    expect(template.objects[1].data).toEqual({ LOG_LEVEL: "debug" });
+    expect(template.parameters[1]).toEqual({ name: "APP_NAME", value: "api" });
+  });
+
+  it("matches ephemeral containers and redacts credential labels in pod summaries", async () => {
+    const debug = pod("api", "app-dev", "registry/api:1", "registry/api@sha256:aaaa");
+    (debug.metadata as Record<string, unknown>)["labels"] = { app: "api", "api-token": "opaque-abc" };
+    (debug["spec"] as Record<string, unknown>)["ephemeralContainers"] = [{ name: "debugger", image: "registry/debug:1" }];
+    (debug["status"] as Record<string, unknown>)["ephemeralContainerStatuses"] = [
+      { name: "debugger", image: "registry/debug:1", imageID: "registry/debug@sha256:bbbb" },
+    ];
+    reader.list.mockResolvedValue({ items: [debug] });
+
+    const found = JSON.parse(
+      text(await client.callTool({ name: "openshift_find_pods_by_image", arguments: { image: "sha256:bbbb", namespace: "app-dev" } })),
+    );
+    const listed = text(await client.callTool({ name: "openshift_list_pods", arguments: { namespace: "app-dev" } }));
+
+    expect(found.matches).toHaveLength(1);
+    expect(found.matches[0].containers[1]).toMatchObject({ name: "debugger", imageID: "registry/debug@sha256:bbbb" });
+    expect(found.matches[0].labels).toEqual({ app: "api", "api-token": "[REDACTED]" });
+    expect(listed).not.toContain("opaque-abc");
+  });
+
+  it.each(["api:latest", "api@sha256:0123456789abcdef"])("accepts image resource name %s", async (name) => {
+    reader.get.mockResolvedValueOnce({ apiVersion: "image.openshift.io/v1", kind: "ImageStreamTag", metadata: { name } });
+    const result = await client.callTool({
+      name: "openshift_get_resource",
+      arguments: { apiVersion: "image.openshift.io/v1", kind: "ImageStreamTag", name, namespace: "app-dev" },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(reader.get).toHaveBeenCalledWith("image.openshift.io/v1", "ImageStreamTag", name, "app-dev");
+  });
+
+  it.each(["../secrets", "a/b", "a%2Fb", "a b", "..", "-x"])("rejects unsafe resource name %s", async (name) => {
+    const result = await client.callTool({
+      name: "openshift_get_resource",
+      arguments: { apiVersion: "v1", kind: "ConfigMap", name, namespace: "app-dev" },
+    });
+    expect(result.isError).toBe(true);
+    expect(reader.get).not.toHaveBeenCalled();
+  });
+
   it("shrinks oversized resource pages instead of returning truncated JSON", async () => {
     const bulky = (i: number) => ({ metadata: { name: `obj-${i}` }, data: "setting: value\n".repeat(2_000) });
     reader.list.mockImplementation(async (_v: string, _k: string, opts: { limit: number }) => ({
